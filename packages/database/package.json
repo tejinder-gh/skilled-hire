@@ -1,0 +1,9 @@
+{
+  "name": "@marketplace/database",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "build": "tsc --noEmit", "typecheck": "tsc --noEmit", "lint": "tsc --noEmit", "test": "vitest run" },
+  "dependencies": { "@marketplace/auth": "workspace:*", "dotenv": "^16.6.0", "pg": "^8.16.0" },
+  "devDependencies": { "@types/pg": "^8.15.0", "vitest": "^3.2.0" }
+}

@@ -1,0 +1,2 @@
+export interface Telemetry { event(name: string, attributes: Record<string, string | number | boolean>): void; error(error: Error, attributes?: Record<string, string>): void; }
+export const consoleTelemetry: Telemetry = { event: (name, attributes) => console.info(JSON.stringify({ name, ...attributes })), error: (error, attributes) => console.error(JSON.stringify({ error: error.message, ...attributes })) };
