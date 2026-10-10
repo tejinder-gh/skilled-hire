@@ -2,15 +2,15 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
-  title: "Skilled Hire | Canada's Verified On-Demand Trade Services (skilledhire.ca)",
-  description: "Book certified, licensed, and background-checked trade professionals across Canada with transparent pricing and milestone escrow protection.",
+  title: "Skilled Hire | Home Services Booking | skilledhire.ca",
+  description: "Request home services, review job details and manage appointments in one place. Technician eligibility and availability are confirmed for each booking.",
   metadataBase: new URL("https://skilledhire.ca"),
   alternates: {
     canonical: "/",
   },
   openGraph: {
-    title: "Skilled Hire | Canada's Verified On-Demand Trade Services",
-    description: "Book certified, licensed, and background-checked trade professionals across Canada on skilledhire.ca.",
+    title: "Skilled Hire | Home Services Booking",
+    description: "Request home services and manage service appointments on skilledhire.ca.",
     url: "https://skilledhire.ca",
     siteName: "Skilled Hire",
     locale: "en_CA",
