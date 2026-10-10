@@ -35,6 +35,7 @@ export default function CustomerHome() {
   const [isStandbyQueue, setIsStandbyQueue] = useState<boolean>(false);
   const [smsAlerts, setSmsAlerts] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [liveRequestId, setLiveRequestId] = useState<string | null>(null);
 
   // Live availability data from backend API
@@ -110,27 +111,34 @@ export default function CustomerHome() {
   const isCurrentlyBusy = availabilityData?.status === "BUSIER_THAN_USUAL";
 
   async function handleSubmitRequest() {
+    if (submitting) return;
     setSubmitting(true);
+    setSubmissionError(null);
+    setLiveRequestId(null);
     try {
+      if (process.env.NODE_ENV !== "development") throw new Error("Booking requires a verified customer session. Please try again later.");
       const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: "customer@example.test", password: "DemoPassword!2026" }),
       });
-      if (loginRes.ok) {
+      if (!loginRes.ok) throw new Error("Unable to authenticate.");
+      {
         const { accessToken } = await loginRes.json();
         const [intakeRes, propRes] = await Promise.all([
           fetch(`http://localhost:4000/v1/verticals/${selectedDomain}/intake`).catch(() => fetch("http://localhost:4000/v1/verticals/hvac/intake")),
           fetch("http://localhost:4000/v1/properties", { headers: { Authorization: `Bearer ${accessToken}` } }),
         ]);
-        if (intakeRes.ok && propRes.ok) {
+        if (!intakeRes.ok || !propRes.ok) throw new Error("Could not load service details.");
+        {
           const { vertical, categories, issues } = await intakeRes.json();
           const properties = await propRes.json();
           const property = properties[0];
           const category = categories[0];
           const issue = issues[0];
 
-          if (property && vertical && category && issue) {
+          if (!property || !vertical || !category || !issue) throw new Error("Missing property or service details.");
+          {
             const reqRes = await fetch("http://localhost:4000/v1/service-requests", {
               method: "POST",
               headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
@@ -144,18 +152,20 @@ export default function CustomerHome() {
                 attachmentKeys: photo ? [photo] : [],
               }),
             });
-            if (reqRes.ok) {
+            if (!reqRes.ok) throw new Error("Request was not accepted. Please retry.");
+            {
               const created = await reqRes.json();
+              if (!created.id) throw new Error("Server did not confirm a request ID.");
               setLiveRequestId(created.id);
+              setMode("submitted");
             }
           }
         }
       }
-    } catch {
-      // Fallback gracefully
+    } catch (error) {
+      setSubmissionError(error instanceof Error ? error.message : "Request failed. Please retry.");
     } finally {
       setSubmitting(false);
-      setMode("submitted");
     }
   }
 
@@ -564,6 +574,7 @@ export default function CustomerHome() {
                   </div>
                 </div>
 
+                {submissionError && <p role="alert" style={{ color: "#b42318" }}>{submissionError}</p>}
                 <div style={{ display: "flex", gap: 10 }}>
                   <Button variant="secondary" onClick={() => setStep(1)} disabled={submitting}>Back</Button>
                   <Button onClick={handleSubmitRequest} disabled={submitting}>
@@ -588,7 +599,7 @@ export default function CustomerHome() {
   }
 
   // --- VIEW: SUBMITTED SUCCESS ---
-  if (mode === "submitted") {
+  if (mode === "submitted" && liveRequestId) {
     return (
       <Shell
         title="Your request is in motion"
@@ -596,9 +607,9 @@ export default function CustomerHome() {
       >
         <Card tone="green">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-            <Status tone="green">{liveRequestId ? "Live Database Verified" : "Request submitted"}</Status>
+            <Status tone="green">Request received</Status>
             <span style={{ fontSize: 13, fontWeight: 800, color: "#0b69a3" }}>
-              {liveRequestId ? `Request #${liveRequestId.slice(0, 8).toUpperCase()}` : "Lead #10428"}
+              {`Request #${liveRequestId.slice(0, 8).toUpperCase()}`}
             </span>
           </div>
           <h2>{activeDomainObj.label} — {description.slice(0, 50)}...</h2>
@@ -607,7 +618,7 @@ export default function CustomerHome() {
           </p>
           {isStandbyQueue && (
             <div style={{ background: "#fef3c7", padding: "8px 12px", borderRadius: 8, marginBottom: 14, color: "#92400e", fontSize: 13, fontWeight: 750 }}>
-              ⏱️ You are #2 in the Priority Standby Queue. Automated early dispatch notification is active.
+              Standby consideration requested; queue position is not confirmed.
             </div>
           )}
           <Button onClick={() => setMode("home")}>Back to home</Button>
