@@ -15,6 +15,16 @@ const contractorOwner = await user("owner@example.test", "Jordan Owner", "CONTRA
 const technicianUser = await user("technician@example.test", "John Service", "TECHNICIAN");
 const verticalResult = await pool.query<{ id: string }>("INSERT INTO verticals(slug,name,config) VALUES('hvac','HVAC',$1) ON CONFLICT(slug) DO UPDATE SET config=EXCLUDED.config RETURNING id", [JSON.stringify({ branding: { displayName: "Skilled Hire", domain: "skilledhire.ca" }, emergencyRules: [{ targetMinutes: 120, calloutFeeCents: 14900 }], credentialRequirements: [{ code: "HVAC_LICENSE", geography: "ON", verificationRequired: true }] })]);
 const vertical = verticalResult.rows[0]?.id; if (!vertical) throw new Error("Missing vertical");
+for (const v of [
+  { slug: "plumbing", name: "Plumbing Systems", displayName: "Skilled Hire Plumbing" },
+  { slug: "electrical", name: "Electrical Contracting", displayName: "Skilled Hire Electrical" },
+  { slug: "roofing", name: "Roofing & Exteriors", displayName: "Skilled Hire Roofing" },
+] as const) {
+  await pool.query(
+    "INSERT INTO verticals(slug,name,config) VALUES($1,$2,$3) ON CONFLICT(slug) DO UPDATE SET config=EXCLUDED.config",
+    [v.slug, v.name, JSON.stringify({ branding: { displayName: v.displayName, domain: "skilledhire.ca" } })]
+  );
+}
 const categories = ["Heating","Cooling","Thermostat","Air quality","Maintenance","Emergency"];
 const categoryIds = new Map<string, string>();
 for (const name of categories) { const r = await pool.query<{ id: string }>("INSERT INTO service_categories(vertical_id,slug,name) VALUES($1,$2,$3) ON CONFLICT(vertical_id,slug) DO UPDATE SET name=EXCLUDED.name RETURNING id", [vertical, name.toLowerCase().replaceAll(" ", "-"), name]); const id = r.rows[0]?.id; if (id) categoryIds.set(name,id); }
