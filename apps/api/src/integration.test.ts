@@ -1115,4 +1115,95 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     );
     expect(auditRows.rows.length).toBeGreaterThan(0);
   });
+
+  it("executes trade regulatory eligibility policies and fail-closed compliance verification (Ontario)", async () => {
+    // 1. Fetch regulatory policy matrix
+    const matrixRes = await app.inject({
+      method: "GET",
+      url: "/v1/compliance/policy/matrix?geography=ON",
+    });
+    expect(matrixRes.statusCode).toBe(200);
+    const matrixData = matrixRes.json<{
+      geography: string;
+      policies: Array<{ verticalSlug: string; geography: string }>;
+    }>();
+    expect(matrixData.policies.length).toBeGreaterThanOrEqual(4);
+    expect(matrixData.policies.some((p) => p.verticalSlug === "electrical")).toBe(true);
+    expect(matrixData.policies.some((p) => p.verticalSlug === "hvac")).toBe(true);
+
+    // 2. Fetch specific trade policy
+    const electricalPolicyRes = await app.inject({
+      method: "GET",
+      url: "/v1/compliance/policy/matrix?vertical=electrical&geography=ON",
+    });
+    expect(electricalPolicyRes.statusCode).toBe(200);
+    const electricalData = electricalPolicyRes.json<{
+      policies: Array<{
+        contractorMandatoryCodes: string[];
+        technicianMandatoryCodes: string[];
+      }>;
+    }>();
+    expect(electricalData.policies[0]?.contractorMandatoryCodes).toContain(
+      "ON_ESA_LEC_CONTRACTOR",
+    );
+    expect(electricalData.policies[0]?.technicianMandatoryCodes).toContain(
+      "ON_SKILLED_TRADES_309A",
+    );
+
+    // 3. Auditor verifies a credential with regulator reference
+    const pendingCred = await pool.query<{ id: string }>(
+      "SELECT id FROM credentials WHERE status='PENDING' LIMIT 1",
+    );
+
+    if (pendingCred.rows[0]) {
+      const verifyRes = await app.inject({
+        method: "POST",
+        url: "/v1/compliance/verify-credential",
+        headers: auth("admin@example.test"),
+        payload: {
+          credentialId: pendingCred.rows[0].id,
+          verificationSource: "REGULATOR_API",
+          status: "VERIFIED",
+          regulatorReference: "ECRA-ESA-TEST-7009999",
+          auditorNotes: "Audited against ESA/ECRA authoritative license registry",
+        },
+      });
+      expect(verifyRes.statusCode).toBe(200);
+      const verifiedData = verifyRes.json<{
+        credential: { status: string; regulatorReference: string };
+      }>();
+      expect(verifiedData.credential.status).toBe("VERIFIED");
+      expect(verifiedData.credential.regulatorReference).toBe(
+        "ECRA-ESA-TEST-7009999",
+      );
+    }
+
+    // 4. Dispatch eligibility check: Fail-closed when missing mandatory credentials
+    const contractor = await pool.query<{ id: string }>(
+      "SELECT id FROM contractors LIMIT 1",
+    );
+    const technician = await pool.query<{ id: string }>(
+      "SELECT id FROM technicians LIMIT 1",
+    );
+
+    const failClosedCheck = await app.inject({
+      method: "POST",
+      url: "/v1/compliance/eligibility-check",
+      payload: {
+        verticalSlug: "electrical",
+        geography: "ON",
+        contractorId: contractor.rows[0]?.id,
+        technicianId: technician.rows[0]?.id,
+      },
+    });
+    expect(failClosedCheck.statusCode).toBe(200);
+    const failResult = failClosedCheck.json<{
+      eligible: boolean;
+      failClosed: boolean;
+      reasons: string[];
+    }>();
+    expect(failResult.eligible).toBe(false);
+    expect(failResult.failClosed).toBe(true);
+    expect(failResult.reasons.length).toBeGreaterThan(0);
+  });
 });

@@ -239,6 +239,56 @@ export interface FeeRule {
   takeRateBps: number;
 }
 
+export const verificationSources = ["MANUAL_AUDIT", "REGULATOR_API", "SELF_UPLOAD"] as const;
+export type VerificationSource = (typeof verificationSources)[number];
+
+export interface TradeRegulatoryPolicy {
+  id: string;
+  verticalSlug: string;
+  categorySlug: string;
+  variantSlug: string;
+  geography: string;
+  policyVersion: number;
+  contractorMandatoryCodes: string[];
+  technicianMandatoryCodes: string[];
+  apprenticeEligible: boolean;
+  supervisorRatio: string;
+  permitRequired: boolean;
+  inspectionAuthority?: string | null;
+  legalAuthorityDisclaimer: string;
+  active: boolean;
+}
+
+export interface RegulatoryEligibilityResult {
+  eligible: boolean;
+  failClosed: boolean;
+  reasons: string[];
+  contractorDeficiencies: string[];
+  technicianDeficiencies: string[];
+  requiredPermits: string[];
+  inspectionAuthority?: string | null;
+  legalAuthorityDisclaimer?: string | null;
+  policyVersion: number;
+  checkedAt: string;
+}
+
+export interface CredentialVerificationRecord {
+  id?: string | null | undefined;
+  contractorId?: string | null | undefined;
+  technicianId?: string | null | undefined;
+  code: string;
+  geography: string;
+  status: CredentialStatus;
+  verificationSource: VerificationSource;
+  verifiedByUserId?: string | null | undefined;
+  regulatorReference?: string | null | undefined;
+  checkedAt?: string | null | undefined;
+  expiryDate?: string | null | undefined;
+  limitations?: string | null | undefined;
+  documentKey?: string | null | undefined;
+  auditorNotes?: string | null | undefined;
+}
+
 export const credentialGroupCodes = [
   "TRADE_LICENSING",
   "ENVIRONMENTAL_HAZARDOUS",

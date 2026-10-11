@@ -33,6 +33,7 @@ import {
   CREDENTIAL_GROUPS,
   DEFAULT_COMPLIANCE_STANDARDS,
   evaluateCompliance,
+  evaluateRegulatoryEligibility,
   filterComplianceStandards,
   searchCatalog,
 } from "@marketplace/vertical-engine";
@@ -1200,6 +1201,287 @@ app.post("/v1/compliance/evaluate", async (request, reply) => {
   return reply
     .code(200)
     .send({ ...scorecard, ...(breakdowns ? { breakdowns } : {}) });
+});
+
+// Trade Regulatory Policies Matrix (Ticket #55)
+app.get("/v1/compliance/policy/matrix", async (request) => {
+  const querySchema = z.object({
+    geography: z.string().default("ON"),
+    vertical: z.string().optional(),
+  });
+  const q = querySchema.parse(request.query);
+  const values: unknown[] = [];
+  let sqlQuery =
+    "SELECT id, vertical_slug, category_slug, variant_slug, geography, policy_version, contractor_mandatory_codes, technician_mandatory_codes, apprentice_eligible, supervisor_ratio, permit_required, inspection_authority, legal_authority_disclaimer, active FROM trade_regulatory_policies WHERE active = true";
+  if (q.geography !== "*") {
+    values.push(q.geography);
+    sqlQuery += ` AND geography = $${values.length}`;
+  }
+  if (q.vertical) {
+    values.push(q.vertical);
+    sqlQuery += ` AND vertical_slug = $${values.length}`;
+  }
+  sqlQuery += " ORDER BY vertical_slug ASC, policy_version DESC";
+  const rows = await pool.query<{
+    id: string;
+    vertical_slug: string;
+    category_slug: string;
+    variant_slug: string;
+    geography: string;
+    policy_version: number;
+    contractor_mandatory_codes: string[];
+    technician_mandatory_codes: string[];
+    apprentice_eligible: boolean;
+    supervisor_ratio: string;
+    permit_required: boolean;
+    inspection_authority: string | null;
+    legal_authority_disclaimer: string;
+    active: boolean;
+  }>(sqlQuery, values);
+  return {
+    geography: q.geography,
+    policies: rows.rows.map((r) => ({
+      id: r.id,
+      verticalSlug: r.vertical_slug,
+      categorySlug: r.category_slug,
+      variantSlug: r.variant_slug,
+      geography: r.geography,
+      policyVersion: r.policy_version,
+      contractorMandatoryCodes: r.contractor_mandatory_codes,
+      technicianMandatoryCodes: r.technician_mandatory_codes,
+      apprenticeEligible: r.apprentice_eligible,
+      supervisorRatio: r.supervisor_ratio,
+      permitRequired: r.permit_required,
+      inspectionAuthority: r.inspection_authority,
+      legalAuthorityDisclaimer: r.legal_authority_disclaimer,
+      active: r.active,
+    })),
+  };
+});
+
+// Authoritative Credential Verification (Ticket #55)
+app.post(
+  "/v1/compliance/verify-credential",
+  { preHandler: authenticate },
+  async (request, reply) => {
+    requireRole(actor(request), "ADMIN", "SUPER_ADMIN", "OPERATIONS_AGENT");
+    const body = parse(
+      z.object({
+        credentialId: uuid,
+        verificationSource: z.enum(["MANUAL_AUDIT", "REGULATOR_API"]),
+        regulatorReference: z.string().min(1),
+        status: z.enum(["VERIFIED", "REJECTED", "EXPIRED", "SUSPENDED"]),
+        limitations: z.string().optional(),
+        auditorNotes: z.string().optional(),
+      }),
+      request.body,
+    );
+
+    const existing = await pool.query<{ id: string; status: string }>(
+      "SELECT id, status FROM credentials WHERE id = $1",
+      [body.credentialId],
+    );
+    if (!existing.rows[0]) {
+      return reply
+        .code(404)
+        .send({ code: "NOT_FOUND", message: "Credential not found" });
+    }
+
+    const updated = await pool.query<{
+      id: string;
+      contractor_id: string | null;
+      technician_id: string | null;
+      code: string;
+      geography: string;
+      status: string;
+      verification_source: string;
+      regulator_reference: string;
+      verified_by_user_id: string;
+      checked_at: string;
+      verified_at: string | null;
+      expiry_date: string | null;
+      limitations: string | null;
+      auditor_notes: string | null;
+    }>(
+      `UPDATE credentials
+       SET status = $1::verification_status,
+           verification_source = $2,
+           regulator_reference = $3,
+           verified_by_user_id = $4,
+           checked_at = now(),
+           verified_at = (CASE WHEN $1 = 'VERIFIED' THEN now() ELSE NULL END),
+           limitations = $5,
+           auditor_notes = $6
+       WHERE id = $7
+       RETURNING id, contractor_id, technician_id, code, geography, status, verification_source, regulator_reference, verified_by_user_id, checked_at, verified_at, expiry_date, limitations, auditor_notes`,
+      [
+        body.status,
+        body.verificationSource,
+        body.regulatorReference,
+        actor(request).id,
+        body.limitations ?? null,
+        body.auditorNotes ?? null,
+        body.credentialId,
+      ],
+    );
+
+    const cred = updated.rows[0];
+    await audit(
+      actor(request).id,
+      "CREDENTIAL_VERIFIED",
+      "CREDENTIAL",
+      body.credentialId,
+      existing.rows[0],
+      cred,
+      {
+        verificationSource: body.verificationSource,
+        regulatorReference: body.regulatorReference,
+      },
+    );
+
+    return {
+      credential: {
+        id: cred?.id,
+        contractorId: cred?.contractor_id,
+        technicianId: cred?.technician_id,
+        code: cred?.code,
+        geography: cred?.geography,
+        status: cred?.status,
+        verificationSource: cred?.verification_source,
+        regulatorReference: cred?.regulator_reference,
+        verifiedByUserId: cred?.verified_by_user_id,
+        checkedAt: cred?.checked_at,
+        verifiedAt: cred?.verified_at,
+        expiryDate: cred?.expiry_date,
+        limitations: cred?.limitations,
+        auditorNotes: cred?.auditor_notes,
+      },
+    };
+  },
+);
+
+// Trade-Specific Regulatory Eligibility Dispatch Check (Ticket #55)
+app.post("/v1/compliance/eligibility-check", async (request, reply) => {
+  const body = parse(
+    z.object({
+      verticalSlug: z.string(),
+      geography: z.string().default("ON"),
+      contractorId: uuid,
+      technicianId: uuid,
+      isApprentice: z.boolean().default(false),
+    }),
+    request.body,
+  );
+  const geography = body.geography ?? "ON";
+
+  const policyRows = await pool.query<{
+    id: string;
+    vertical_slug: string;
+    category_slug: string;
+    variant_slug: string;
+    geography: string;
+    policy_version: number;
+    contractor_mandatory_codes: string[];
+    technician_mandatory_codes: string[];
+    apprentice_eligible: boolean;
+    supervisor_ratio: string;
+    permit_required: boolean;
+    inspection_authority: string | null;
+    legal_authority_disclaimer: string;
+    active: boolean;
+  }>(
+    `SELECT id, vertical_slug, category_slug, variant_slug, geography, policy_version,
+            contractor_mandatory_codes, technician_mandatory_codes, apprentice_eligible,
+            supervisor_ratio, permit_required, inspection_authority, legal_authority_disclaimer, active
+     FROM trade_regulatory_policies
+     WHERE vertical_slug = $1 AND geography = $2 AND active = true
+     ORDER BY policy_version DESC LIMIT 1`,
+    [body.verticalSlug, geography],
+  );
+
+  const policyRow = policyRows.rows[0];
+  if (!policyRow) {
+    return reply.code(404).send({
+      code: "POLICY_NOT_FOUND",
+      message: `No active regulatory policy found for ${body.verticalSlug} in ${geography}`,
+    });
+  }
+
+  const contractorCreds = await pool.query<{
+    id: string;
+    code: string;
+    geography: string;
+    status: CredentialStatus;
+    verification_source: string;
+    regulator_reference: string | null;
+    expiry_date: string | null;
+    checked_at: Date | null;
+  }>(
+    "SELECT id, code, geography, status, verification_source, regulator_reference, expiry_date::text, checked_at FROM credentials WHERE contractor_id = $1",
+    [body.contractorId],
+  );
+
+  const technicianCreds = await pool.query<{
+    id: string;
+    code: string;
+    geography: string;
+    status: CredentialStatus;
+    verification_source: string;
+    regulator_reference: string | null;
+    expiry_date: string | null;
+    checked_at: Date | null;
+  }>(
+    "SELECT id, code, geography, status, verification_source, regulator_reference, expiry_date::text, checked_at FROM credentials WHERE technician_id = $1",
+    [body.technicianId],
+  );
+
+  const policy = {
+    id: policyRow.id,
+    verticalSlug: policyRow.vertical_slug,
+    categorySlug: policyRow.category_slug,
+    variantSlug: policyRow.variant_slug,
+    geography: policyRow.geography,
+    policyVersion: policyRow.policy_version,
+    contractorMandatoryCodes: policyRow.contractor_mandatory_codes,
+    technicianMandatoryCodes: policyRow.technician_mandatory_codes,
+    apprenticeEligible: policyRow.apprentice_eligible,
+    supervisorRatio: policyRow.supervisor_ratio ?? "1:1",
+    permitRequired: policyRow.permit_required,
+    inspectionAuthority: policyRow.inspection_authority ?? null,
+    legalAuthorityDisclaimer: policyRow.legal_authority_disclaimer,
+    active: policyRow.active,
+  };
+
+  const cCreds = contractorCreds.rows.map((c) => ({
+    id: c.id,
+    code: c.code,
+    geography: c.geography,
+    status: c.status,
+    verificationSource: c.verification_source as any,
+    regulatorReference: c.regulator_reference ?? null,
+    expiryDate: c.expiry_date ?? null,
+    checkedAt: c.checked_at ? c.checked_at.toISOString() : null,
+  }));
+
+  const tCreds = technicianCreds.rows.map((c) => ({
+    id: c.id,
+    code: c.code,
+    geography: c.geography,
+    status: c.status,
+    verificationSource: c.verification_source as any,
+    regulatorReference: c.regulator_reference ?? null,
+    expiryDate: c.expiry_date ?? null,
+    checkedAt: c.checked_at ? c.checked_at.toISOString() : null,
+  }));
+
+  const eligibility = evaluateRegulatoryEligibility({
+    policy,
+    contractorCredentials: cCreds,
+    technicianCredentials: tCreds,
+    isApprentice: body.isApprentice,
+  });
+
+  return eligibility;
 });
 
 app.get(

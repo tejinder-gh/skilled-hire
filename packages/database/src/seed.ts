@@ -1,47 +1,73 @@
 import "dotenv/config";
 import { hashPassword } from "@marketplace/auth";
 import { CANONICAL_TRADE_CATALOG } from "@marketplace/vertical-engine";
-import { pool } from "./index.js";
+import {
+  db,
+  pool,
+  eq,
+  and,
+  users,
+  userRoles,
+  verticals,
+  serviceCategories,
+  issueTypes,
+  properties,
+  contractors,
+  technicians,
+  credentials,
+  paymentRules,
+  tradeRegulatoryPolicies,
+} from "./index.js";
 
 const password = await hashPassword("DemoPassword!2026");
-async function user(
+
+async function seedUser(
   email: string,
   name: string,
-  role: string,
+  role: "CUSTOMER" | "DISPATCHER" | "SUPER_ADMIN" | "CONTRACTOR_OWNER" | "TECHNICIAN" | "ADMIN",
 ): Promise<string> {
-  const result = await pool.query<{ id: string }>(
-    "INSERT INTO users(email,password_hash,display_name) VALUES($1,$2,$3) ON CONFLICT(email) DO UPDATE SET display_name=EXCLUDED.display_name RETURNING id",
-    [email, password, name],
-  );
-  const id = result.rows[0]?.id;
-  if (!id) throw new Error("Failed to seed user");
-  await pool.query(
-    "INSERT INTO user_roles(user_id,role) VALUES($1,$2::user_role) ON CONFLICT DO NOTHING",
-    [id, role],
-  );
-  return id;
+  const [existing] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  let userId: string;
+  if (existing) {
+    userId = existing.id;
+    await db
+      .update(users)
+      .set({ displayName: name, passwordHash: password })
+      .where(eq(users.id, userId));
+  } else {
+    const [inserted] = await db
+      .insert(users)
+      .values({
+        email,
+        passwordHash: password,
+        displayName: name,
+      })
+      .returning({ id: users.id });
+    if (!inserted) throw new Error(`Failed to seed user ${email}`);
+    userId = inserted.id;
+  }
+
+  await db
+    .insert(userRoles)
+    .values({
+      userId,
+      role,
+    })
+    .onConflictDoNothing();
+
+  return userId;
 }
-const customer = await user(
-  "customer@example.test",
-  "Avery Homeowner",
-  "CUSTOMER",
-);
-const dispatcher = await user(
-  "dispatch@example.test",
-  "Morgan Dispatch",
-  "DISPATCHER",
-);
-await user("admin@example.test", "Platform Admin", "SUPER_ADMIN");
-const contractorOwner = await user(
-  "owner@example.test",
-  "Jordan Owner",
-  "CONTRACTOR_OWNER",
-);
-const technicianUser = await user(
-  "technician@example.test",
-  "John Service",
-  "TECHNICIAN",
-);
+
+const customer = await seedUser("customer@example.test", "Avery Homeowner", "CUSTOMER");
+const dispatcher = await seedUser("dispatch@example.test", "Morgan Dispatch", "DISPATCHER");
+await seedUser("admin@example.test", "Platform Admin", "SUPER_ADMIN");
+const contractorOwner = await seedUser("owner@example.test", "Jordan Owner", "CONTRACTOR_OWNER");
+const technicianUser = await seedUser("technician@example.test", "John Service", "TECHNICIAN");
 
 // 1. Seed all 21 Canonical Trade Verticals, Categories, and Service Variants
 for (const entry of CANONICAL_TRADE_CATALOG) {
@@ -57,165 +83,310 @@ for (const entry of CANONICAL_TRADE_CATALOG) {
       },
     ],
   };
-  const vRes = await pool.query<{ id: string }>(
-    `INSERT INTO verticals(slug, name, family, description, icon, risk_tier, permit_authority, launch_ready, display_order, config)
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT(slug) DO UPDATE SET
-       name = EXCLUDED.name,
-       family = EXCLUDED.family,
-       description = EXCLUDED.description,
-       icon = EXCLUDED.icon,
-       risk_tier = EXCLUDED.risk_tier,
-       permit_authority = EXCLUDED.permit_authority,
-       launch_ready = EXCLUDED.launch_ready,
-       display_order = EXCLUDED.display_order
-     RETURNING id`,
-    [
-      entry.slug,
-      entry.name,
-      entry.family,
-      entry.description,
-      entry.icon,
-      entry.riskTier,
-      entry.permitAuthority ?? null,
-      entry.launchReady,
-      entry.displayOrder,
-      JSON.stringify(config),
-    ],
-  );
-  const vId = vRes.rows[0]?.id;
-  if (!vId) continue;
+
+  const [v] = await db
+    .insert(verticals)
+    .values({
+      slug: entry.slug,
+      name: entry.name,
+      family: entry.family,
+      description: entry.description,
+      icon: entry.icon,
+      riskTier: entry.riskTier,
+      permitAuthority: entry.permitAuthority ?? null,
+      launchReady: entry.launchReady,
+      displayOrder: entry.displayOrder,
+      config,
+    })
+    .onConflictDoUpdate({
+      target: verticals.slug,
+      set: {
+        name: entry.name,
+        family: entry.family,
+        description: entry.description,
+        icon: entry.icon,
+        riskTier: entry.riskTier,
+        permitAuthority: entry.permitAuthority ?? null,
+        launchReady: entry.launchReady,
+        displayOrder: entry.displayOrder,
+      },
+    })
+    .returning({ id: verticals.id });
+
+  if (!v) continue;
 
   for (const cat of entry.categories) {
-    const catRes = await pool.query<{ id: string }>(
-      `INSERT INTO service_categories(vertical_id, slug, name, description, risk_tier, launch_ready, display_order)
-       VALUES($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT(vertical_id, slug) DO UPDATE SET
-         name = EXCLUDED.name,
-         description = EXCLUDED.description,
-         risk_tier = EXCLUDED.risk_tier,
-         launch_ready = EXCLUDED.launch_ready,
-         display_order = EXCLUDED.display_order
-       RETURNING id`,
-      [
-        vId,
-        cat.slug,
-        cat.name,
-        cat.description,
-        cat.riskTier,
-        cat.launchReady,
-        cat.displayOrder,
-      ],
-    );
-    const catId = catRes.rows[0]?.id;
-    if (!catId) continue;
+    const [catRow] = await db
+      .insert(serviceCategories)
+      .values({
+        verticalId: v.id,
+        slug: cat.slug,
+        name: cat.name,
+        description: cat.description,
+        riskTier: cat.riskTier,
+        launchReady: cat.launchReady,
+        displayOrder: cat.displayOrder,
+      })
+      .onConflictDoUpdate({
+        target: [serviceCategories.verticalId, serviceCategories.slug],
+        set: {
+          name: cat.name,
+          description: cat.description,
+          riskTier: cat.riskTier,
+          launchReady: cat.launchReady,
+          displayOrder: cat.displayOrder,
+        },
+      })
+      .returning({ id: serviceCategories.id });
 
-    for (const v of cat.variants) {
-      await pool.query(
-        `INSERT INTO issue_types(
-           category_id, slug, name, description, scope_summary, risk_tier, pricing_type,
-           base_price_cents, default_duration_minutes, requires_permit, permit_type,
-           required_evidence, default_warranty_months, geographic_restrictions, tags, launch_ready, display_order, equipment_fields
-         )
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, '["manufacturer","model"]')
-         ON CONFLICT(category_id, slug) DO UPDATE SET
-           name = EXCLUDED.name,
-           description = EXCLUDED.description,
-           scope_summary = EXCLUDED.scope_summary,
-           risk_tier = EXCLUDED.risk_tier,
-           pricing_type = EXCLUDED.pricing_type,
-           base_price_cents = EXCLUDED.base_price_cents,
-           default_duration_minutes = EXCLUDED.default_duration_minutes,
-           requires_permit = EXCLUDED.requires_permit,
-           permit_type = EXCLUDED.permit_type,
-           required_evidence = EXCLUDED.required_evidence,
-           default_warranty_months = EXCLUDED.default_warranty_months,
-           geographic_restrictions = EXCLUDED.geographic_restrictions,
-           tags = EXCLUDED.tags,
-           launch_ready = EXCLUDED.launch_ready,
-           display_order = EXCLUDED.display_order`,
-        [
-          catId,
-          v.slug,
-          v.name,
-          v.description,
-          v.scopeSummary,
-          v.riskTier,
-          v.pricingType,
-          v.basePriceCents,
-          v.defaultDurationMinutes,
-          v.requiresPermit,
-          v.permitType ?? null,
-          JSON.stringify(v.requiredEvidence),
-          v.defaultWarrantyMonths,
-          JSON.stringify(v.geographicRestrictions),
-          JSON.stringify(v.tags),
-          v.launchReady,
-          v.displayOrder,
-        ],
-      );
+    if (!catRow) continue;
+
+    for (const variant of cat.variants) {
+      await db
+        .insert(issueTypes)
+        .values({
+          categoryId: catRow.id,
+          slug: variant.slug,
+          name: variant.name,
+          description: variant.description,
+          scopeSummary: variant.scopeSummary,
+          riskTier: variant.riskTier,
+          pricingType: variant.pricingType,
+          basePriceCents: variant.basePriceCents,
+          defaultDurationMinutes: variant.defaultDurationMinutes,
+          requiresPermit: variant.requiresPermit,
+          permitType: variant.permitType ?? null,
+          requiredEvidence: variant.requiredEvidence,
+          defaultWarrantyMonths: variant.defaultWarrantyMonths,
+          geographicRestrictions: variant.geographicRestrictions,
+          tags: variant.tags,
+          equipmentFields: ["manufacturer", "model"],
+          launchReady: variant.launchReady,
+          displayOrder: variant.displayOrder,
+        })
+        .onConflictDoUpdate({
+          target: [issueTypes.categoryId, issueTypes.slug],
+          set: {
+            name: variant.name,
+            description: variant.description,
+            scopeSummary: variant.scopeSummary,
+            riskTier: variant.riskTier,
+            pricingType: variant.pricingType,
+            basePriceCents: variant.basePriceCents,
+            defaultDurationMinutes: variant.defaultDurationMinutes,
+            requiresPermit: variant.requiresPermit,
+            permitType: variant.permitType ?? null,
+            requiredEvidence: variant.requiredEvidence,
+            defaultWarrantyMonths: variant.defaultWarrantyMonths,
+            geographicRestrictions: variant.geographicRestrictions,
+            tags: variant.tags,
+            launchReady: variant.launchReady,
+            displayOrder: variant.displayOrder,
+          },
+        });
     }
   }
 }
 
-// Retrieve HVAC and AC IDs for legacy seed references
-const hvacRow = await pool.query<{ id: string }>(
-  "SELECT id FROM verticals WHERE slug='hvac'",
-);
-const vertical = hvacRow.rows[0]?.id;
-if (!vertical) throw new Error("Missing HVAC vertical after seeding");
-const issueRow = await pool.query<{ id: string }>(
-  "SELECT i.id FROM issue_types i JOIN service_categories c ON c.id=i.category_id WHERE c.slug='cooling' AND i.slug='ac-not-cooling'",
-);
-const issue = issueRow.rows[0]?.id;
+// 2. Canonical Ontario Trade Regulatory Policies (Ticket #55)
+const CANONICAL_REGULATORY_POLICIES = [
+  {
+    verticalSlug: "electrical",
+    categorySlug: "*",
+    variantSlug: "*",
+    geography: "ON",
+    policyVersion: 1,
+    contractorMandatoryCodes: ["ON_ESA_LEC_CONTRACTOR", "ON_WSIB_CLEARANCE", "CGL_INSURANCE_2M", "COMMERCIAL_AUTO_1M"],
+    technicianMandatoryCodes: ["ON_SKILLED_TRADES_309A", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
+    apprenticeEligible: true,
+    supervisorRatio: "1:1",
+    permitRequired: true,
+    inspectionAuthority: "Electrical Safety Authority (ESA / ECRA)",
+    legalAuthorityDisclaimer: "Electricity Act, 1998, O.Reg 570/05 requires all electrical work to be performed by an ECRA/ESA Licensed Electrical Contractor employing qualified 309A certified electricians or registered apprentices.",
+  },
+  {
+    verticalSlug: "plumbing",
+    categorySlug: "*",
+    variantSlug: "*",
+    geography: "ON",
+    policyVersion: 1,
+    contractorMandatoryCodes: ["ON_WSIB_CLEARANCE", "CGL_INSURANCE_2M", "COMMERCIAL_AUTO_1M"],
+    technicianMandatoryCodes: ["ON_SKILLED_TRADES_306A", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
+    apprenticeEligible: true,
+    supervisorRatio: "1:1",
+    permitRequired: false,
+    inspectionAuthority: "Municipal Building / Plumbing Inspection",
+    legalAuthorityDisclaimer: "Ontario Building Code Part 7 and Building Opportunities in the Skilled Trades Act (BOSTA) require certified 306A plumbers for water supply and drainage systems.",
+  },
+  {
+    verticalSlug: "hvac",
+    categorySlug: "*",
+    variantSlug: "*",
+    geography: "ON",
+    policyVersion: 1,
+    contractorMandatoryCodes: ["ON_TSSA_CONTRACTOR_REG", "ON_WSIB_CLEARANCE", "CGL_INSURANCE_2M", "COMMERCIAL_AUTO_1M"],
+    technicianMandatoryCodes: ["ON_TSSA_GAS_G2", "ON_SKILLED_TRADES_313A", "CA_ODS_REFRIGERANT", "ON_MOL_HEIGHTS", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
+    apprenticeEligible: false,
+    supervisorRatio: "1:1",
+    permitRequired: false,
+    inspectionAuthority: "Technical Standards and Safety Authority (TSSA)",
+    legalAuthorityDisclaimer: "Technical Standards and Safety Act, O.Reg 215/01 mandates TSSA contractor registration and individual G2/G1 Gas Technician plus 313A certification for fuel and refrigerant equipment.",
+  },
+  {
+    verticalSlug: "roofing",
+    categorySlug: "*",
+    variantSlug: "*",
+    geography: "ON",
+    policyVersion: 1,
+    contractorMandatoryCodes: ["CGL_INSURANCE_2M", "ON_WSIB_CLEARANCE", "ROOFING_OPEN_FLAME_INSURANCE"],
+    technicianMandatoryCodes: ["ON_MOL_HEIGHTS", "ROOFING_FALL_PROTECTION", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
+    apprenticeEligible: true,
+    supervisorRatio: "1:2",
+    permitRequired: false,
+    inspectionAuthority: "Ministry of Labour CPO Working at Heights",
+    legalAuthorityDisclaimer: "Occupational Health and Safety Act, O.Reg 297/13 mandates CPO-approved working at heights training for all roofing and elevated operations.",
+  },
+];
+
+for (const policy of CANONICAL_REGULATORY_POLICIES) {
+  await db
+    .insert(tradeRegulatoryPolicies)
+    .values(policy)
+    .onConflictDoUpdate({
+      target: [
+        tradeRegulatoryPolicies.verticalSlug,
+        tradeRegulatoryPolicies.categorySlug,
+        tradeRegulatoryPolicies.variantSlug,
+        tradeRegulatoryPolicies.geography,
+        tradeRegulatoryPolicies.policyVersion,
+      ],
+      set: {
+        contractorMandatoryCodes: policy.contractorMandatoryCodes,
+        technicianMandatoryCodes: policy.technicianMandatoryCodes,
+        apprenticeEligible: policy.apprenticeEligible,
+        supervisorRatio: policy.supervisorRatio,
+        permitRequired: policy.permitRequired,
+        inspectionAuthority: policy.inspectionAuthority,
+        legalAuthorityDisclaimer: policy.legalAuthorityDisclaimer,
+      },
+    });
+}
+
+// 3. Retrieve HVAC and AC IDs for legacy seed references
+const hvacRow = await db.query.verticals.findFirst({
+  where: eq(verticals.slug, "hvac"),
+});
+if (!hvacRow) throw new Error("Missing HVAC vertical after seeding");
+const vertical = hvacRow.id;
+
+const issueCategory = await db.query.serviceCategories.findFirst({
+  where: and(eq(serviceCategories.verticalId, vertical), eq(serviceCategories.slug, "cooling")),
+  with: {
+    issueTypes: {
+      where: eq(issueTypes.slug, "ac-not-cooling"),
+    },
+  },
+});
+const issue = issueCategory?.issueTypes[0]?.id;
 if (!issue) throw new Error("Missing AC issue after seeding");
-const existingProperty = await pool.query<{ id: string }>(
-  "SELECT id FROM properties WHERE customer_id=$1 AND label='My Home' LIMIT 1",
-  [customer],
-);
-const property =
-  existingProperty.rows[0]?.id ??
-  (
-    await pool.query<{ id: string }>(
-      "INSERT INTO properties(customer_id,label,address_line1,city,region,postal_code,latitude,longitude) VALUES($1,'My Home','123 King Street W','Toronto','ON','M5H 1J9',43.6487,-79.3817) RETURNING id",
-      [customer],
-    )
-  ).rows[0]?.id;
+
+// 4. Property
+let prop = await db.query.properties.findFirst({
+  where: and(eq(properties.customerId, customer), eq(properties.label, "My Home")),
+});
+if (!prop) {
+  const [inserted] = await db
+    .insert(properties)
+    .values({
+      customerId: customer,
+      label: "My Home",
+      addressLine1: "123 King Street W",
+      city: "Toronto",
+      region: "ON",
+      postalCode: "M5H 1J9",
+      latitude: "43.6487",
+      longitude: "-79.3817",
+    })
+    .returning();
+  prop = inserted;
+}
+const property = prop?.id;
 if (!property) throw new Error("Missing property");
-const existingContractor = await pool.query<{ id: string }>(
-  "SELECT id FROM contractors WHERE name='ABC Heating & Cooling' LIMIT 1",
-);
-const contractor =
-  existingContractor.rows[0]?.id ??
-  (
-    await pool.query<{ id: string }>(
-      "INSERT INTO contractors(owner_user_id,name,status,rating_bps,completion_rate_bps,avg_response_minutes,service_areas,vertical_ids) VALUES($1,'ABC Heating & Cooling','VERIFIED',490,9700,18,'[\"Toronto\"]',$2) RETURNING id",
-      [contractorOwner, JSON.stringify([vertical])],
-    )
-  ).rows[0]?.id;
+
+// 5. Contractor & Technician
+let existingContractor = await db.query.contractors.findFirst({
+  where: eq(contractors.name, "ABC Heating & Cooling"),
+});
+if (!existingContractor) {
+  const [inserted] = await db
+    .insert(contractors)
+    .values({
+      ownerUserId: contractorOwner,
+      name: "ABC Heating & Cooling",
+      status: "VERIFIED",
+      ratingBps: 490,
+      completionRateBps: 9700,
+      avgResponseMinutes: 18,
+      serviceAreas: ["Toronto"],
+      verticalIds: [vertical],
+    })
+    .returning();
+  existingContractor = inserted;
+}
+const contractor = existingContractor?.id;
 if (!contractor) throw new Error("Missing contractor");
-const existingTechnician = await pool.query<{ id: string }>(
-  "SELECT id FROM technicians WHERE user_id=$1",
-  [technicianUser],
-);
-const technician =
-  existingTechnician.rows[0]?.id ??
-  (
-    await pool.query<{ id: string }>(
-      "INSERT INTO technicians(user_id,contractor_id,display_name,active,emergency_available,latitude,longitude) VALUES($1,$2,'John S.',true,true,43.6532,-79.3832) RETURNING id",
-      [technicianUser, contractor],
-    )
-  ).rows[0]?.id;
+
+let existingTechnician = await db.query.technicians.findFirst({
+  where: eq(technicians.userId, technicianUser),
+});
+if (!existingTechnician) {
+  const [inserted] = await db
+    .insert(technicians)
+    .values({
+      userId: technicianUser,
+      contractorId: contractor,
+      displayName: "John S.",
+      active: true,
+      emergencyAvailable: true,
+      latitude: "43.6532",
+      longitude: "-79.3832",
+    })
+    .returning();
+  existingTechnician = inserted;
+}
+const technician = existingTechnician?.id;
 if (!technician) throw new Error("Missing technician");
-await pool.query(
-  "INSERT INTO credentials(technician_id,code,geography,status,expiry_date,verified_at) SELECT $1,'HVAC_LICENSE','ON','VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE technician_id=$1 AND code='HVAC_LICENSE')",
-  [technician],
-);
-await pool.query(
-  "INSERT INTO payment_rules(vertical_id,min_amount_cents,max_amount_cents,rule) SELECT $1,0,NULL,$2 WHERE NOT EXISTS (SELECT 1 FROM payment_rules WHERE vertical_id=$1 AND min_amount_cents=0 AND max_amount_cents IS NULL)",
-  [
-    vertical,
-    JSON.stringify({
+
+// 6. Technician Credentials (with fail-closed authoritative regulator verification)
+const existingCred = await db.query.credentials.findFirst({
+  where: and(eq(credentials.technicianId, technician), eq(credentials.code, "HVAC_LICENSE")),
+});
+if (!existingCred) {
+  const expiry = new Date();
+  expiry.setFullYear(expiry.getFullYear() + 1);
+  await db.insert(credentials).values({
+    technicianId: technician,
+    code: "HVAC_LICENSE",
+    geography: "ON",
+    status: "VERIFIED",
+    verificationSource: "REGULATOR_API",
+    regulatorReference: "TSSA-G2-883921",
+    checkedAt: new Date(),
+    verifiedAt: new Date(),
+    expiryDate: expiry.toISOString().split("T")[0]!,
+  });
+}
+
+// 7. Payment Rules
+const existingPaymentRule = await db.query.paymentRules.findFirst({
+  where: and(eq(paymentRules.verticalId, vertical), eq(paymentRules.minAmountCents, 0)),
+});
+if (!existingPaymentRule) {
+  await db.insert(paymentRules).values({
+    verticalId: vertical,
+    minAmountCents: 0,
+    maxAmountCents: null,
+    rule: {
       milestones: [
         {
           trigger: "QUOTE_APPROVED",
@@ -228,9 +399,11 @@ await pool.query(
           evidenceRequired: true,
         },
       ],
-    }),
-  ],
-);
+    },
+  });
+}
+
+// 8. Fixtures for dispatch and discovery testing
 for (const fixture of [
   {
     ownerEmail: "north-owner@example.test",
@@ -247,48 +420,81 @@ for (const fixture of [
     rating: 470,
   },
 ] as const) {
-  const owner = await user(
+  const owner = await seedUser(
     fixture.ownerEmail,
     `${fixture.company} Owner`,
     "CONTRACTOR_OWNER",
   );
-  const techUser = await user(
+  const techUser = await seedUser(
     fixture.technicianEmail,
     fixture.technicianName,
     "TECHNICIAN",
   );
-  const existingCompany = await pool.query<{ id: string }>(
-    "SELECT id FROM contractors WHERE name=$1 LIMIT 1",
-    [fixture.company],
-  );
-  const companyId =
-    existingCompany.rows[0]?.id ??
-    (
-      await pool.query<{ id: string }>(
-        "INSERT INTO contractors(owner_user_id,name,status,rating_bps,completion_rate_bps,avg_response_minutes,service_areas,vertical_ids) VALUES($1,$2,'VERIFIED',$3,9600,25,'[\"Toronto\"]',$4) RETURNING id",
-        [owner, fixture.company, fixture.rating, JSON.stringify([vertical])],
-      )
-    ).rows[0]?.id;
+
+  let comp = await db.query.contractors.findFirst({
+    where: eq(contractors.name, fixture.company),
+  });
+  if (!comp) {
+    const [inserted] = await db
+      .insert(contractors)
+      .values({
+        ownerUserId: owner,
+        name: fixture.company,
+        status: "VERIFIED",
+        ratingBps: fixture.rating,
+        completionRateBps: 9600,
+        avgResponseMinutes: 25,
+        serviceAreas: ["Toronto"],
+        verticalIds: [vertical],
+      })
+      .returning();
+    comp = inserted;
+  }
+  const companyId = comp?.id;
   if (!companyId) throw new Error("Missing fixture contractor");
-  const existingTech = await pool.query<{ id: string }>(
-    "SELECT id FROM technicians WHERE user_id=$1",
-    [techUser],
-  );
-  const techId =
-    existingTech.rows[0]?.id ??
-    (
-      await pool.query<{ id: string }>(
-        "INSERT INTO technicians(user_id,contractor_id,display_name,active,emergency_available,latitude,longitude) VALUES($1,$2,$3,true,true,43.65,-79.39) RETURNING id",
-        [techUser, companyId, fixture.technicianName],
-      )
-    ).rows[0]?.id;
+
+  let t = await db.query.technicians.findFirst({
+    where: eq(technicians.userId, techUser),
+  });
+  if (!t) {
+    const [inserted] = await db
+      .insert(technicians)
+      .values({
+        userId: techUser,
+        contractorId: companyId,
+        displayName: fixture.technicianName,
+        active: true,
+        emergencyAvailable: true,
+        latitude: "43.65",
+        longitude: "-79.39",
+      })
+      .returning();
+    t = inserted;
+  }
+  const techId = t?.id;
   if (!techId) throw new Error("Missing fixture technician");
-  await pool.query(
-    "INSERT INTO credentials(technician_id,code,geography,status,expiry_date,verified_at) SELECT $1,'HVAC_LICENSE','ON','VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE technician_id=$1 AND code='HVAC_LICENSE')",
-    [techId],
-  );
+
+  const existingFixtureCred = await db.query.credentials.findFirst({
+    where: and(eq(credentials.technicianId, techId), eq(credentials.code, "HVAC_LICENSE")),
+  });
+  if (!existingFixtureCred) {
+    const expiry = new Date();
+    expiry.setFullYear(expiry.getFullYear() + 1);
+    await db.insert(credentials).values({
+      technicianId: techId,
+      code: "HVAC_LICENSE",
+      geography: "ON",
+      status: "VERIFIED",
+      verificationSource: "REGULATOR_API",
+      regulatorReference: `TSSA-${techId.slice(0, 8)}`,
+      checkedAt: new Date(),
+      verifiedAt: new Date(),
+      expiryDate: expiry.toISOString().split("T")[0]!,
+    });
+  }
 }
-console.log("Seeded. Demo password: DemoPassword!2026");
+
+console.log("Seeded with Drizzle ORM. Demo password: DemoPassword!2026");
 console.log({
   customer: "customer@example.test",
   dispatcher: "dispatch@example.test",
@@ -300,4 +506,5 @@ console.log({
   technicianId: technician,
   dispatcherId: dispatcher,
 });
+
 await pool.end();

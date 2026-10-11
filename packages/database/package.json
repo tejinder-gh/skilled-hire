@@ -15,10 +15,12 @@
     "@marketplace/auth": "workspace:*",
     "@marketplace/vertical-engine": "workspace:*",
     "dotenv": "^16.6.0",
+    "drizzle-orm": "^0.45.4",
     "pg": "^8.16.0"
   },
   "devDependencies": {
     "@types/pg": "^8.15.0",
+    "drizzle-kit": "^0.31.11",
     "vitest": "^3.2.0"
   }
 }
