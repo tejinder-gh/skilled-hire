@@ -1,7 +1,26 @@
 {
   "name": "@marketplace/customer-web",
   "private": true,
-  "scripts": { "dev": "next dev --port 3000", "build": "next build", "typecheck": "tsc --noEmit", "lint": "tsc --noEmit", "test": "vitest run" },
-  "dependencies": { "@marketplace/contracts": "workspace:*", "@marketplace/ui": "workspace:*", "next": "^15.4.0", "react": "^19.1.0", "react-dom": "^19.1.0" },
-  "devDependencies": { "@types/node": "^24.0.0", "@types/react": "^19.1.0", "@types/react-dom": "^19.1.0", "typescript": "^5.8.0", "vitest": "^3.2.0" }
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@marketplace/contracts": "workspace:*",
+    "@marketplace/ui": "workspace:*",
+    "@marketplace/vertical-engine": "workspace:*",
+    "next": "^15.4.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
 }
