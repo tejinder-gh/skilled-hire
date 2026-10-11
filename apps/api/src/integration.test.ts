@@ -465,7 +465,9 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(resolveRes.json<{ status: string }>().status).toBe("RESOLVED");
 
     // 6. Admin issues refund on paid transaction
-    const transaction = await pool.query<{ id: string; amount_cents: string }>("SELECT id, amount_cents FROM payment_transactions WHERE status='PAID' LIMIT 1");
+    const transaction = await pool.query<{ id: string; amount_cents: string }>(
+      "SELECT pt.id, pt.amount_cents FROM payment_transactions pt LEFT JOIN refunds r ON r.transaction_id=pt.id AND r.status='REFUNDED' WHERE pt.status='PAID' GROUP BY pt.id HAVING (pt.amount_cents - COALESCE(sum(r.amount_cents), 0)) >= 1000 ORDER BY pt.created_at DESC LIMIT 1"
+    );
     const tx = transaction.rows[0];
     if (!tx) throw new Error("Missing paid transaction");
 
