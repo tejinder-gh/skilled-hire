@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { CANONICAL_TRADE_POLICIES, evaluateRegulatoryEligibility } from "./regulatory.js";
 
 describe("Regulatory Eligibility Policy Engine (Ontario)", () => {
-  const electricalPolicy = CANONICAL_TRADE_POLICIES.find((p) => p.verticalSlug === "electrical")!;
-  const hvacPolicy = CANONICAL_TRADE_POLICIES.find((p) => p.verticalSlug === "hvac")!;
+  const electricalPolicy = CANONICAL_TRADE_POLICIES.find((p: (typeof CANONICAL_TRADE_POLICIES)[number]) => p.verticalSlug === "electrical")!;
+  const hvacPolicy = CANONICAL_TRADE_POLICIES.find((p: (typeof CANONICAL_TRADE_POLICIES)[number]) => p.verticalSlug === "hvac")!;
 
   it("verifies compliant ECRA/ESA electrical contractor and 309A certified electrician", () => {
     const result = evaluateRegulatoryEligibility({
@@ -98,7 +98,7 @@ describe("Regulatory Eligibility Policy Engine (Ontario)", () => {
     expect(result.eligible).toBe(false);
     expect(result.failClosed).toBe(true);
     expect(result.contractorDeficiencies).toContain("ON_ESA_LEC_CONTRACTOR");
-    expect(result.reasons.some((r) => r.includes("ON_ESA_LEC_CONTRACTOR"))).toBe(true);
+    expect(result.reasons.some((r: string) => r.includes("ON_ESA_LEC_CONTRACTOR"))).toBe(true);
   });
 
   it("fails closed when document is SELF_UPLOAD without authoritative audit/regulator verification", () => {
@@ -119,7 +119,7 @@ describe("Regulatory Eligibility Policy Engine (Ontario)", () => {
     expect(result.eligible).toBe(false);
     expect(result.failClosed).toBe(true);
     expect(result.contractorDeficiencies).toContain("ON_TSSA_CONTRACTOR_REG");
-    expect(result.reasons.some((r) => r.includes("self-uploaded"))).toBe(true);
+    expect(result.reasons.some((r: string) => r.includes("self-uploaded"))).toBe(true);
   });
 
   it("fails closed when certificate is expired", () => {
@@ -144,6 +144,6 @@ describe("Regulatory Eligibility Policy Engine (Ontario)", () => {
     expect(result.eligible).toBe(false);
     expect(result.failClosed).toBe(true);
     expect(result.contractorDeficiencies).toContain("ON_ESA_LEC_CONTRACTOR");
-    expect(result.reasons.some((r) => r.includes("expired"))).toBe(true);
+    expect(result.reasons.some((r: string) => r.includes("expired"))).toBe(true);
   });
 });
