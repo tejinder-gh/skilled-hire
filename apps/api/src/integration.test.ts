@@ -2236,6 +2236,16 @@ describeSuite("Skilled Hire lifecycle", () => {
         expiryDate: futureDate,
         checkedAt: new Date(),
       },
+      {
+        technicianId: tech!.id,
+        code: "ELECTRICAL_LICENSE",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "LIC-ELEC-88291",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
     ]);
 
     // Ensure contractor has approved capability assessment for this variant
