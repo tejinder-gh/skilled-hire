@@ -475,7 +475,7 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
         null,
         { newServiceRequestId: result.id },
       );
-      return reply.code(201).send({ serviceRequestId: result.id });
+      return reply.code(201).send({ id: result.id, status: "SUBMITTED" });
     },
   );
 };

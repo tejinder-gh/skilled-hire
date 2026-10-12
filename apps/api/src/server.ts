@@ -32,11 +32,11 @@ await app.register(cors, {
   credentials: true,
 });
 
-// Register all modular routes
-await registerRoutes(app);
-
 // Global Error Handler
 app.setErrorHandler(errorHandler);
+
+// Register all modular routes
+await registerRoutes(app);
 
 export { app };
 
