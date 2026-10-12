@@ -17,6 +17,7 @@ import {
   credentials,
   paymentRules,
   tradeRegulatoryPolicies,
+  contractorCapabilityAssessments,
 } from "./index.js";
 
 const password = await hashPassword("DemoPassword!2026");
@@ -65,7 +66,7 @@ async function seedUser(
 
 const customer = await seedUser("customer@example.test", "Avery Homeowner", "CUSTOMER");
 const dispatcher = await seedUser("dispatch@example.test", "Morgan Dispatch", "DISPATCHER");
-await seedUser("admin@example.test", "Platform Admin", "SUPER_ADMIN");
+const admin = await seedUser("admin@example.test", "Platform Admin", "SUPER_ADMIN");
 const contractorOwner = await seedUser("owner@example.test", "Jordan Owner", "CONTRACTOR_OWNER");
 const technicianUser = await seedUser("technician@example.test", "John Service", "TECHNICIAN");
 
@@ -397,6 +398,32 @@ if (!existingPaymentRule) {
   });
 }
 
+// 7b. Contractor Technical Capability Assessment (Ticket #56 / #57)
+const existingCapability = await db.query.contractorCapabilityAssessments.findFirst({
+  where: and(
+    eq(contractorCapabilityAssessments.contractorId, contractor),
+    eq(contractorCapabilityAssessments.issueTypeId, issue),
+    eq(contractorCapabilityAssessments.geography, "ON"),
+  ),
+});
+if (!existingCapability) {
+  const expiry = new Date();
+  expiry.setFullYear(expiry.getFullYear() + 2);
+  await db.insert(contractorCapabilityAssessments).values({
+    contractorId: contractor,
+    issueTypeId: issue,
+    geography: "ON",
+    status: "APPROVED",
+    complexityTier: "TIER_1_BASIC",
+    yearsExperience: 10,
+    maxJobValueCents: 500000,
+    assessedByUserId: admin,
+    assessedAt: new Date(),
+    validUntil: expiry,
+    decisionNotes: "Verified HVAC technical competency during platform onboarding",
+  });
+}
+
 // 8. Fixtures for dispatch and discovery testing
 for (const fixture of [
   {
@@ -484,6 +511,31 @@ for (const fixture of [
       checkedAt: new Date(),
       verifiedAt: new Date(),
       expiryDate: expiry.toISOString().split("T")[0]!,
+    });
+  }
+
+  const existingFixtureCap = await db.query.contractorCapabilityAssessments.findFirst({
+    where: and(
+      eq(contractorCapabilityAssessments.contractorId, companyId),
+      eq(contractorCapabilityAssessments.issueTypeId, issue),
+      eq(contractorCapabilityAssessments.geography, "ON"),
+    ),
+  });
+  if (!existingFixtureCap) {
+    const expiry = new Date();
+    expiry.setFullYear(expiry.getFullYear() + 2);
+    await db.insert(contractorCapabilityAssessments).values({
+      contractorId: companyId,
+      issueTypeId: issue,
+      geography: "ON",
+      status: "APPROVED",
+      complexityTier: "TIER_1_BASIC",
+      yearsExperience: 5,
+      maxJobValueCents: 500000,
+      assessedByUserId: admin,
+      assessedAt: new Date(),
+      validUntil: expiry,
+      decisionNotes: "Fixture contractor capability verified",
     });
   }
 }
