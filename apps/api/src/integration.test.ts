@@ -3146,6 +3146,148 @@ describeSuite("Skilled Hire lifecycle", () => {
       .limit(1);
     expect(prop).toBeDefined();
 
+    // Ensure contractor is associated with electrical vertical and active
+    const vIds = (cont!.verticalIds as string[]) ?? [];
+    await db
+      .update(contractors)
+      .set({
+        verticalIds: vIds.includes(elecVertical!.id) ? vIds : [...vIds, elecVertical!.id],
+        safetyStatus: "ACTIVE",
+        suspendedAt: null,
+        suspensionReason: null,
+      })
+      .where(eq(contractors.id, cont!.id));
+
+    await db
+      .update(technicians)
+      .set({
+        safetyStatus: "ACTIVE",
+        suspendedAt: null,
+        suspensionReason: null,
+      })
+      .where(eq(technicians.id, tech!.id));
+
+    await db
+      .delete(contractorSafetyQuarantines)
+      .where(
+        or(
+          eq(contractorSafetyQuarantines.contractorId, cont!.id),
+          eq(contractorSafetyQuarantines.technicianId, tech!.id),
+        ),
+      );
+
+    await db
+      .delete(credentials)
+      .where(
+        and(
+          eq(credentials.contractorId, cont!.id),
+          inArray(credentials.code, [
+            "ON_ESA_LEC_CONTRACTOR",
+            "COMMERCIAL_GENERAL_LIABILITY",
+          ]),
+        ),
+      );
+
+    await db
+      .delete(credentials)
+      .where(
+        and(
+          eq(credentials.technicianId, tech!.id),
+          inArray(credentials.code, [
+            "ON_SKILLED_TRADES_309A",
+            "CRIMINAL_BACKGROUND_CHECK",
+            "ELECTRICAL_LICENSE",
+          ]),
+        ),
+      );
+
+    const futureDate = "2028-12-31";
+    await db.insert(credentials).values([
+      {
+        contractorId: cont!.id,
+        code: "ON_ESA_LEC_CONTRACTOR",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "ECRA-ESA-7001122",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: cont!.id,
+        code: "COMMERCIAL_GENERAL_LIABILITY",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "CGL-POL-2026-99",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+    ]);
+
+    await db.insert(credentials).values([
+      {
+        technicianId: tech!.id,
+        code: "ON_SKILLED_TRADES_309A",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "309A-LIC-88291",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: tech!.id,
+        code: "CRIMINAL_BACKGROUND_CHECK",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "BG-CERT-2026-118",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: tech!.id,
+        code: "ELECTRICAL_LICENSE",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "LIC-ELEC-88291",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+    ]);
+
+    await db
+      .delete(contractorCapabilityAssessments)
+      .where(
+        and(
+          eq(contractorCapabilityAssessments.contractorId, cont!.id),
+          eq(contractorCapabilityAssessments.issueTypeId, elecIssue!.id),
+        ),
+      );
+
+    const [assessorUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .innerJoin(userRoles, eq(userRoles.userId, users.id))
+      .where(eq(userRoles.role, "ADMIN"))
+      .limit(1);
+
+    await db.insert(contractorCapabilityAssessments).values({
+      contractorId: cont!.id,
+      issueTypeId: elecIssue!.id,
+      geography: "ON",
+      status: "APPROVED",
+      complexityTier: "TIER_3_ADVANCED",
+      yearsExperience: 8,
+      maxJobValueCents: 1000000,
+      assessedByUserId: assessorUser?.id ?? tech!.userId,
+      assessedAt: new Date(),
+      validUntil: new Date("2028-12-31T00:00:00Z"),
+      decisionNotes: "Verified technical competency and certifications",
+    });
+
     // 2. Customer creates service request for 200A panel upgrade
     const createReq = await app.inject({
       method: "POST",
