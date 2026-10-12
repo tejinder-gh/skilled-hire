@@ -34,7 +34,13 @@ const enabled =
   (process.env.MARKETPLACE_INTEGRATION === "1" ||
     process.env.SKILLED_HIRE_INTEGRATION === "1") &&
   Boolean(process.env.DATABASE_URL);
-describe.runIf(enabled)("Skilled Hire lifecycle", () => {
+const describeSuite =
+  typeof (describe as any).runIf === "function"
+    ? (describe as any).runIf(enabled)
+    : enabled
+      ? describe
+      : describe.skip;
+describeSuite("Skilled Hire lifecycle", () => {
   let app: Awaited<typeof import("./server.js")>["app"];
   let custUser: { id: string };
   const tokens = new Map<string, string>();
