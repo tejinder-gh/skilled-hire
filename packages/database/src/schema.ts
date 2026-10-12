@@ -120,8 +120,12 @@ export const users = pgTable("users", {
   displayName: text("display_name").notNull(),
   mfaRequired: boolean("mfa_required").notNull().default(false),
   sessionVersion: integer("session_version").notNull().default(1),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
@@ -150,8 +154,12 @@ export const verticals = pgTable("verticals", {
   displayOrder: integer("display_order").notNull().default(100),
   config: jsonb("config").notNull().default({}),
   active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const serviceCategories = pgTable(
@@ -190,13 +198,23 @@ export const issueTypes = pgTable(
     scopeSummary: text("scope_summary"),
     riskTier: text("risk_tier").notNull().default("MODERATE"),
     pricingType: text("pricing_type").notNull().default("HOURLY"),
-    basePriceCents: bigint("base_price_cents", { mode: "number" }).notNull().default(0),
-    defaultDurationMinutes: integer("default_duration_minutes").notNull().default(120),
+    basePriceCents: bigint("base_price_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    defaultDurationMinutes: integer("default_duration_minutes")
+      .notNull()
+      .default(120),
     requiresPermit: boolean("requires_permit").notNull().default(false),
     permitType: text("permit_type"),
-    requiredEvidence: jsonb("required_evidence").notNull().default(["before_photo", "after_photo"]),
-    defaultWarrantyMonths: integer("default_warranty_months").notNull().default(12),
-    geographicRestrictions: jsonb("geographic_restrictions").notNull().default(["ON"]),
+    requiredEvidence: jsonb("required_evidence")
+      .notNull()
+      .default(["before_photo", "after_photo"]),
+    defaultWarrantyMonths: integer("default_warranty_months")
+      .notNull()
+      .default(12),
+    geographicRestrictions: jsonb("geographic_restrictions")
+      .notNull()
+      .default(["ON"]),
     tags: jsonb("tags").notNull().default([]),
     equipmentFields: jsonb("equipment_fields").notNull().default([]),
     launchReady: boolean("launch_ready").notNull().default(false),
@@ -204,10 +222,7 @@ export const issueTypes = pgTable(
     active: boolean("active").notNull().default(true),
   },
   (table) => [
-    unique("issue_types_category_id_slug_key").on(
-      table.categoryId,
-      table.slug,
-    ),
+    unique("issue_types_category_id_slug_key").on(table.categoryId, table.slug),
   ],
 );
 
@@ -224,8 +239,12 @@ export const properties = pgTable("properties", {
   postalCode: text("postal_code").notNull(),
   latitude: numeric("latitude", { precision: 9, scale: 6 }),
   longitude: numeric("longitude", { precision: 9, scale: 6 }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
@@ -242,8 +261,12 @@ export const contractors = pgTable("contractors", {
   avgResponseMinutes: integer("avg_response_minutes").notNull().default(1440),
   serviceAreas: jsonb("service_areas").notNull().default([]),
   verticalIds: jsonb("vertical_ids").notNull().default([]),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const technicians = pgTable("technicians", {
@@ -261,8 +284,12 @@ export const technicians = pgTable("technicians", {
   workload: integer("workload").notNull().default(0),
   latitude: numeric("latitude", { precision: 9, scale: 6 }),
   longitude: numeric("longitude", { precision: 9, scale: 6 }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const credentials = pgTable("credentials", {
@@ -272,7 +299,9 @@ export const credentials = pgTable("credentials", {
   code: text("code").notNull(),
   geography: text("geography").notNull().default("*"),
   status: verificationStatusEnum("status").notNull().default("PENDING"),
-  verificationSource: text("verification_source").notNull().default("SELF_UPLOAD"),
+  verificationSource: text("verification_source")
+    .notNull()
+    .default("SELF_UPLOAD"),
   verifiedByUserId: uuid("verified_by_user_id").references(() => users.id),
   regulatorReference: text("regulator_reference"),
   checkedAt: timestamp("checked_at", { withTimezone: true }),
@@ -281,7 +310,9 @@ export const credentials = pgTable("credentials", {
   expiryDate: date("expiry_date"),
   verifiedAt: timestamp("verified_at", { withTimezone: true }),
   documentKey: text("document_key"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const availabilityBlocks = pgTable("availability_blocks", {
@@ -319,8 +350,12 @@ export const serviceRequests = pgTable("service_requests", {
   preferredStartsAt: timestamp("preferred_starts_at", { withTimezone: true }),
   preferredEndsAt: timestamp("preferred_ends_at", { withTimezone: true }),
   attachmentKeys: jsonb("attachment_keys").notNull().default([]),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const jobs = pgTable("jobs", {
@@ -336,10 +371,16 @@ export const jobs = pgTable("jobs", {
     .notNull()
     .references(() => technicians.id),
   status: requestStatusEnum("status").notNull(),
-  assignedAt: timestamp("assigned_at", { withTimezone: true }).notNull().defaultNow(),
+  assignedAt: timestamp("assigned_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 // 7. Quotes & Payment Schedules
@@ -350,17 +391,29 @@ export const quotes = pgTable("quotes", {
     .references(() => jobs.id),
   version: integer("version").notNull(),
   status: quoteStatusEnum("status").notNull().default("DRAFT"),
-  contractorSubtotalCents: bigint("contractor_subtotal_cents", { mode: "number" }).notNull().default(0),
-  platformFeeCents: bigint("platform_fee_cents", { mode: "number" }).notNull().default(0),
-  discountCents: bigint("discount_cents", { mode: "number" }).notNull().default(0),
+  contractorSubtotalCents: bigint("contractor_subtotal_cents", {
+    mode: "number",
+  })
+    .notNull()
+    .default(0),
+  platformFeeCents: bigint("platform_fee_cents", { mode: "number" })
+    .notNull()
+    .default(0),
+  discountCents: bigint("discount_cents", { mode: "number" })
+    .notNull()
+    .default(0),
   taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
-  customerTotalCents: bigint("customer_total_cents", { mode: "number" }).notNull().default(0),
+  customerTotalCents: bigint("customer_total_cents", { mode: "number" })
+    .notNull()
+    .default(0),
   currency: char("currency", { length: 3 }).notNull().default("CAD"),
   notes: text("notes"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
   acceptedBy: uuid("accepted_by").references(() => users.id),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const quoteItems = pgTable("quote_items", {
@@ -375,7 +428,9 @@ export const quoteItems = pgTable("quote_items", {
   unitPriceCents: bigint("unit_price_cents", { mode: "number" }).notNull(),
   subtotalCents: bigint("subtotal_cents", { mode: "number" }).notNull(),
   materialMetadata: jsonb("material_metadata"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const paymentRules = pgTable("payment_rules", {
@@ -397,7 +452,9 @@ export const paymentSchedules = pgTable("payment_schedules", {
     .references(() => quotes.id),
   totalCents: bigint("total_cents", { mode: "number" }).notNull(),
   currency: char("currency", { length: 3 }).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const paymentMilestones = pgTable("payment_milestones", {
@@ -424,7 +481,9 @@ export const paymentTransactions = pgTable("payment_transactions", {
   amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
   currency: char("currency", { length: 3 }).notNull(),
   status: paymentStatusEnum("status").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 // 8. Service Records, Reviews, Audits
@@ -443,7 +502,9 @@ export const serviceRecords = pgTable("service_records", {
   summary: text("summary").notNull(),
   equipment: jsonb("equipment").notNull().default({}),
   completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const reviews = pgTable("reviews", {
@@ -461,7 +522,9 @@ export const reviews = pgTable("reviews", {
   timeliness: smallint("timeliness"),
   communication: smallint("communication"),
   comment: text("comment"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const auditEvents = pgTable("audit_events", {
@@ -474,7 +537,9 @@ export const auditEvents = pgTable("audit_events", {
   beforeState: jsonb("before_state"),
   afterState: jsonb("after_state"),
   metadata: jsonb("metadata").notNull().default({}),
-  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const processedWebhooks = pgTable(
@@ -482,7 +547,9 @@ export const processedWebhooks = pgTable(
   {
     provider: text("provider").notNull(),
     eventId: text("event_id").notNull(),
-    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.provider, table.eventId] })],
 );
@@ -494,7 +561,9 @@ export const idempotencyKeys = pgTable("idempotency_keys", {
     .references(() => users.id),
   requestHash: text("request_hash").notNull(),
   response: jsonb("response"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const riskEvents = pgTable("risk_events", {
@@ -505,7 +574,9 @@ export const riskEvents = pgTable("risk_events", {
   jobId: uuid("job_id").references(() => jobs.id),
   score: integer("score").notNull().default(0),
   metadata: jsonb("metadata").notNull().default({}),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   reviewedBy: uuid("reviewed_by").references(() => users.id),
 });
@@ -522,22 +593,32 @@ export const propertySystems = pgTable("property_systems", {
   name: text("name").notNull(),
   metadata: jsonb("metadata").notNull().default({}),
   installedOn: date("installed_on"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 });
 
 export const warranties = pgTable("warranties", {
   id: uuid("id").primaryKey().defaultRandom(),
-  propertySystemId: uuid("property_system_id").references(() => propertySystems.id),
-  serviceRecordId: uuid("service_record_id").references(() => serviceRecords.id),
+  propertySystemId: uuid("property_system_id").references(
+    () => propertySystems.id,
+  ),
+  serviceRecordId: uuid("service_record_id").references(
+    () => serviceRecords.id,
+  ),
   providerName: text("provider_name").notNull(),
   warrantyType: text("warranty_type").notNull(),
   startsOn: date("starts_on"),
   expiresOn: date("expires_on"),
   termsUrl: text("terms_url"),
   status: text("status").notNull().default("ACTIVE"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const changeOrders = pgTable("change_orders", {
@@ -550,15 +631,25 @@ export const changeOrders = pgTable("change_orders", {
   reason: text("reason").notNull(),
   explanation: text("explanation").notNull(),
   attachmentKeys: jsonb("attachment_keys").notNull().default([]),
-  contractorSubtotalCents: bigint("contractor_subtotal_cents", { mode: "number" }).notNull().default(0),
-  platformFeeCents: bigint("platform_fee_cents", { mode: "number" }).notNull().default(0),
+  contractorSubtotalCents: bigint("contractor_subtotal_cents", {
+    mode: "number",
+  })
+    .notNull()
+    .default(0),
+  platformFeeCents: bigint("platform_fee_cents", { mode: "number" })
+    .notNull()
+    .default(0),
   taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
-  customerTotalCents: bigint("customer_total_cents", { mode: "number" }).notNull().default(0),
+  customerTotalCents: bigint("customer_total_cents", { mode: "number" })
+    .notNull()
+    .default(0),
   currency: char("currency", { length: 3 }).notNull().default("CAD"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
   acceptedBy: uuid("accepted_by").references(() => users.id),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const changeOrderItems = pgTable("change_order_items", {
@@ -573,7 +664,9 @@ export const changeOrderItems = pgTable("change_order_items", {
   unitPriceCents: bigint("unit_price_cents", { mode: "number" }).notNull(),
   subtotalCents: bigint("subtotal_cents", { mode: "number" }).notNull(),
   materialMetadata: jsonb("material_metadata"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const invoices = pgTable("invoices", {
@@ -588,9 +681,13 @@ export const invoices = pgTable("invoices", {
   taxCents: bigint("tax_cents", { mode: "number" }).notNull(),
   totalCents: bigint("total_cents", { mode: "number" }).notNull(),
   currency: char("currency", { length: 3 }).notNull(),
-  issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+  issuedAt: timestamp("issued_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   pdfKey: text("pdf_key"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const supportTickets = pgTable("support_tickets", {
@@ -601,8 +698,12 @@ export const supportTickets = pgTable("support_tickets", {
   subject: text("subject").notNull(),
   description: text("description").notNull(),
   status: supportStatusEnum("status").notNull().default("OPEN"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
 });
 
@@ -626,8 +727,12 @@ export const disputes = pgTable("disputes", {
   refundDecisionCents: bigint("refund_decision_cents", { mode: "number" }),
   resolvedBy: uuid("resolved_by").references(() => users.id),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const disputeEvidence = pgTable("dispute_evidence", {
@@ -640,7 +745,9 @@ export const disputeEvidence = pgTable("dispute_evidence", {
     .references(() => users.id),
   attachmentKey: text("attachment_key").notNull(),
   note: text("note"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const notifications = pgTable("notifications", {
@@ -655,7 +762,9 @@ export const notifications = pgTable("notifications", {
   payload: jsonb("payload").notNull().default({}),
   readAt: timestamp("read_at", { withTimezone: true }),
   sentAt: timestamp("sent_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const domainEvents = pgTable("domain_events", {
@@ -664,30 +773,39 @@ export const domainEvents = pgTable("domain_events", {
   aggregateId: uuid("aggregate_id").notNull(),
   eventType: text("event_type").notNull(),
   payload: jsonb("payload").notNull().default({}),
-  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   attempts: integer("attempts").notNull().default(0),
 });
 
-export const customerContractorRelationships = pgTable("customer_contractor_relationships", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  customerId: uuid("customer_id")
-    .notNull()
-    .references(() => users.id),
-  contractorId: uuid("contractor_id")
-    .notNull()
-    .references(() => contractors.id),
-  acquisitionSource: text("acquisition_source").notNull(),
-  firstPlatformJobId: uuid("first_platform_job_id")
-    .notNull()
-    .references(() => jobs.id),
-  lastPlatformJobId: uuid("last_platform_job_id")
-    .notNull()
-    .references(() => jobs.id),
-  repeatJobCount: integer("repeat_job_count").notNull().default(0),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const customerContractorRelationships = pgTable(
+  "customer_contractor_relationships",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => users.id),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id),
+    acquisitionSource: text("acquisition_source").notNull(),
+    firstPlatformJobId: uuid("first_platform_job_id")
+      .notNull()
+      .references(() => jobs.id),
+    lastPlatformJobId: uuid("last_platform_job_id")
+      .notNull()
+      .references(() => jobs.id),
+    repeatJobCount: integer("repeat_job_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
 
 export const feeRules = pgTable("fee_rules", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -696,7 +814,9 @@ export const feeRules = pgTable("fee_rules", {
   relationshipStage: text("relationship_stage").notNull(),
   takeRateBps: integer("take_rate_bps").notNull(),
   active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const refunds = pgTable("refunds", {
@@ -711,7 +831,9 @@ export const refunds = pgTable("refunds", {
   createdBy: uuid("created_by")
     .notNull()
     .references(() => users.id),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const payouts = pgTable("payouts", {
@@ -727,7 +849,9 @@ export const payouts = pgTable("payouts", {
   status: text("status").notNull(),
   eligibleAt: timestamp("eligible_at", { withTimezone: true }),
   releasedAt: timestamp("released_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 // 10. Compliance Standards & Evaluations
@@ -737,7 +861,9 @@ export const credentialGroups = pgTable("credential_groups", {
   description: text("description").notNull(),
   displayOrder: integer("display_order").notNull(),
   icon: text("icon").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const complianceStandards = pgTable("compliance_standards", {
@@ -757,7 +883,9 @@ export const complianceStandards = pgTable("compliance_standards", {
   verificationMethod: text("verification_method").notNull(),
   validityPeriodMonths: integer("validity_period_months"),
   active: boolean("active").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const complianceEvaluations = pgTable("compliance_evaluations", {
@@ -770,7 +898,9 @@ export const complianceEvaluations = pgTable("compliance_evaluations", {
   overallStatus: text("overall_status").notNull(),
   scoreBps: integer("score_bps").notNull(),
   summary: jsonb("summary").notNull().default({}),
-  evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
+  evaluatedAt: timestamp("evaluated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 // 11. Versioned Trade Regulatory Policies Matrix
@@ -783,16 +913,24 @@ export const tradeRegulatoryPolicies = pgTable(
     variantSlug: text("variant_slug").notNull().default("*"),
     geography: text("geography").notNull().default("ON"),
     policyVersion: integer("policy_version").notNull().default(1),
-    contractorMandatoryCodes: jsonb("contractor_mandatory_codes").notNull().default([]),
-    technicianMandatoryCodes: jsonb("technician_mandatory_codes").notNull().default([]),
+    contractorMandatoryCodes: jsonb("contractor_mandatory_codes")
+      .notNull()
+      .default([]),
+    technicianMandatoryCodes: jsonb("technician_mandatory_codes")
+      .notNull()
+      .default([]),
     apprenticeEligible: boolean("apprentice_eligible").notNull().default(false),
     supervisorRatio: text("supervisor_ratio").default("1:1"),
     permitRequired: boolean("permit_required").notNull().default(false),
     inspectionAuthority: text("inspection_authority"),
     legalAuthorityDisclaimer: text("legal_authority_disclaimer").notNull(),
     active: boolean("active").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     unique("trade_regulatory_policies_version_uniq").on(
@@ -805,24 +943,74 @@ export const tradeRegulatoryPolicies = pgTable(
   ],
 );
 
-// 12. Relational mappings
+// 12. Contractor Technical Capability Assessments & Scoped Approval
+export const contractorCapabilityAssessments = pgTable(
+  "contractor_capability_assessments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "cascade" }),
+    issueTypeId: uuid("issue_type_id")
+      .notNull()
+      .references(() => issueTypes.id, { onDelete: "restrict" }),
+    geography: text("geography").notNull().default("ON"),
+    status: text("status").notNull().default("SUBMITTED"),
+    complexityTier: text("complexity_tier").notNull().default("TIER_1_BASIC"),
+    yearsExperience: integer("years_experience").notNull().default(0),
+    maxJobValueCents: bigint("max_job_value_cents", { mode: "number" })
+      .notNull()
+      .default(250000),
+    workSamples: jsonb("work_samples").notNull().default([]),
+    references: jsonb("references").notNull().default([]),
+    toolsEquipment: jsonb("tools_equipment").notNull().default([]),
+    supervisedRequirements: jsonb("supervised_requirements")
+      .notNull()
+      .default({}),
+    denialReasons: jsonb("denial_reasons").notNull().default([]),
+    assessedByUserId: uuid("assessed_by_user_id").references(() => users.id),
+    assessedAt: timestamp("assessed_at", { withTimezone: true }),
+    validUntil: timestamp("valid_until", { withTimezone: true }),
+    decisionNotes: text("decision_notes"),
+    appealHistory: jsonb("appeal_history").notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("contractor_capability_assessment_uniq").on(
+      table.contractorId,
+      table.issueTypeId,
+      table.geography,
+    ),
+  ],
+);
+
+// 13. Relational mappings
 export const verticalsRelations = relations(verticals, ({ many }) => ({
   categories: many(serviceCategories),
 }));
 
-export const serviceCategoriesRelations = relations(serviceCategories, ({ one, many }) => ({
-  vertical: one(verticals, {
-    fields: [serviceCategories.verticalId],
-    references: [verticals.id],
+export const serviceCategoriesRelations = relations(
+  serviceCategories,
+  ({ one, many }) => ({
+    vertical: one(verticals, {
+      fields: [serviceCategories.verticalId],
+      references: [verticals.id],
+    }),
+    issueTypes: many(issueTypes),
   }),
-  issueTypes: many(issueTypes),
-}));
+);
 
-export const issueTypesRelations = relations(issueTypes, ({ one }) => ({
+export const issueTypesRelations = relations(issueTypes, ({ one, many }) => ({
   category: one(serviceCategories, {
     fields: [issueTypes.categoryId],
     references: [serviceCategories.id],
   }),
+  capabilityAssessments: many(contractorCapabilityAssessments),
 }));
 
 export const usersRelations = relations(users, ({ many, one }) => ({
@@ -844,7 +1032,26 @@ export const contractorsRelations = relations(contractors, ({ one, many }) => ({
   }),
   technicians: many(technicians),
   credentials: many(credentials),
+  capabilityAssessments: many(contractorCapabilityAssessments),
 }));
+
+export const contractorCapabilityAssessmentsRelations = relations(
+  contractorCapabilityAssessments,
+  ({ one }) => ({
+    contractor: one(contractors, {
+      fields: [contractorCapabilityAssessments.contractorId],
+      references: [contractors.id],
+    }),
+    issueType: one(issueTypes, {
+      fields: [contractorCapabilityAssessments.issueTypeId],
+      references: [issueTypes.id],
+    }),
+    assessedBy: one(users, {
+      fields: [contractorCapabilityAssessments.assessedByUserId],
+      references: [users.id],
+    }),
+  }),
+);
 
 export const techniciansRelations = relations(technicians, ({ one, many }) => ({
   user: one(users, {
@@ -882,32 +1089,35 @@ export const propertiesRelations = relations(properties, ({ one, many }) => ({
   serviceRequests: many(serviceRequests),
 }));
 
-export const serviceRequestsRelations = relations(serviceRequests, ({ one }) => ({
-  customer: one(users, {
-    fields: [serviceRequests.customerId],
-    references: [users.id],
+export const serviceRequestsRelations = relations(
+  serviceRequests,
+  ({ one }) => ({
+    customer: one(users, {
+      fields: [serviceRequests.customerId],
+      references: [users.id],
+    }),
+    property: one(properties, {
+      fields: [serviceRequests.propertyId],
+      references: [properties.id],
+    }),
+    vertical: one(verticals, {
+      fields: [serviceRequests.verticalId],
+      references: [verticals.id],
+    }),
+    category: one(serviceCategories, {
+      fields: [serviceRequests.categoryId],
+      references: [serviceCategories.id],
+    }),
+    issueType: one(issueTypes, {
+      fields: [serviceRequests.issueTypeId],
+      references: [issueTypes.id],
+    }),
+    job: one(jobs, {
+      fields: [serviceRequests.id],
+      references: [jobs.serviceRequestId],
+    }),
   }),
-  property: one(properties, {
-    fields: [serviceRequests.propertyId],
-    references: [properties.id],
-  }),
-  vertical: one(verticals, {
-    fields: [serviceRequests.verticalId],
-    references: [verticals.id],
-  }),
-  category: one(serviceCategories, {
-    fields: [serviceRequests.categoryId],
-    references: [serviceCategories.id],
-  }),
-  issueType: one(issueTypes, {
-    fields: [serviceRequests.issueTypeId],
-    references: [issueTypes.id],
-  }),
-  job: one(jobs, {
-    fields: [serviceRequests.id],
-    references: [jobs.serviceRequestId],
-  }),
-}));
+);
 
 export const jobsRelations = relations(jobs, ({ one, many }) => ({
   serviceRequest: one(serviceRequests, {
@@ -945,17 +1155,23 @@ export const quoteItemsRelations = relations(quoteItems, ({ one }) => ({
   }),
 }));
 
-export const paymentSchedulesRelations = relations(paymentSchedules, ({ one, many }) => ({
-  quote: one(quotes, {
-    fields: [paymentSchedules.quoteId],
-    references: [quotes.id],
+export const paymentSchedulesRelations = relations(
+  paymentSchedules,
+  ({ one, many }) => ({
+    quote: one(quotes, {
+      fields: [paymentSchedules.quoteId],
+      references: [quotes.id],
+    }),
+    milestones: many(paymentMilestones),
   }),
-  milestones: many(paymentMilestones),
-}));
+);
 
-export const paymentMilestonesRelations = relations(paymentMilestones, ({ one }) => ({
-  schedule: one(paymentSchedules, {
-    fields: [paymentMilestones.scheduleId],
-    references: [paymentSchedules.id],
+export const paymentMilestonesRelations = relations(
+  paymentMilestones,
+  ({ one }) => ({
+    schedule: one(paymentSchedules, {
+      fields: [paymentMilestones.scheduleId],
+      references: [paymentSchedules.id],
+    }),
   }),
-}));
+);

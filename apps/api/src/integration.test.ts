@@ -20,6 +20,7 @@ import {
   contractors,
   technicians,
   credentials,
+  contractorCapabilityAssessments,
   auditEvents,
   refunds,
   eq,
@@ -87,7 +88,6 @@ describeSuite("Skilled Hire lifecycle", () => {
   });
 
   it("creates, dispatches, quotes, pays, completes, invoices, and reviews a job", async () => {
-
     const [context] = await db
       .select({
         vertical_id: verticals.id,
@@ -96,10 +96,15 @@ describeSuite("Skilled Hire lifecycle", () => {
         property_id: properties.id,
       })
       .from(verticals)
-      .innerJoin(serviceCategories, eq(serviceCategories.verticalId, verticals.id))
+      .innerJoin(
+        serviceCategories,
+        eq(serviceCategories.verticalId, verticals.id),
+      )
       .innerJoin(issueTypes, eq(issueTypes.categoryId, serviceCategories.id))
       .innerJoin(properties, eq(properties.customerId, custUser.id))
-      .where(and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")))
+      .where(
+        and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")),
+      )
       .limit(1);
     if (!context) throw new Error("Missing seed configuration");
 
@@ -148,7 +153,12 @@ describeSuite("Skilled Hire lifecycle", () => {
     const [compliantTech] = await db
       .select({ id: technicians.id })
       .from(technicians)
-      .where(and(eq(technicians.active, true), eq(technicians.displayName, "John S.")))
+      .where(
+        and(
+          eq(technicians.active, true),
+          eq(technicians.displayName, "John S."),
+        ),
+      )
       .limit(1);
     const candidateList = candidates.json<{
       candidates: Array<{ technicianId: string }>;
@@ -362,12 +372,17 @@ describeSuite("Skilled Hire lifecycle", () => {
     if (!jobRecord) throw new Error("Missing job");
 
     const [relationship] = await db
-      .select({ lastPlatformJobId: customerContractorRelationships.lastPlatformJobId })
+      .select({
+        lastPlatformJobId: customerContractorRelationships.lastPlatformJobId,
+      })
       .from(customerContractorRelationships)
       .where(
         and(
           eq(customerContractorRelationships.customerId, custUser.id),
-          eq(customerContractorRelationships.contractorId, jobRecord.contractorId),
+          eq(
+            customerContractorRelationships.contractorId,
+            jobRecord.contractorId,
+          ),
         ),
       )
       .limit(1);
@@ -383,10 +398,15 @@ describeSuite("Skilled Hire lifecycle", () => {
         property_id: properties.id,
       })
       .from(verticals)
-      .innerJoin(serviceCategories, eq(serviceCategories.verticalId, verticals.id))
+      .innerJoin(
+        serviceCategories,
+        eq(serviceCategories.verticalId, verticals.id),
+      )
       .innerJoin(issueTypes, eq(issueTypes.categoryId, serviceCategories.id))
       .innerJoin(properties, eq(properties.customerId, custUser.id))
-      .where(and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")))
+      .where(
+        and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")),
+      )
       .limit(1);
     const context = context2;
     if (!context) throw new Error("Missing seed configuration");
@@ -675,14 +695,13 @@ describeSuite("Skilled Hire lifecycle", () => {
       url: "/v1/compliance/standards?vertical=hvac&geography=ON",
     });
     expect(standardsRes.statusCode).toBe(200);
-    const standards =
-      standardsRes.json<
-        Array<{
-          credentialCode: string;
-          verticalSlug: string;
-          geography: string;
-        }>
-      >();
+    const standards = standardsRes.json<
+      Array<{
+        credentialCode: string;
+        verticalSlug: string;
+        geography: string;
+      }>
+    >();
     expect(standards.length).toBeGreaterThan(0);
     expect(
       standards.some(
@@ -1060,14 +1079,13 @@ describeSuite("Skilled Hire lifecycle", () => {
       url: "/v1/catalog/search?q=panel",
     });
     expect(panelSearch.statusCode).toBe(200);
-    const panelResults =
-      panelSearch.json<
-        Array<{
-          verticalSlug: string;
-          variantName: string;
-          requiresPermit: boolean;
-        }>
-      >();
+    const panelResults = panelSearch.json<
+      Array<{
+        verticalSlug: string;
+        variantName: string;
+        requiresPermit: boolean;
+      }>
+    >();
     expect(panelResults.length).toBeGreaterThan(0);
     expect(panelResults[0]?.verticalSlug).toBe("electrical");
     expect(panelResults[0]?.requiresPermit).toBe(true);
@@ -1269,8 +1287,12 @@ describeSuite("Skilled Hire lifecycle", () => {
       policies: Array<{ verticalSlug: string; geography: string }>;
     }>();
     expect(matrixData.policies.length).toBeGreaterThanOrEqual(4);
-    expect(matrixData.policies.some((p) => p.verticalSlug === "electrical")).toBe(true);
-    expect(matrixData.policies.some((p) => p.verticalSlug === "hvac")).toBe(true);
+    expect(
+      matrixData.policies.some((p) => p.verticalSlug === "electrical"),
+    ).toBe(true);
+    expect(matrixData.policies.some((p) => p.verticalSlug === "hvac")).toBe(
+      true,
+    );
 
     // 2. Fetch specific trade policy
     const electricalPolicyRes = await app.inject({
@@ -1308,7 +1330,8 @@ describeSuite("Skilled Hire lifecycle", () => {
           verificationSource: "REGULATOR_API",
           status: "VERIFIED",
           regulatorReference: "ECRA-ESA-TEST-7009999",
-          auditorNotes: "Audited against ESA/ECRA authoritative license registry",
+          auditorNotes:
+            "Audited against ESA/ECRA authoritative license registry",
         },
       });
       expect(verifyRes.statusCode).toBe(200);
@@ -1439,12 +1462,7 @@ describeSuite("Skilled Hire lifecycle", () => {
           .limit(1)
       : [];
 
-    if (
-      elecVertical &&
-      custProp &&
-      elecCategory &&
-      elecIssue
-    ) {
+    if (elecVertical && custProp && elecCategory && elecIssue) {
       if (contId) {
         const [currentCont] = await db
           .select({ verticalIds: contractors.verticalIds })
@@ -1687,7 +1705,9 @@ describeSuite("Skilled Hire lifecycle", () => {
       },
     });
     expect(techSubmitsContractorRes.statusCode).toBe(403);
-    expect(techSubmitsContractorRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+    expect(techSubmitsContractorRes.json<{ code: string }>().code).toBe(
+      "FORBIDDEN",
+    );
 
     // 6. Test: Contractor attempts to submit for non-existent technician -> 404 NOT_FOUND
     const fakeTechRes = await app.inject({
@@ -1703,7 +1723,9 @@ describeSuite("Skilled Hire lifecycle", () => {
       },
     });
     expect(fakeTechRes.statusCode).toBe(404);
-    expect(fakeTechRes.json<{ code: string }>().code).toBe("TECHNICIAN_NOT_FOUND");
+    expect(fakeTechRes.json<{ code: string }>().code).toBe(
+      "TECHNICIAN_NOT_FOUND",
+    );
 
     // 7. Test: Contractor A attempts to submit CONTRACTOR credential with forged contractorId -> 403 FORBIDDEN
     const crossContractorOrgRes = await app.inject({
@@ -1719,7 +1741,9 @@ describeSuite("Skilled Hire lifecycle", () => {
       },
     });
     expect(crossContractorOrgRes.statusCode).toBe(403);
-    expect(crossContractorOrgRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+    expect(crossContractorOrgRes.json<{ code: string }>().code).toBe(
+      "FORBIDDEN",
+    );
 
     // 8. Test: Unauthenticated request -> 401 UNAUTHORIZED
     const unauthRes = await app.inject({
@@ -1757,7 +1781,9 @@ describeSuite("Skilled Hire lifecycle", () => {
       },
     });
     expect(adminStaffOverrideRes.statusCode).toBe(201);
-    expect(adminStaffOverrideRes.json<{ status: string }>().status).toBe("PENDING");
+    expect(adminStaffOverrideRes.json<{ status: string }>().status).toBe(
+      "PENDING",
+    );
 
     // 11. Test: Contractor A legitimately submits for own Technician A -> 201 PENDING
     const legitOwnerSubmitRes = await app.inject({
@@ -1773,6 +1799,305 @@ describeSuite("Skilled Hire lifecycle", () => {
       },
     });
     expect(legitOwnerSubmitRes.statusCode).toBe(201);
-    expect(legitOwnerSubmitRes.json<{ status: string }>().status).toBe("PENDING");
+    expect(legitOwnerSubmitRes.json<{ status: string }>().status).toBe(
+      "PENDING",
+    );
+  });
+
+  it("enforces technical capability assessment, scoped approval, assessor review, and appeal lifecycle", async () => {
+    // 1. Fetch contractor A (owned by owner@example.test)
+    const [ownerUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, "owner@example.test"))
+      .limit(1);
+    expect(ownerUser).toBeDefined();
+
+    const [contractorA] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(eq(contractors.ownerUserId, ownerUser!.id))
+      .limit(1);
+    expect(contractorA).toBeDefined();
+
+    // Fetch rival contractor B
+    const [contractorB] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(ne(contractors.id, contractorA!.id))
+      .limit(1);
+    expect(contractorB).toBeDefined();
+
+    // Fetch two distinct issue types
+    const issueTypeList = await db
+      .select({ id: issueTypes.id, slug: issueTypes.slug })
+      .from(issueTypes)
+      .limit(2);
+    expect(issueTypeList.length).toBeGreaterThanOrEqual(2);
+    const issueTypeA = issueTypeList[0]!;
+    const issueTypeB = issueTypeList[1]!;
+
+    // Clean up any existing capability assessment for contractorA + issueTypeA
+    await db
+      .delete(contractorCapabilityAssessments)
+      .where(
+        and(
+          eq(contractorCapabilityAssessments.contractorId, contractorA!.id),
+          eq(contractorCapabilityAssessments.issueTypeId, issueTypeA.id),
+        ),
+      );
+
+    // 2. Contractor A submits capability assessment for issueTypeA -> 201 Created (SUBMITTED)
+    const submitRes = await app.inject({
+      method: "POST",
+      url: "/v1/capability/assessments",
+      headers: auth("owner@example.test"),
+      payload: {
+        issueTypeId: issueTypeA.id,
+        geography: "ON",
+        complexityTier: "TIER_2_STANDARD",
+        yearsExperience: 5,
+        maxJobValueCents: 500_000,
+        workSamples: [
+          {
+            id: "ws-test-1",
+            title: "Commercial Air Handler Retrofit",
+            description:
+              "Installed multi-stage air handler with balanced ductwork",
+            completedAt: "2025-08-10",
+          },
+        ],
+        references: [
+          {
+            id: "ref-test-1",
+            clientName: "Ontario Property Group",
+            clientContact: "905-555-0182",
+            projectScope: "Multi-unit air conditioning replacement",
+            relationship: "Commercial Client",
+          },
+        ],
+        toolsEquipment: [
+          {
+            toolName: "Refrigerant Recovery Machine",
+            ownedOrLeased: true,
+          },
+        ],
+      },
+    });
+
+    expect(submitRes.statusCode).toBe(201);
+    const createdAssessment = submitRes.json<{
+      id: string;
+      status: string;
+      complexityTier: string;
+      maxJobValueCents: number;
+    }>();
+    expect(createdAssessment.status).toBe("SUBMITTED");
+    expect(createdAssessment.complexityTier).toBe("TIER_2_STANDARD");
+    expect(Number(createdAssessment.maxJobValueCents)).toBe(500_000);
+
+    // 3. Test Cross-Contractor Tenant Isolation:
+    // Contractor A attempts to submit assessment for Contractor B -> 403 FORBIDDEN
+    const crossSubmitRes = await app.inject({
+      method: "POST",
+      url: "/v1/capability/assessments",
+      headers: auth("owner@example.test"),
+      payload: {
+        contractorId: contractorB!.id,
+        issueTypeId: issueTypeA.id,
+        geography: "ON",
+        workSamples: [
+          {
+            title: "Forged Sample",
+            description: "Unauthorized submission",
+            completedAt: "2025-01-01",
+          },
+        ],
+        references: [
+          {
+            clientName: "Fake Client",
+            clientContact: "555-0000",
+            projectScope: "Fake Project",
+            relationship: "None",
+          },
+        ],
+      },
+    });
+    expect(crossSubmitRes.statusCode).toBe(403);
+
+    // Contractor A attempts to list Contractor B's assessments -> 403 FORBIDDEN
+    const crossListRes = await app.inject({
+      method: "GET",
+      url: `/v1/capability/assessments?contractorId=${contractorB!.id}`,
+      headers: auth("owner@example.test"),
+    });
+    expect(crossListRes.statusCode).toBe(403);
+
+    // 4. Test Assessor Review RBAC:
+    // Non-assessor (customer) attempts review -> 403 FORBIDDEN
+    const customerReviewRes = await app.inject({
+      method: "POST",
+      url: `/v1/capability/assessments/${createdAssessment.id}/review`,
+      headers: auth("customer@example.test"),
+      payload: {
+        decision: "APPROVED",
+      },
+    });
+    expect(customerReviewRes.statusCode).toBe(403);
+
+    // Assessor attempts rejection without denial reasons -> 400 DENIAL_REASONS_REQUIRED
+    const missingReasonsRes = await app.inject({
+      method: "POST",
+      url: `/v1/capability/assessments/${createdAssessment.id}/review`,
+      headers: auth("admin@example.test"),
+      payload: {
+        decision: "REJECTED",
+        denialReasons: [],
+      },
+    });
+    expect(missingReasonsRes.statusCode).toBe(400);
+
+    // Assessor rejects with criteria-based denial reason -> 200 REJECTED
+    const rejectRes = await app.inject({
+      method: "POST",
+      url: `/v1/capability/assessments/${createdAssessment.id}/review`,
+      headers: auth("admin@example.test"),
+      payload: {
+        decision: "REJECTED",
+        denialReasons: ["MISSING_MANDATORY_TOOLS", "UNVERIFIED_WORK_SAMPLES"],
+        decisionNotes:
+          "Missing certified manifold gauges for specialized HVAC scope.",
+      },
+    });
+    expect(rejectRes.statusCode).toBe(200);
+    expect(rejectRes.json<{ status: string }>().status).toBe("REJECTED");
+
+    // 5. Contractor Appeal Flow:
+    const appealRes = await app.inject({
+      method: "POST",
+      url: `/v1/capability/assessments/${createdAssessment.id}/appeal`,
+      headers: auth("owner@example.test"),
+      payload: {
+        reason:
+          "Procured calibrated digital manifold gauges and attached calibration certificate.",
+        additionalWorkSamples: [
+          {
+            id: "ws-appeal-1",
+            title: "Supplementary Ductless Split Commissioning",
+            description:
+              "High-efficiency commissioning report with vacuum hold test logs",
+            completedAt: "2025-09-01",
+          },
+        ],
+      },
+    });
+    expect(appealRes.statusCode).toBe(200);
+    expect(appealRes.json<{ status: string }>().status).toBe("APPEALED");
+
+    // 6. Assessor Approves Appeal:
+    const approveRes = await app.inject({
+      method: "POST",
+      url: `/v1/capability/assessments/${createdAssessment.id}/review`,
+      headers: auth("admin@example.test"),
+      payload: {
+        decision: "APPROVED",
+        complexityTier: "TIER_3_ADVANCED",
+        maxJobValueCents: 500_000,
+        verifiedWorkSampleIds: ["ws-test-1", "ws-appeal-1"],
+        decisionNotes:
+          "Appeal accepted; tools verified and commissioning logs validated.",
+      },
+    });
+    expect(approveRes.statusCode).toBe(200);
+    const approvedRecord = approveRes.json<{
+      status: string;
+      complexityTier: string;
+      validUntil: string | null;
+    }>();
+    expect(approvedRecord.status).toBe("APPROVED");
+    expect(approvedRecord.complexityTier).toBe("TIER_3_ADVANCED");
+    expect(approvedRecord.validUntil).not.toBeNull();
+
+    // 7. Scoped Capability Evaluation:
+    // a) Compliant request within Tier 3 and $5,000 ceiling -> ELIGIBLE
+    const evalEligibleRes = await app.inject({
+      method: "POST",
+      url: "/v1/capability/evaluate",
+      headers: auth("owner@example.test"),
+      payload: {
+        contractorId: contractorA!.id,
+        issueTypeId: issueTypeA.id,
+        geography: "ON",
+        requiredComplexityTier: "TIER_2_STANDARD",
+        estimatedJobValueCents: 300_000,
+      },
+    });
+    expect(evalEligibleRes.statusCode).toBe(200);
+    expect(evalEligibleRes.json<{ eligible: boolean }>().eligible).toBe(true);
+
+    // b) Request exceeding financial ceiling ($8,000 > $5,000) -> INELIGIBLE (FAIL CLOSED)
+    const evalCeilingRes = await app.inject({
+      method: "POST",
+      url: "/v1/capability/evaluate",
+      headers: auth("owner@example.test"),
+      payload: {
+        contractorId: contractorA!.id,
+        issueTypeId: issueTypeA.id,
+        geography: "ON",
+        requiredComplexityTier: "TIER_2_STANDARD",
+        estimatedJobValueCents: 800_000,
+      },
+    });
+    expect(evalCeilingRes.statusCode).toBe(200);
+    const ceilingJson = evalCeilingRes.json<{
+      eligible: boolean;
+      failClosedReason: string;
+    }>();
+    expect(ceilingJson.eligible).toBe(false);
+    expect(ceilingJson.failClosedReason).toBe("EXCEEDS_MAX_JOB_VALUE_CEILING");
+
+    // c) Request requiring higher complexity tier (TIER_4_SPECIALIZED > TIER_3_ADVANCED) -> INELIGIBLE
+    const evalTierRes = await app.inject({
+      method: "POST",
+      url: "/v1/capability/evaluate",
+      headers: auth("owner@example.test"),
+      payload: {
+        contractorId: contractorA!.id,
+        issueTypeId: issueTypeA.id,
+        geography: "ON",
+        requiredComplexityTier: "TIER_4_SPECIALIZED",
+        estimatedJobValueCents: 300_000,
+      },
+    });
+    expect(evalTierRes.statusCode).toBe(200);
+    const tierJson = evalTierRes.json<{
+      eligible: boolean;
+      failClosedReason: string;
+    }>();
+    expect(tierJson.eligible).toBe(false);
+    expect(tierJson.failClosedReason).toBe("INSUFFICIENT_COMPLEXITY_TIER");
+
+    // d) Request for unassessed service variant (issueTypeB) -> INELIGIBLE (SCOPE ISOLATION)
+    const evalUnassessedRes = await app.inject({
+      method: "POST",
+      url: "/v1/capability/evaluate",
+      headers: auth("owner@example.test"),
+      payload: {
+        contractorId: contractorA!.id,
+        issueTypeId: issueTypeB.id,
+        geography: "ON",
+        requiredComplexityTier: "TIER_1_BASIC",
+        estimatedJobValueCents: 100_000,
+      },
+    });
+    expect(evalUnassessedRes.statusCode).toBe(200);
+    const unassessedJson = evalUnassessedRes.json<{
+      eligible: boolean;
+      failClosedReason: string;
+    }>();
+    expect(unassessedJson.eligible).toBe(false);
+    expect(unassessedJson.failClosedReason).toBe(
+      "NO_CAPABILITY_ASSESSMENT_ON_FILE",
+    );
   });
 });

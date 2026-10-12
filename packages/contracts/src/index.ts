@@ -239,7 +239,11 @@ export interface FeeRule {
   takeRateBps: number;
 }
 
-export const verificationSources = ["MANUAL_AUDIT", "REGULATOR_API", "SELF_UPLOAD"] as const;
+export const verificationSources = [
+  "MANUAL_AUDIT",
+  "REGULATOR_API",
+  "SELF_UPLOAD",
+] as const;
 export type VerificationSource = (typeof verificationSources)[number];
 
 export interface TradeRegulatoryPolicy {
@@ -428,4 +432,124 @@ export interface SlotAvailabilityResponse {
     queuePosition: number;
     estimatedNoticeMinutes: number;
   };
+}
+
+export const complexityTiers = [
+  "TIER_1_BASIC",
+  "TIER_2_STANDARD",
+  "TIER_3_ADVANCED",
+  "TIER_4_SPECIALIZED",
+] as const;
+export type ComplexityTier = (typeof complexityTiers)[number];
+
+export const capabilityAssessmentStatuses = [
+  "SUBMITTED",
+  "UNDER_REVIEW",
+  "APPROVED",
+  "PROVISIONAL",
+  "SUPERVISED",
+  "REJECTED",
+  "EXPIRED",
+  "REVOKED",
+  "APPEALED",
+] as const;
+export type CapabilityAssessmentStatus =
+  (typeof capabilityAssessmentStatuses)[number];
+
+export interface WorkSampleRecord {
+  id: string;
+  title: string;
+  description: string;
+  url?: string | null | undefined;
+  completedAt: string;
+  verified?: boolean | undefined;
+  verifiedAt?: string | null | undefined;
+  notes?: string | null | undefined;
+}
+
+export interface ReferenceVerificationRecord {
+  id: string;
+  clientName: string;
+  clientContact: string;
+  projectScope: string;
+  relationship: string;
+  verified?: boolean | undefined;
+  verifiedAt?: string | null | undefined;
+  assessorNotes?: string | null | undefined;
+}
+
+export interface ToolEquipmentRecord {
+  toolName: string;
+  ownedOrLeased: boolean;
+  calibrationOrInspectionDate?: string | null | undefined;
+  serialOrModelNumber?: string | null | undefined;
+  verified?: boolean | undefined;
+}
+
+export interface SupervisedRequirements {
+  supervisorTechnicianId?: string | null | undefined;
+  supervisorRequiredOnSite?: boolean | undefined;
+  mandatorySupervisorSignoff?: boolean | undefined;
+  maxProvisionalJobs?: number | null | undefined;
+  completedProvisionalJobs?: number | undefined;
+}
+
+export interface AppealRecord {
+  id: string;
+  submittedAt: string;
+  appellantUserId: string;
+  reason: string;
+  additionalWorkSamples?: WorkSampleRecord[] | undefined;
+  additionalReferences?: ReferenceVerificationRecord[] | undefined;
+  assessorUserId?: string | null | undefined;
+  reviewedAt?: string | null | undefined;
+  outcome?:
+    | "APPROVED"
+    | "PROVISIONAL"
+    | "SUPERVISED"
+    | "REJECTED"
+    | "UPHELD"
+    | undefined;
+  assessorNotes?: string | null | undefined;
+}
+
+export interface ContractorCapabilityAssessment {
+  id: string;
+  contractorId: string;
+  issueTypeId: string;
+  geography: string;
+  status: CapabilityAssessmentStatus;
+  complexityTier: ComplexityTier;
+  yearsExperience: number;
+  maxJobValueCents: number;
+  workSamples: WorkSampleRecord[];
+  references: ReferenceVerificationRecord[];
+  toolsEquipment: ToolEquipmentRecord[];
+  supervisedRequirements?: SupervisedRequirements | null | undefined;
+  denialReasons: string[];
+  assessedByUserId?: string | null | undefined;
+  assessedAt?: string | null | undefined;
+  validUntil?: string | null | undefined;
+  decisionNotes?: string | null | undefined;
+  appealHistory: AppealRecord[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CapabilityEvaluationResult {
+  eligible: boolean;
+  contractorId: string;
+  issueTypeId: string;
+  status: CapabilityAssessmentStatus | "NOT_FOUND";
+  approvedComplexityTier?: ComplexityTier | undefined;
+  requiredComplexityTier?: ComplexityTier | undefined;
+  approvedMaxJobValueCents?: number | undefined;
+  estimatedJobValueCents?: number | undefined;
+  supervised: boolean;
+  provisional: boolean;
+  supervisorRequiredOnSite: boolean;
+  mandatorySupervisorSignoff: boolean;
+  failClosedReason?: string | undefined;
+  restrictions: string[];
+  evaluatedAt: string;
 }
