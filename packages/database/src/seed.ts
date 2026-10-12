@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { hashPassword } from "@marketplace/auth";
-import { CANONICAL_TRADE_CATALOG } from "@marketplace/vertical-engine";
+import { CANONICAL_TRADE_CATALOG, CANONICAL_TRADE_POLICIES } from "@marketplace/vertical-engine";
 import {
   db,
   pool,
@@ -189,69 +189,24 @@ for (const entry of CANONICAL_TRADE_CATALOG) {
 }
 
 // 2. Canonical Ontario Trade Regulatory Policies (Ticket #55)
-const CANONICAL_REGULATORY_POLICIES = [
-  {
-    verticalSlug: "electrical",
-    categorySlug: "*",
-    variantSlug: "*",
-    geography: "ON",
-    policyVersion: 1,
-    contractorMandatoryCodes: ["ON_ESA_LEC_CONTRACTOR", "ON_WSIB_CLEARANCE", "CGL_INSURANCE_2M", "COMMERCIAL_AUTO_1M"],
-    technicianMandatoryCodes: ["ON_SKILLED_TRADES_309A", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
-    apprenticeEligible: true,
-    supervisorRatio: "1:1",
-    permitRequired: true,
-    inspectionAuthority: "Electrical Safety Authority (ESA / ECRA)",
-    legalAuthorityDisclaimer: "Electricity Act, 1998, O.Reg 570/05 requires all electrical work to be performed by an ECRA/ESA Licensed Electrical Contractor employing qualified 309A certified electricians or registered apprentices.",
-  },
-  {
-    verticalSlug: "plumbing",
-    categorySlug: "*",
-    variantSlug: "*",
-    geography: "ON",
-    policyVersion: 1,
-    contractorMandatoryCodes: ["ON_WSIB_CLEARANCE", "CGL_INSURANCE_2M", "COMMERCIAL_AUTO_1M"],
-    technicianMandatoryCodes: ["ON_SKILLED_TRADES_306A", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
-    apprenticeEligible: true,
-    supervisorRatio: "1:1",
-    permitRequired: false,
-    inspectionAuthority: "Municipal Building / Plumbing Inspection",
-    legalAuthorityDisclaimer: "Ontario Building Code Part 7 and Building Opportunities in the Skilled Trades Act (BOSTA) require certified 306A plumbers for water supply and drainage systems.",
-  },
-  {
-    verticalSlug: "hvac",
-    categorySlug: "*",
-    variantSlug: "*",
-    geography: "ON",
-    policyVersion: 1,
-    contractorMandatoryCodes: ["ON_TSSA_CONTRACTOR_REG", "ON_WSIB_CLEARANCE", "CGL_INSURANCE_2M", "COMMERCIAL_AUTO_1M"],
-    technicianMandatoryCodes: ["ON_TSSA_GAS_G2", "ON_SKILLED_TRADES_313A", "CA_ODS_REFRIGERANT", "ON_MOL_HEIGHTS", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
-    apprenticeEligible: false,
-    supervisorRatio: "1:1",
-    permitRequired: false,
-    inspectionAuthority: "Technical Standards and Safety Authority (TSSA)",
-    legalAuthorityDisclaimer: "Technical Standards and Safety Act, O.Reg 215/01 mandates TSSA contractor registration and individual G2/G1 Gas Technician plus 313A certification for fuel and refrigerant equipment.",
-  },
-  {
-    verticalSlug: "roofing",
-    categorySlug: "*",
-    variantSlug: "*",
-    geography: "ON",
-    policyVersion: 1,
-    contractorMandatoryCodes: ["CGL_INSURANCE_2M", "ON_WSIB_CLEARANCE", "ROOFING_OPEN_FLAME_INSURANCE"],
-    technicianMandatoryCodes: ["ON_MOL_HEIGHTS", "ROOFING_FALL_PROTECTION", "GOVT_PHOTO_ID", "BACKGROUND_CHECK_ANNUAL"],
-    apprenticeEligible: true,
-    supervisorRatio: "1:2",
-    permitRequired: false,
-    inspectionAuthority: "Ministry of Labour CPO Working at Heights",
-    legalAuthorityDisclaimer: "Occupational Health and Safety Act, O.Reg 297/13 mandates CPO-approved working at heights training for all roofing and elevated operations.",
-  },
-];
-
-for (const policy of CANONICAL_REGULATORY_POLICIES) {
+for (const policy of CANONICAL_TRADE_POLICIES) {
   await db
     .insert(tradeRegulatoryPolicies)
-    .values(policy)
+    .values({
+      verticalSlug: policy.verticalSlug,
+      categorySlug: policy.categorySlug,
+      variantSlug: policy.variantSlug,
+      geography: policy.geography,
+      policyVersion: policy.policyVersion,
+      contractorMandatoryCodes: policy.contractorMandatoryCodes as any,
+      technicianMandatoryCodes: policy.technicianMandatoryCodes as any,
+      apprenticeEligible: policy.apprenticeEligible,
+      supervisorRatio: policy.supervisorRatio,
+      permitRequired: policy.permitRequired,
+      inspectionAuthority: policy.inspectionAuthority,
+      legalAuthorityDisclaimer: policy.legalAuthorityDisclaimer,
+      active: policy.active,
+    })
     .onConflictDoUpdate({
       target: [
         tradeRegulatoryPolicies.verticalSlug,
@@ -261,13 +216,14 @@ for (const policy of CANONICAL_REGULATORY_POLICIES) {
         tradeRegulatoryPolicies.policyVersion,
       ],
       set: {
-        contractorMandatoryCodes: policy.contractorMandatoryCodes,
-        technicianMandatoryCodes: policy.technicianMandatoryCodes,
+        contractorMandatoryCodes: policy.contractorMandatoryCodes as any,
+        technicianMandatoryCodes: policy.technicianMandatoryCodes as any,
         apprenticeEligible: policy.apprenticeEligible,
         supervisorRatio: policy.supervisorRatio,
         permitRequired: policy.permitRequired,
         inspectionAuthority: policy.inspectionAuthority,
         legalAuthorityDisclaimer: policy.legalAuthorityDisclaimer,
+        active: policy.active,
       },
     });
 }
@@ -357,24 +313,62 @@ if (!existingTechnician) {
 const technician = existingTechnician?.id;
 if (!technician) throw new Error("Missing technician");
 
-// 6. Technician Credentials (with fail-closed authoritative regulator verification)
-const existingCred = await db.query.credentials.findFirst({
-  where: and(eq(credentials.technicianId, technician), eq(credentials.code, "HVAC_LICENSE")),
-});
-if (!existingCred) {
-  const expiry = new Date();
-  expiry.setFullYear(expiry.getFullYear() + 1);
-  await db.insert(credentials).values({
-    technicianId: technician,
-    code: "HVAC_LICENSE",
-    geography: "ON",
-    status: "VERIFIED",
-    verificationSource: "REGULATOR_API",
-    regulatorReference: "TSSA-G2-883921",
-    checkedAt: new Date(),
-    verifiedAt: new Date(),
-    expiryDate: expiry.toISOString().split("T")[0]!,
+// 6. Contractor & Technician Regulatory Credentials (Ticket #55)
+const contractorCredCodes = [
+  { code: "ON_TSSA_CONTRACTOR_REG", ref: "TSSA-FS-CONT-440192" },
+  { code: "ON_WSIB_CLEARANCE", ref: "WSIB-ON-9938102" },
+  { code: "CGL_INSURANCE_2M", ref: "POLICY-AVIVA-883910" },
+  { code: "COMMERCIAL_AUTO_1M", ref: "POLICY-INTACT-119283" },
+];
+for (const { code, ref } of contractorCredCodes) {
+  const existing = await db.query.credentials.findFirst({
+    where: and(eq(credentials.contractorId, contractor), eq(credentials.code, code)),
   });
+  if (!existing) {
+    const expiry = new Date();
+    expiry.setFullYear(expiry.getFullYear() + 1);
+    await db.insert(credentials).values({
+      contractorId: contractor,
+      code,
+      geography: "ON",
+      status: "VERIFIED",
+      verificationSource: "REGULATOR_API",
+      regulatorReference: ref,
+      checkedAt: new Date(),
+      verifiedAt: new Date(),
+      expiryDate: expiry.toISOString().split("T")[0]!,
+    });
+  }
+}
+
+const techCredCodes = [
+  { code: "HVAC_LICENSE", ref: "TSSA-G2-883921" },
+  { code: "ON_TSSA_GAS_G2", ref: "TSSA-G2-883921" },
+  { code: "ON_SKILLED_TRADES_313A", ref: "STO-313A-559102" },
+  { code: "CA_ODS_REFRIGERANT", ref: "HRAI-ODS-99211" },
+  { code: "ON_MOL_HEIGHTS", ref: "CPO-WAH-882910" },
+  { code: "GOVT_PHOTO_ID", ref: "ON-DL-S1928-33829-19283" },
+  { code: "BACKGROUND_CHECK_ANNUAL", ref: "CERTI-CLEAR-2026-99" },
+];
+for (const { code, ref } of techCredCodes) {
+  const existing = await db.query.credentials.findFirst({
+    where: and(eq(credentials.technicianId, technician), eq(credentials.code, code)),
+  });
+  if (!existing) {
+    const expiry = new Date();
+    expiry.setFullYear(expiry.getFullYear() + 1);
+    await db.insert(credentials).values({
+      technicianId: technician,
+      code,
+      geography: "ON",
+      status: "VERIFIED",
+      verificationSource: "REGULATOR_API",
+      regulatorReference: ref,
+      checkedAt: new Date(),
+      verifiedAt: new Date(),
+      expiryDate: expiry.toISOString().split("T")[0]!,
+    });
+  }
 }
 
 // 7. Payment Rules

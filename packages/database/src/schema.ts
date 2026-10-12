@@ -272,7 +272,7 @@ export const credentials = pgTable("credentials", {
   code: text("code").notNull(),
   geography: text("geography").notNull().default("*"),
   status: verificationStatusEnum("status").notNull().default("PENDING"),
-  verificationSource: text("verification_source").notNull().default("MANUAL_AUDIT"),
+  verificationSource: text("verification_source").notNull().default("SELF_UPLOAD"),
   verifiedByUserId: uuid("verified_by_user_id").references(() => users.id),
   regulatorReference: text("regulator_reference"),
   checkedAt: timestamp("checked_at", { withTimezone: true }),

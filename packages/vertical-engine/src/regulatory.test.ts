@@ -146,4 +146,235 @@ describe("Regulatory Eligibility Policy Engine (Ontario)", () => {
     expect(result.contractorDeficiencies).toContain("ON_ESA_LEC_CONTRACTOR");
     expect(result.reasons.some((r: string) => r.includes("expired"))).toBe(true);
   });
+
+  it("selects valid verified credential among duplicate historical submissions", () => {
+    const pastDate = new Date();
+    pastDate.setFullYear(pastDate.getFullYear() - 1);
+    const futureDate = new Date();
+    futureDate.setFullYear(futureDate.getFullYear() + 1);
+
+    const result = evaluateRegulatoryEligibility({
+      policy: electricalPolicy,
+      contractorCredentials: [
+        // Expired historical renewal
+        {
+          code: "ON_ESA_LEC_CONTRACTOR",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          expiryDate: pastDate.toISOString().split("T")[0],
+          checkedAt: "2025-01-01T12:00:00Z",
+        },
+        // Active renewed credential
+        {
+          code: "ON_ESA_LEC_CONTRACTOR",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          expiryDate: futureDate.toISOString().split("T")[0],
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "ON_WSIB_CLEARANCE",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "CGL_INSURANCE_2M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "COMMERCIAL_AUTO_1M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+      ],
+      technicianCredentials: [
+        {
+          code: "ON_SKILLED_TRADES_309A",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "GOVT_PHOTO_ID",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "BACKGROUND_CHECK_ANNUAL",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+      ],
+    });
+
+    expect(result.eligible).toBe(true);
+    expect(result.failClosed).toBe(false);
+    expect(result.contractorDeficiencies).toHaveLength(0);
+  });
+
+  it("fails closed when apprentice is deployed on trade prohibiting apprentices (HVAC gas heating)", () => {
+    const result = evaluateRegulatoryEligibility({
+      policy: hvacPolicy,
+      contractorCredentials: [
+        {
+          code: "ON_TSSA_CONTRACTOR_REG",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "ON_WSIB_CLEARANCE",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "CGL_INSURANCE_2M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "COMMERCIAL_AUTO_1M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+      ],
+      technicianCredentials: [],
+      isApprentice: true,
+    });
+
+    expect(result.eligible).toBe(false);
+    expect(result.failClosed).toBe(true);
+    expect(result.technicianDeficiencies).toContain("APPRENTICE_NOT_PERMITTED");
+  });
+
+  it("fails closed when apprentice is deployed without a verified supervising journeyperson on file", () => {
+    const result = evaluateRegulatoryEligibility({
+      policy: electricalPolicy,
+      contractorCredentials: [
+        {
+          code: "ON_ESA_LEC_CONTRACTOR",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "ON_WSIB_CLEARANCE",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "CGL_INSURANCE_2M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "COMMERCIAL_AUTO_1M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+      ],
+      technicianCredentials: [],
+      isApprentice: true,
+      supervisorCredentials: [], // Missing supervisor
+    });
+
+    expect(result.eligible).toBe(false);
+    expect(result.failClosed).toBe(true);
+    expect(result.technicianDeficiencies).toContain("SUPERVISOR_NOT_VERIFIED");
+  });
+
+  it("authorizes apprentice when compliant supervisor is verified on file (1:1 ratio)", () => {
+    const result = evaluateRegulatoryEligibility({
+      policy: electricalPolicy,
+      contractorCredentials: [
+        {
+          code: "ON_ESA_LEC_CONTRACTOR",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "ON_WSIB_CLEARANCE",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "CGL_INSURANCE_2M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "COMMERCIAL_AUTO_1M",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+      ],
+      technicianCredentials: [],
+      isApprentice: true,
+      supervisorCredentials: [
+        {
+          code: "ON_SKILLED_TRADES_309A",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "GOVT_PHOTO_ID",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+        {
+          code: "BACKGROUND_CHECK_ANNUAL",
+          geography: "ON",
+          status: "VERIFIED",
+          verificationSource: "MANUAL_AUDIT",
+          checkedAt: "2026-10-10T12:00:00Z",
+        },
+      ],
+    });
+
+    expect(result.eligible).toBe(true);
+    expect(result.failClosed).toBe(false);
+    expect(result.technicianDeficiencies).toHaveLength(0);
+    expect(result.reasons.some((r: string) => r.includes("Apprentice authorized under direct 1:1 supervision"))).toBe(true);
+  });
 });
+

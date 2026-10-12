@@ -3,6 +3,32 @@ dotenv.config({
   path: [new URL("../../../.env", import.meta.url).pathname, ".env"],
 });
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  db,
+  pool,
+  users,
+  properties,
+  verticals,
+  serviceCategories,
+  issueTypes,
+  jobs,
+  paymentSchedules,
+  paymentMilestones,
+  paymentTransactions,
+  customerContractorRelationships,
+  contractors,
+  technicians,
+  credentials,
+  auditEvents,
+  refunds,
+  eq,
+  ne,
+  and,
+  asc,
+  desc,
+  sql,
+  inArray,
+} from "@marketplace/database";
 
 const enabled =
   (process.env.MARKETPLACE_INTEGRATION === "1" ||
@@ -10,7 +36,7 @@ const enabled =
   Boolean(process.env.DATABASE_URL);
 describe.runIf(enabled)("Skilled Hire lifecycle", () => {
   let app: Awaited<typeof import("./server.js")>["app"];
-  let pool: Awaited<typeof import("@marketplace/database")>["pool"];
+  let custUser: { id: string };
   const tokens = new Map<string, string>();
   const auth = (email: string) => ({
     authorization: `Bearer ${tokens.get(email) ?? ""}`,
@@ -29,7 +55,6 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
   beforeAll(async () => {
     process.env.API_NO_LISTEN = "true";
     ({ app } = await import("./server.js"));
-    ({ pool } = await import("@marketplace/database"));
     await app.ready();
     for (const email of [
       "customer@example.test",
@@ -40,6 +65,13 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     ]) {
       await login(email);
     }
+    const [cUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, "customer@example.test"))
+      .limit(1);
+    if (!cUser) throw new Error("Missing customer user");
+    custUser = cUser;
   });
 
   afterAll(async () => {
@@ -48,15 +80,20 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
   });
 
   it("creates, dispatches, quotes, pays, completes, invoices, and reviews a job", async () => {
-    const seed = await pool.query<{
-      vertical_id: string;
-      category_id: string;
-      issue_type_id: string;
-      property_id: string;
-    }>(
-      "SELECT v.id vertical_id,c.id category_id,i.id issue_type_id,p.id property_id FROM verticals v JOIN service_categories c ON c.vertical_id=v.id JOIN issue_types i ON i.category_id=c.id JOIN properties p ON p.customer_id=(SELECT id FROM users WHERE email='customer@example.test') WHERE v.slug='hvac' AND i.slug='ac-not-cooling' LIMIT 1",
-    );
-    const context = seed.rows[0];
+
+    const [context] = await db
+      .select({
+        vertical_id: verticals.id,
+        category_id: serviceCategories.id,
+        issue_type_id: issueTypes.id,
+        property_id: properties.id,
+      })
+      .from(verticals)
+      .innerJoin(serviceCategories, eq(serviceCategories.verticalId, verticals.id))
+      .innerJoin(issueTypes, eq(issueTypes.categoryId, serviceCategories.id))
+      .innerJoin(properties, eq(properties.customerId, custUser.id))
+      .where(and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")))
+      .limit(1);
     if (!context) throw new Error("Missing seed configuration");
 
     const created = await app.inject({
@@ -174,16 +211,27 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
       milestones: Array<{ sequence: number }>;
     }>();
 
-    const milestone = await pool.query<{ id: string }>(
-      "SELECT id FROM payment_milestones WHERE schedule_id=(SELECT id FROM payment_schedules WHERE quote_id=$1) ORDER BY sequence LIMIT 1",
-      [quoteId],
-    );
-    const depositId = milestone.rows[0]?.id;
-    const finalBeforeDeposit = await pool.query<{ id: string }>(
-      "SELECT id FROM payment_milestones WHERE schedule_id=(SELECT id FROM payment_schedules WHERE quote_id=$1) ORDER BY sequence DESC LIMIT 1",
-      [quoteId],
-    );
-    if (!depositId || !finalBeforeDeposit.rows[0]?.id)
+    const [sched] = await db
+      .select({ id: paymentSchedules.id })
+      .from(paymentSchedules)
+      .where(eq(paymentSchedules.quoteId, quoteId))
+      .limit(1);
+    if (!sched) throw new Error("Missing payment schedule");
+
+    const [milestone] = await db
+      .select({ id: paymentMilestones.id })
+      .from(paymentMilestones)
+      .where(eq(paymentMilestones.scheduleId, sched.id))
+      .orderBy(asc(paymentMilestones.sequence))
+      .limit(1);
+    const depositId = milestone?.id;
+    const [finalBeforeDeposit] = await db
+      .select({ id: paymentMilestones.id })
+      .from(paymentMilestones)
+      .where(eq(paymentMilestones.scheduleId, sched.id))
+      .orderBy(desc(paymentMilestones.sequence))
+      .limit(1);
+    if (!depositId || !finalBeforeDeposit?.id)
       throw new Error("Missing payment milestones");
 
     // Out of order payment rejected with 409
@@ -191,7 +239,7 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
       (
         await app.inject({
           method: "POST",
-          url: `/v1/payment-milestones/${finalBeforeDeposit.rows[0].id}/pay`,
+          url: `/v1/payment-milestones/${finalBeforeDeposit.id}/pay`,
           headers: {
             ...auth("customer@example.test"),
             "idempotency-key": crypto.randomUUID(),
@@ -237,11 +285,18 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
       ).statusCode,
     ).toBe(200);
 
-    const finalMilestone = await pool.query<{ id: string }>(
-      "SELECT id FROM payment_milestones WHERE schedule_id=(SELECT id FROM payment_schedules WHERE quote_id=$1) AND status='PENDING' ORDER BY sequence LIMIT 1",
-      [quoteId],
-    );
-    const finalId = finalMilestone.rows[0]?.id;
+    const [finalMilestone] = await db
+      .select({ id: paymentMilestones.id })
+      .from(paymentMilestones)
+      .where(
+        and(
+          eq(paymentMilestones.scheduleId, sched.id),
+          eq(paymentMilestones.status, "PENDING"),
+        ),
+      )
+      .orderBy(asc(paymentMilestones.sequence))
+      .limit(1);
+    const finalId = finalMilestone?.id;
     if (!finalId) throw new Error("Missing final milestone");
     expect(
       (
@@ -284,23 +339,41 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
       ).statusCode,
     ).toBe(201);
 
-    const relationship = await pool.query<{ last_platform_job_id: string }>(
-      "SELECT last_platform_job_id FROM customer_contractor_relationships WHERE customer_id=(SELECT id FROM users WHERE email='customer@example.test') AND contractor_id=(SELECT contractor_id FROM jobs WHERE id=$1)",
-      [jobId],
-    );
-    expect(relationship.rows[0]?.last_platform_job_id).toBe(jobId);
+    const [jobRecord] = await db
+      .select({ contractorId: jobs.contractorId })
+      .from(jobs)
+      .where(eq(jobs.id, jobId))
+      .limit(1);
+    if (!jobRecord) throw new Error("Missing job");
+
+    const [relationship] = await db
+      .select({ lastPlatformJobId: customerContractorRelationships.lastPlatformJobId })
+      .from(customerContractorRelationships)
+      .where(
+        and(
+          eq(customerContractorRelationships.customerId, custUser.id),
+          eq(customerContractorRelationships.contractorId, jobRecord.contractorId),
+        ),
+      )
+      .limit(1);
+    expect(relationship?.lastPlatformJobId).toBe(jobId);
   });
 
   it("handles change orders, customer approvals, and dynamic milestone updates", async () => {
-    const seed = await pool.query<{
-      vertical_id: string;
-      category_id: string;
-      issue_type_id: string;
-      property_id: string;
-    }>(
-      "SELECT v.id vertical_id,c.id category_id,i.id issue_type_id,p.id property_id FROM verticals v JOIN service_categories c ON c.vertical_id=v.id JOIN issue_types i ON i.category_id=c.id JOIN properties p ON p.customer_id=(SELECT id FROM users WHERE email='customer@example.test') WHERE v.slug='hvac' AND i.slug='ac-not-cooling' LIMIT 1",
-    );
-    const context = seed.rows[0];
+    const [context2] = await db
+      .select({
+        vertical_id: verticals.id,
+        category_id: serviceCategories.id,
+        issue_type_id: issueTypes.id,
+        property_id: properties.id,
+      })
+      .from(verticals)
+      .innerJoin(serviceCategories, eq(serviceCategories.verticalId, verticals.id))
+      .innerJoin(issueTypes, eq(issueTypes.categoryId, serviceCategories.id))
+      .innerJoin(properties, eq(properties.customerId, custUser.id))
+      .where(and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")))
+      .limit(1);
+    const context = context2;
     if (!context) throw new Error("Missing seed configuration");
 
     const created = await app.inject({
@@ -398,11 +471,20 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
       payload: {},
     });
 
-    const depositMilestone = await pool.query<{ id: string }>(
-      "SELECT id FROM payment_milestones WHERE schedule_id=(SELECT id FROM payment_schedules WHERE quote_id=$1) ORDER BY sequence LIMIT 1",
-      [quoteId],
-    );
-    const depositId = depositMilestone.rows[0]?.id;
+    const [sched2] = await db
+      .select({ id: paymentSchedules.id })
+      .from(paymentSchedules)
+      .where(eq(paymentSchedules.quoteId, quoteId))
+      .limit(1);
+    if (!sched2) throw new Error("Missing payment schedule");
+
+    const [depositMilestone] = await db
+      .select({ id: paymentMilestones.id })
+      .from(paymentMilestones)
+      .where(eq(paymentMilestones.scheduleId, sched2.id))
+      .orderBy(asc(paymentMilestones.sequence))
+      .limit(1);
+    const depositId = depositMilestone?.id;
     if (!depositId) throw new Error("Missing deposit milestone");
     await app.inject({
       method: "POST",
@@ -455,11 +537,12 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(changeOrderId).toBeTruthy();
 
     // Verify status transitioned to CHANGE_ORDER_PENDING
-    const jobStatusCheck = await pool.query<{ status: string }>(
-      "SELECT status FROM jobs WHERE id=$1",
-      [jobId],
-    );
-    expect(jobStatusCheck.rows[0]?.status).toBe("CHANGE_ORDER_PENDING");
+    const [jobStatusCheck] = await db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, jobId))
+      .limit(1);
+    expect(jobStatusCheck?.status).toBe("CHANGE_ORDER_PENDING");
 
     // Customer views change orders
     const getOrders = await app.inject({
@@ -492,11 +575,12 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(milestoneId).toBeTruthy();
 
     // Verify job transitioned back to WORK_IN_PROGRESS
-    const resumedStatus = await pool.query<{ status: string }>(
-      "SELECT status FROM jobs WHERE id=$1",
-      [jobId],
-    );
-    expect(resumedStatus.rows[0]?.status).toBe("WORK_IN_PROGRESS");
+    const [resumedStatus] = await db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, jobId))
+      .limit(1);
+    expect(resumedStatus?.status).toBe("WORK_IN_PROGRESS");
 
     // Complete job
     await app.inject({
@@ -520,11 +604,16 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
       payload: {},
     });
 
-    const pendingMilestones = await pool.query<{ id: string }>(
-      "SELECT id FROM payment_milestones WHERE schedule_id=(SELECT id FROM payment_schedules WHERE quote_id=$1) AND status='PENDING'",
-      [quoteId],
-    );
-    for (const m of pendingMilestones.rows) {
+    const pendingMilestones = await db
+      .select({ id: paymentMilestones.id })
+      .from(paymentMilestones)
+      .where(
+        and(
+          eq(paymentMilestones.scheduleId, sched2.id),
+          eq(paymentMilestones.status, "PENDING"),
+        ),
+      );
+    for (const m of pendingMilestones) {
       await app.inject({
         method: "POST",
         url: `/v1/payment-milestones/${m.id}/pay`,
@@ -660,10 +749,11 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(compScore.scoreBps).toBe(10000);
 
     // 4. Authenticated Contractor Compliance Scorecard
-    const contractor = await pool.query<{ id: string }>(
-      "SELECT id FROM contractors LIMIT 1",
-    );
-    const contractorId = contractor.rows[0]?.id;
+    const [contractorRecord] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .limit(1);
+    const contractorId = contractorRecord?.id;
     if (!contractorId) throw new Error("Missing contractor in database");
 
     const contractorScorecard = await app.inject({
@@ -708,10 +798,12 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(Array.isArray(notesRes.json())).toBe(true);
 
     // 2. Query Property Service History
-    const prop = await pool.query<{ id: string }>(
-      "SELECT id FROM properties WHERE customer_id=(SELECT id FROM users WHERE email='customer@example.test') LIMIT 1",
-    );
-    const propertyId = prop.rows[0]?.id;
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, custUser.id))
+      .limit(1);
+    const propertyId = prop?.id;
     if (!propertyId) throw new Error("Missing customer property");
 
     const historyRes = await app.inject({
@@ -740,10 +832,12 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(rebooked.status).toBe("SUBMITTED");
 
     // 4. Submit Support Ticket with Dispute
-    const completedJob = await pool.query<{ id: string }>(
-      "SELECT id FROM jobs WHERE status='COMPLETED' LIMIT 1",
-    );
-    const jobId = completedJob.rows[0]?.id;
+    const [completedJob] = await db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(eq(jobs.status, "COMPLETED"))
+      .limit(1);
+    const jobId = completedJob?.id;
     if (!jobId) throw new Error("Missing completed job");
 
     const disputeRes = await app.inject({
@@ -782,10 +876,30 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(resolveRes.json<{ status: string }>().status).toBe("RESOLVED");
 
     // 6. Admin issues refund on paid transaction
-    const transaction = await pool.query<{ id: string; amount_cents: string }>(
-      "SELECT pt.id, pt.amount_cents FROM payment_transactions pt LEFT JOIN refunds r ON r.transaction_id=pt.id AND r.status='REFUNDED' WHERE pt.status='PAID' GROUP BY pt.id HAVING (pt.amount_cents - COALESCE(sum(r.amount_cents), 0)) >= 1000 ORDER BY pt.created_at DESC LIMIT 1",
-    );
-    const tx = transaction.rows[0];
+    const [tx] = await db
+      .select({
+        id: paymentTransactions.id,
+        amount_cents: paymentTransactions.amountCents,
+      })
+      .from(paymentTransactions)
+      .leftJoin(
+        refunds,
+        and(
+          eq(refunds.transactionId, paymentTransactions.id),
+          eq(refunds.status, "REFUNDED"),
+        ),
+      )
+      .where(eq(paymentTransactions.status, "PAID"))
+      .groupBy(
+        paymentTransactions.id,
+        paymentTransactions.amountCents,
+        paymentTransactions.createdAt,
+      )
+      .having(
+        sql`(${paymentTransactions.amountCents} - COALESCE(sum(${refunds.amountCents}), 0)) >= 1000`,
+      )
+      .orderBy(desc(paymentTransactions.createdAt))
+      .limit(1);
     if (!tx) throw new Error("Missing paid transaction");
 
     const refundRes = await app.inject({
@@ -1110,10 +1224,22 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     ).toBe(true);
 
     // Verify audit logs were written
-    const auditRows = await pool.query<{ action: string; entity_type: string }>(
-      "SELECT action, entity_type FROM audit_events WHERE entity_type IN ('VERTICAL', 'SERVICE_CATEGORY', 'ISSUE_TYPE') ORDER BY occurred_at DESC LIMIT 5",
-    );
-    expect(auditRows.rows.length).toBeGreaterThan(0);
+    const auditRows = await db
+      .select({
+        action: auditEvents.action,
+        entityType: auditEvents.entityType,
+      })
+      .from(auditEvents)
+      .where(
+        inArray(auditEvents.entityType, [
+          "VERTICAL",
+          "SERVICE_CATEGORY",
+          "ISSUE_TYPE",
+        ]),
+      )
+      .orderBy(desc(auditEvents.occurredAt))
+      .limit(5);
+    expect(auditRows.length).toBeGreaterThan(0);
   });
 
   it("executes trade regulatory eligibility policies and fail-closed compliance verification (Ontario)", async () => {
@@ -1151,17 +1277,19 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     );
 
     // 3. Auditor verifies a credential with regulator reference
-    const pendingCred = await pool.query<{ id: string }>(
-      "SELECT id FROM credentials WHERE status='PENDING' LIMIT 1",
-    );
+    const [pendingCred] = await db
+      .select({ id: credentials.id })
+      .from(credentials)
+      .where(eq(credentials.status, "PENDING"))
+      .limit(1);
 
-    if (pendingCred.rows[0]) {
+    if (pendingCred) {
       const verifyRes = await app.inject({
         method: "POST",
         url: "/v1/compliance/verify-credential",
         headers: auth("admin@example.test"),
         payload: {
-          credentialId: pendingCred.rows[0].id,
+          credentialId: pendingCred.id,
           verificationSource: "REGULATOR_API",
           status: "VERIFIED",
           regulatorReference: "ECRA-ESA-TEST-7009999",
@@ -1178,22 +1306,79 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
       );
     }
 
-    // 4. Dispatch eligibility check: Fail-closed when missing mandatory credentials
-    const contractor = await pool.query<{ id: string }>(
-      "SELECT id FROM contractors LIMIT 1",
-    );
-    const technician = await pool.query<{ id: string }>(
-      "SELECT id FROM technicians LIMIT 1",
-    );
+    // 4. Negative security test: Unauthenticated access to regulatory eligibility check is rejected (401)
+    const [techWithContractor] = await db
+      .select({
+        id: technicians.id,
+        contractorId: technicians.contractorId,
+      })
+      .from(technicians)
+      .limit(1);
+    const techId = techWithContractor?.id;
+    const contId = techWithContractor?.contractorId;
 
-    const failClosedCheck = await app.inject({
+    const unauthCheck = await app.inject({
       method: "POST",
       url: "/v1/compliance/eligibility-check",
       payload: {
         verticalSlug: "electrical",
         geography: "ON",
-        contractorId: contractor.rows[0]?.id,
-        technicianId: technician.rows[0]?.id,
+        contractorId: contId,
+        technicianId: techId,
+      },
+    });
+    expect(unauthCheck.statusCode).toBe(401);
+
+    // 5. Negative security test: Unauthorized non-operations caller is rejected (403)
+    const forbiddenCheck = await app.inject({
+      method: "POST",
+      url: "/v1/compliance/eligibility-check",
+      headers: auth("customer@example.test"),
+      payload: {
+        verticalSlug: "electrical",
+        geography: "ON",
+        contractorId: contId,
+        technicianId: techId,
+      },
+    });
+    expect(forbiddenCheck.statusCode).toBe(403);
+
+    // 6. Tenancy test: Mismatched contractor and technician is rejected (422 CONTRACTOR_TECHNICIAN_MISMATCH)
+    const [otherContractor] = contId
+      ? await db
+          .select({ id: contractors.id })
+          .from(contractors)
+          .where(ne(contractors.id, contId))
+          .limit(1)
+      : [];
+    if (otherContractor) {
+      const mismatchCheck = await app.inject({
+        method: "POST",
+        url: "/v1/compliance/eligibility-check",
+        headers: auth("admin@example.test"),
+        payload: {
+          verticalSlug: "electrical",
+          geography: "ON",
+          contractorId: otherContractor.id,
+          technicianId: techId,
+        },
+      });
+      expect(mismatchCheck.statusCode).toBe(422);
+      expect(mismatchCheck.json<{ code: string }>().code).toBe(
+        "CONTRACTOR_TECHNICIAN_MISMATCH",
+      );
+    }
+
+    // 7. Authoritative Dispatch Eligibility: Fail-closed when technician lacks mandatory trade credentials
+    const failClosedCheck = await app.inject({
+      method: "POST",
+      url: "/v1/compliance/eligibility-check",
+      headers: auth("admin@example.test"),
+      payload: {
+        verticalSlug: "electrical",
+        geography: "ON",
+        contractorId: contId,
+        technicianId: techId,
       },
     });
     expect(failClosedCheck.statusCode).toBe(200);
@@ -1205,5 +1390,122 @@ describe.runIf(enabled)("Skilled Hire lifecycle", () => {
     expect(failResult.eligible).toBe(false);
     expect(failResult.failClosed).toBe(true);
     expect(failResult.reasons.length).toBeGreaterThan(0);
+
+    // 8. Integrated Dispatch Assignment Transaction Gate: Real assignment fails closed (422 REGULATORY_ELIGIBILITY_FAILED)
+    const [elecVertical] = await db
+      .select({ id: verticals.id })
+      .from(verticals)
+      .where(eq(verticals.slug, "electrical"))
+      .limit(1);
+    const [custUserRecord] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, "customer@example.test"))
+      .limit(1);
+    const [custProp] = custUserRecord
+      ? await db
+          .select({ id: properties.id })
+          .from(properties)
+          .where(eq(properties.customerId, custUserRecord.id))
+          .limit(1)
+      : [];
+    const [elecCategory] = elecVertical
+      ? await db
+          .select({ id: serviceCategories.id })
+          .from(serviceCategories)
+          .where(eq(serviceCategories.verticalId, elecVertical.id))
+          .limit(1)
+      : [];
+    const [elecIssue] = elecCategory
+      ? await db
+          .select({ id: issueTypes.id })
+          .from(issueTypes)
+          .where(eq(issueTypes.categoryId, elecCategory.id))
+          .limit(1)
+      : [];
+
+    if (
+      elecVertical &&
+      custProp &&
+      elecCategory &&
+      elecIssue
+    ) {
+      if (contId) {
+        const [currentCont] = await db
+          .select({ verticalIds: contractors.verticalIds })
+          .from(contractors)
+          .where(eq(contractors.id, contId))
+          .limit(1);
+        const curV = (currentCont?.verticalIds as string[]) ?? [];
+        if (!curV.includes(elecVertical.id)) {
+          await db
+            .update(contractors)
+            .set({ verticalIds: [...curV, elecVertical.id] })
+            .where(eq(contractors.id, contId));
+        }
+      }
+
+      const createElecReq = await app.inject({
+        method: "POST",
+        url: "/v1/service-requests",
+        headers: auth("customer@example.test"),
+        payload: {
+          propertyId: custProp.id,
+          verticalId: elecVertical.id,
+          categoryId: elecCategory.id,
+          issueTypeId: elecIssue.id,
+          urgency: "STANDARD",
+          description: "Electrical service panel requires inspection",
+        },
+      });
+      expect(createElecReq.statusCode).toBe(201);
+      const elecReqId = createElecReq.json<{ id: string }>().id;
+
+      for (const to of [
+        "QUALIFICATION_PENDING",
+        "QUALIFIED",
+        "SCHEDULING",
+        "SCHEDULED",
+        "CONTRACTOR_SEARCH",
+      ] as const) {
+        const trans = await app.inject({
+          method: "POST",
+          url: `/v1/service-requests/${elecReqId}/transition`,
+          headers: auth("dispatch@example.test"),
+          payload: { to },
+        });
+        expect(trans.statusCode).toBe(200);
+      }
+
+      const blockedAssign = await app.inject({
+        method: "POST",
+        url: `/v1/dispatch/${elecReqId}/assign`,
+        headers: auth("dispatch@example.test"),
+        payload: { technicianId: techId },
+      });
+      expect(blockedAssign.statusCode).toBe(422);
+      expect(blockedAssign.json<{ code: string }>().code).toBe(
+        "REGULATORY_ELIGIBILITY_FAILED",
+      );
+    }
+
+    // 9. Database check constraint verification: SELF_UPLOAD cannot directly hold VERIFIED status
+    let constraintTriggered = false;
+    try {
+      await db.insert(credentials).values({
+        technicianId: techId,
+        code: "TEST_UNAUDITED",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "SELF_UPLOAD",
+      });
+    } catch (err: any) {
+      constraintTriggered =
+        err.message?.includes("credentials_fail_closed_verification") ||
+        err.code === "23514" ||
+        err.cause?.code === "23514" ||
+        err.cause?.message?.includes("credentials_fail_closed_verification");
+    }
+    expect(constraintTriggered).toBe(true);
   });
 });
