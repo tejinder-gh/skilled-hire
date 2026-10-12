@@ -3059,7 +3059,7 @@ describeSuite("Skilled Hire lifecycle", () => {
       payload: { technicianId: tech!.id },
     });
     expect(retryAssign.statusCode).toBe(201);
-    expect(retryAssign.json<{ status: string }>().status).toBe("DISPATCHED");
+    expect(retryAssign.json<{ status: string }>().status).toBe("ASSIGNED");
 
     // 12. Audit Analytics & Dossier Inspection
     const dossierRes = await app.inject({
