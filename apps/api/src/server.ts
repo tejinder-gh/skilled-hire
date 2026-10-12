@@ -119,6 +119,41 @@ function actor(request: FastifyRequest): Actor {
   if (!request.actor) throw new Error("UNAUTHENTICATED");
   return request.actor;
 }
+async function tryAuthenticate(
+  request: FastifyRequest,
+): Promise<Actor | null> {
+  try {
+    const payload = await request.jwtVerify<{
+      sub: string;
+      sessionVersion: number;
+    }>();
+    const rows = await pool.query<{
+      id: string;
+      session_version: number;
+      roles: unknown;
+      contractor_id: string | null;
+    }>(
+      `SELECT u.id,u.session_version,COALESCE(array_agg(ur.role) FILTER(WHERE ur.role IS NOT NULL), '{}') AS roles, COALESCE((SELECT t.contractor_id FROM technicians t WHERE t.user_id=u.id LIMIT 1), (SELECT c.id FROM contractors c WHERE c.owner_user_id=u.id LIMIT 1)) contractor_id FROM users u LEFT JOIN user_roles ur ON ur.user_id=u.id WHERE u.id=$1 AND u.deleted_at IS NULL GROUP BY u.id`,
+      [payload.sub],
+    );
+    const user = rows.rows[0];
+    if (!user || user.session_version !== payload.sessionVersion) return null;
+    return {
+      id: user.id,
+      roles: rolesSchema.parse(user.roles),
+      ...(user.contractor_id ? { contractorId: user.contractor_id } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+function isAdminActor(act: Actor | null): boolean {
+  return Boolean(
+    act &&
+      (act.roles.includes("ADMIN") ||
+        act.roles.includes("SUPER_ADMIN")),
+  );
+}
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   return schema.parse(input);
 }
@@ -351,6 +386,9 @@ app.get("/v1/catalog", async (request) => {
     riskTier: z.enum(["LOW", "MODERATE", "HIGH", "CRITICAL"]).optional(),
   });
   const q = querySchema.parse(request.query);
+  const currentActor = await tryAuthenticate(request);
+  const isAdmin = isAdminActor(currentActor);
+  const launchReadyOnly = isAdmin && q.launchReadyOnly === false ? false : true;
 
   const queryParams: unknown[] = [];
   const whereClauses: string[] = ["active = true"];
@@ -358,7 +396,7 @@ app.get("/v1/catalog", async (request) => {
     queryParams.push(q.family);
     whereClauses.push(`family = $${queryParams.length}`);
   }
-  if (q.launchReadyOnly) {
+  if (launchReadyOnly) {
     whereClauses.push("launch_ready = true");
   }
   if (q.riskTier) {
@@ -388,7 +426,7 @@ app.get("/v1/catalog", async (request) => {
   );
 
   const catWhere: string[] = ["active = true"];
-  if (q.launchReadyOnly) catWhere.push("launch_ready = true");
+  if (launchReadyOnly) catWhere.push("launch_ready = true");
 
   const categoriesResult = await pool.query<{
     id: string;
@@ -408,7 +446,7 @@ app.get("/v1/catalog", async (request) => {
   );
 
   const issueWhere: string[] = ["active = true"];
-  if (q.launchReadyOnly) issueWhere.push("launch_ready = true");
+  if (launchReadyOnly) issueWhere.push("launch_ready = true");
 
   const variantsResult = await pool.query<{
     id: string;
@@ -441,6 +479,16 @@ app.get("/v1/catalog", async (request) => {
 
   const variantsByCat = new Map<string, typeof variantsResult.rows>();
   for (const variant of variantsResult.rows) {
+    if (q.geography !== "*") {
+      const geos = Array.isArray(variant.geographic_restrictions)
+        ? (variant.geographic_restrictions as string[])
+        : [];
+      const matchesGeo =
+        geos.length === 0 ||
+        geos.includes("*") ||
+        geos.map((g) => g.toUpperCase()).includes(q.geography.toUpperCase());
+      if (!matchesGeo) continue;
+    }
     const list = variantsByCat.get(variant.category_id) ?? [];
     list.push(variant);
     variantsByCat.set(variant.category_id, list);
@@ -448,11 +496,12 @@ app.get("/v1/catalog", async (request) => {
 
   const catsByVertical = new Map<string, Array<unknown>>();
   for (const category of categoriesResult.rows) {
-    const variants = (variantsByCat.get(category.id) ?? []).map((v) => ({
+    const rawVariants = variantsByCat.get(category.id) ?? [];
+    if (rawVariants.length === 0) continue;
+    const variants = rawVariants.map((v) => ({
       ...v,
       basePriceCents: Number(v.base_price_cents),
     }));
-    if (q.launchReadyOnly && variants.length === 0) continue;
     const catObj = {
       ...category,
       variants,
@@ -467,9 +516,7 @@ app.get("/v1/catalog", async (request) => {
       ...v,
       categories: catsByVertical.get(v.id) ?? [],
     }))
-    .filter(
-      (v) => !q.launchReadyOnly || (v.categories && v.categories.length > 0),
-    );
+    .filter((v) => v.categories && v.categories.length > 0);
 });
 
 app.get("/v1/catalog/search", async (request) => {
@@ -484,6 +531,9 @@ app.get("/v1/catalog/search", async (request) => {
     maxRiskTier: z.enum(["LOW", "MODERATE", "HIGH", "CRITICAL"]).optional(),
   });
   const q = querySchema.parse(request.query);
+  const currentActor = await tryAuthenticate(request);
+  const isAdmin = isAdminActor(currentActor);
+  const launchReadyOnly = isAdmin && q.launchReadyOnly === false ? false : true;
   const queryTokens = q.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
   const searchWhere: string[] = [
@@ -496,7 +546,7 @@ app.get("/v1/catalog/search", async (request) => {
     searchParams.push(q.family);
     searchWhere.push(`v.family = $${searchParams.length}`);
   }
-  if (q.launchReadyOnly) {
+  if (launchReadyOnly) {
     searchWhere.push(
       "i.launch_ready = true",
       "c.launch_ready = true",
@@ -1031,6 +1081,10 @@ app.patch(
     if (body.displayOrder !== undefined) {
       values.push(body.displayOrder);
       fields.push(`display_order=$${values.length}`);
+    }
+    if (body.equipmentFields !== undefined) {
+      values.push(JSON.stringify(body.equipmentFields));
+      fields.push(`equipment_fields=$${values.length}`);
     }
 
     if (fields.length > 0) {

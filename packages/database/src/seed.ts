@@ -1,6 +1,9 @@
 import "dotenv/config";
 import { hashPassword } from "@marketplace/auth";
-import { CANONICAL_TRADE_CATALOG } from "@marketplace/vertical-engine";
+import {
+  CANONICAL_TRADE_CATALOG,
+  DEFAULT_COMPLIANCE_STANDARDS,
+} from "@marketplace/vertical-engine";
 import { pool } from "./index.js";
 
 const password = await hashPassword("DemoPassword!2026");
@@ -46,16 +49,27 @@ const technicianUser = await user(
 // 1. Seed all 21 Canonical Trade Verticals, Categories, and Service Variants
 for (const entry of CANONICAL_TRADE_CATALOG) {
   const branding = { displayName: entry.name, domain: "skilledhire.ca" };
+  const tradeStandards = DEFAULT_COMPLIANCE_STANDARDS.filter(
+    (s) => s.verticalSlug === entry.slug && s.active,
+  );
+  const credentialRequirements =
+    tradeStandards.length > 0
+      ? tradeStandards.map((s) => ({
+          code: s.credentialCode,
+          geography: s.geography,
+          verificationRequired: s.requirementLevel === "MANDATORY",
+        }))
+      : [
+          {
+            code: `${entry.slug.toUpperCase().replace(/-/g, "_")}_LICENSE`,
+            geography: "ON",
+            verificationRequired: true,
+          },
+        ];
   const config = {
     branding,
     emergencyRules: [{ targetMinutes: 120, calloutFeeCents: 14900 }],
-    credentialRequirements: [
-      {
-        code: `${entry.slug.toUpperCase()}_LICENSE`,
-        geography: "ON",
-        verificationRequired: true,
-      },
-    ],
+    credentialRequirements,
   };
   const vRes = await pool.query<{ id: string }>(
     `INSERT INTO verticals(slug, name, family, description, icon, risk_tier, permit_authority, launch_ready, display_order, config)
@@ -68,7 +82,8 @@ for (const entry of CANONICAL_TRADE_CATALOG) {
        risk_tier = EXCLUDED.risk_tier,
        permit_authority = EXCLUDED.permit_authority,
        launch_ready = EXCLUDED.launch_ready,
-       display_order = EXCLUDED.display_order
+       display_order = EXCLUDED.display_order,
+       config = EXCLUDED.config
      RETURNING id`,
     [
       entry.slug,
@@ -211,6 +226,26 @@ await pool.query(
   "INSERT INTO credentials(technician_id,code,geography,status,expiry_date,verified_at) SELECT $1,'HVAC_LICENSE','ON','VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE technician_id=$1 AND code='HVAC_LICENSE')",
   [technician],
 );
+const hvacMandatoryStandards = DEFAULT_COMPLIANCE_STANDARDS.filter(
+  (s) =>
+    s.verticalSlug === "hvac" &&
+    s.geography === "ON" &&
+    s.active &&
+    s.requirementLevel === "MANDATORY",
+);
+for (const std of hvacMandatoryStandards) {
+  if (std.entityLevel === "CONTRACTOR") {
+    await pool.query(
+      "INSERT INTO credentials(contractor_id,code,geography,status,expiry_date,verified_at) SELECT $1,$2,$3,'VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE contractor_id=$1 AND code=$2)",
+      [contractor, std.credentialCode, std.geography],
+    );
+  } else {
+    await pool.query(
+      "INSERT INTO credentials(technician_id,code,geography,status,expiry_date,verified_at) SELECT $1,$2,$3,'VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE technician_id=$1 AND code=$2)",
+      [technician, std.credentialCode, std.geography],
+    );
+  }
+}
 await pool.query(
   "INSERT INTO payment_rules(vertical_id,min_amount_cents,max_amount_cents,rule) SELECT $1,0,NULL,$2 WHERE NOT EXISTS (SELECT 1 FROM payment_rules WHERE vertical_id=$1 AND min_amount_cents=0 AND max_amount_cents IS NULL)",
   [
@@ -287,6 +322,19 @@ for (const fixture of [
     "INSERT INTO credentials(technician_id,code,geography,status,expiry_date,verified_at) SELECT $1,'HVAC_LICENSE','ON','VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE technician_id=$1 AND code='HVAC_LICENSE')",
     [techId],
   );
+  for (const std of hvacMandatoryStandards) {
+    if (std.entityLevel === "CONTRACTOR") {
+      await pool.query(
+        "INSERT INTO credentials(contractor_id,code,geography,status,expiry_date,verified_at) SELECT $1,$2,$3,'VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE contractor_id=$1 AND code=$2)",
+        [companyId, std.credentialCode, std.geography],
+      );
+    } else {
+      await pool.query(
+        "INSERT INTO credentials(technician_id,code,geography,status,expiry_date,verified_at) SELECT $1,$2,$3,'VERIFIED',current_date + interval '365 days',now() WHERE NOT EXISTS (SELECT 1 FROM credentials WHERE technician_id=$1 AND code=$2)",
+        [techId, std.credentialCode, std.geography],
+      );
+    }
+  }
 }
 console.log("Seeded. Demo password: DemoPassword!2026");
 console.log({
