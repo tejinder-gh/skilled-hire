@@ -2729,8 +2729,9 @@ describeSuite("Skilled Hire lifecycle", () => {
       headers: auth("dispatch@example.test"),
       payload: { technicianId: tech!.id },
     });
-    expect(assignRes1.statusCode).toBe(200);
-    const job1Id = assignRes1.json<{ id: string }>().id;
+    expect(assignRes1.statusCode).toBe(201);
+    const assignJson1 = assignRes1.json<{ jobId: string; id?: string }>();
+    const job1Id = assignJson1.jobId ?? assignJson1.id;
     expect(job1Id).toBeDefined();
 
     // 3. Safety Incident Intake with Critical Emergency Escalation
@@ -3058,7 +3059,7 @@ describeSuite("Skilled Hire lifecycle", () => {
       headers: auth("dispatch@example.test"),
       payload: { technicianId: tech!.id },
     });
-    expect(retryAssign.statusCode).toBe(200);
+    expect(retryAssign.statusCode).toBe(201);
     expect(retryAssign.json<{ status: string }>().status).toBe("DISPATCHED");
 
     // 12. Audit Analytics & Dossier Inspection
