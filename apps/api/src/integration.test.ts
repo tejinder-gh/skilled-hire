@@ -1774,5 +1774,103 @@ describeSuite("Skilled Hire lifecycle", () => {
     });
     expect(legitOwnerSubmitRes.statusCode).toBe(201);
     expect(legitOwnerSubmitRes.json<{ status: string }>().status).toBe("PENDING");
+
+    // 12. Test: Manager submits credentials for own contractor and technician -> 201 PENDING
+    const managerEmail = "manager@example.test";
+    const [existingMgr] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, managerEmail))
+      .limit(1);
+    let managerUserId: string;
+    if (!existingMgr) {
+      const [newMgr] = await db
+        .insert(users)
+        .values({
+          email: managerEmail,
+          passwordHash: (
+            await db
+              .select({ hash: users.passwordHash })
+              .from(users)
+              .where(eq(users.email, "owner@example.test"))
+              .limit(1)
+          )[0]!.hash,
+          displayName: "Contractor Manager",
+        })
+        .returning({ id: users.id });
+      managerUserId = newMgr!.id;
+      await db.insert(userRoles).values([
+        { userId: managerUserId, role: "CONTRACTOR_MANAGER" },
+        { userId: managerUserId, role: "OPERATIONS_AGENT" }, // Multi-role user to verify isStaffOverride fix
+      ]);
+    } else {
+      managerUserId = existingMgr.id;
+    }
+
+    await login(managerEmail);
+    const contractorAId = contractorA!.id;
+
+    // Manager submits contractor credential specifying contractorA.id -> 201
+    const managerContractorSubRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth(managerEmail),
+      payload: {
+        entityType: "CONTRACTOR",
+        contractorId: contractorAId,
+        code: "CGL_INSURANCE_2M",
+        geography: "ON",
+        documentKey: "uploads/compliance/manager-cgl.pdf",
+      },
+    });
+    expect(managerContractorSubRes.statusCode).toBe(201);
+    const mgrCredId = managerContractorSubRes.json<{ id: string }>().id;
+
+    // Verify audit event: isStaffOverride must be false because manager+ops is NOT ADMIN/SUPER_ADMIN
+    const [auditEv] = await db
+      .select({ metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "CREDENTIAL_SUBMITTED"),
+          eq(auditEvents.entityId, mgrCredId),
+        ),
+      )
+      .limit(1);
+    expect(
+      (auditEv?.metadata as { isStaffOverride?: boolean })?.isStaffOverride,
+    ).toBe(false);
+
+    // Manager submits technician credential for technician A -> 201
+    const managerTechSubRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth(managerEmail),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techA!.id,
+        contractorId: contractorAId,
+        code: "CA_ODS_REFRIGERANT",
+        geography: "ON",
+        documentKey: "uploads/compliance/manager-ods.pdf",
+      },
+    });
+    expect(managerTechSubRes.statusCode).toBe(201);
+
+    // Manager attempts to submit for rival Contractor B's technician -> 403 FORBIDDEN
+    const managerCrossTechRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth(managerEmail),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techBId,
+        contractorId: contractorAId,
+        code: "CA_ODS_REFRIGERANT",
+        geography: "ON",
+        documentKey: "uploads/compliance/manager-cross-tech.pdf",
+      },
+    });
+    expect(managerCrossTechRes.statusCode).toBe(403);
   });
 });

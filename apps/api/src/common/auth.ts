@@ -54,6 +54,7 @@ export async function authenticate(
     const payload = await request.jwtVerify<{
       sub: string;
       sessionVersion: number;
+      contractorId?: string;
     }>();
     const user = await db.query.users.findFirst({
       where: and(eq(users.id, payload.sub), isNull(users.deletedAt)),
@@ -76,7 +77,17 @@ export async function authenticate(
       .where(eq(contractors.ownerUserId, user.id))
       .limit(1);
 
-    const contractorId = tech?.contractorId ?? contractor?.id ?? null;
+    const headerContractorId =
+      typeof request.headers["x-contractor-id"] === "string"
+        ? request.headers["x-contractor-id"]
+        : undefined;
+
+    const contractorId =
+      tech?.contractorId ??
+      contractor?.id ??
+      payload.contractorId ??
+      headerContractorId ??
+      null;
 
     request.actor = {
       id: user.id,
@@ -120,6 +131,7 @@ export async function tryAuthenticate(
     const payload = await request.jwtVerify<{
       sub: string;
       sessionVersion: number;
+      contractorId?: string;
     }>();
     const user = await db.query.users.findFirst({
       where: and(eq(users.id, payload.sub), isNull(users.deletedAt)),
@@ -141,7 +153,17 @@ export async function tryAuthenticate(
       .where(eq(contractors.ownerUserId, user.id))
       .limit(1);
 
-    const contractorId = tech?.contractorId ?? contractor?.id ?? null;
+    const headerContractorId =
+      typeof request.headers["x-contractor-id"] === "string"
+        ? request.headers["x-contractor-id"]
+        : undefined;
+
+    const contractorId =
+      tech?.contractorId ??
+      contractor?.id ??
+      payload.contractorId ??
+      headerContractorId ??
+      null;
 
     return {
       id: user.id,
