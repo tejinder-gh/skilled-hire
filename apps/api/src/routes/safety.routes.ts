@@ -669,6 +669,7 @@ export const safetyRoutes: FastifyPluginAsync = async (app) => {
         currentActor,
         "CONTRACTOR_OWNER",
         "OPERATIONS_AGENT",
+        "DISPATCHER",
         "ADMIN",
         "SUPER_ADMIN",
       );
@@ -864,7 +865,13 @@ export const safetyRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: authenticate },
     async (request, reply) => {
       const currentActor = actor(request);
-      requireRole(currentActor, "OPERATIONS_AGENT", "ADMIN", "SUPER_ADMIN");
+      requireRole(
+        currentActor,
+        "OPERATIONS_AGENT",
+        "DISPATCHER",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
       const auditId = parse(z.object({ id: uuid }), request.params).id;
       const body = parse(conductQualityAuditSchema, request.body);
 
