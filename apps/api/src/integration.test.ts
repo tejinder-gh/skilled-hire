@@ -26,6 +26,8 @@ import {
   safetyIncidentActions,
   contractorSafetyQuarantines,
   qualityAudits,
+  electricalPermits,
+  permitDeficiencies,
   auditEvents,
   refunds,
   eq,
@@ -3094,6 +3096,387 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(auditsJson.audits.length).toBeGreaterThanOrEqual(1);
     expect(auditsJson.repeatDefectSummary.totalAudits).toBeGreaterThanOrEqual(1);
     expect(auditsJson.repeatDefectSummary.repeatDefectThresholdExceeded).toBe(false);
+  });
+
+  it("enforces electrical permits, ESA inspection evidence, defect remediation, and certificate of acceptance (#59)", async () => {
+    // 1. Identify trade entities (Electrical)
+    const [elecVertical] = await db
+      .select({ id: verticals.id, slug: verticals.slug })
+      .from(verticals)
+      .where(eq(verticals.slug, "electrical"))
+      .limit(1);
+    expect(elecVertical).toBeDefined();
+
+    const [elecCat] = await db
+      .select({ id: serviceCategories.id, slug: serviceCategories.slug })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, elecVertical!.id))
+      .limit(1);
+    expect(elecCat).toBeDefined();
+
+    const [elecIssue] = await db
+      .select({ id: issueTypes.id, slug: issueTypes.slug })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, elecCat!.id))
+      .limit(1);
+    expect(elecIssue).toBeDefined();
+
+    const [cont] = await db
+      .select({ id: contractors.id, verticalIds: contractors.verticalIds })
+      .from(contractors)
+      .where(eq(contractors.status, "VERIFIED"))
+      .limit(1);
+    expect(cont).toBeDefined();
+
+    const [tech] = await db
+      .select({ id: technicians.id, userId: technicians.userId })
+      .from(technicians)
+      .where(
+        and(
+          eq(technicians.contractorId, cont!.id),
+          eq(technicians.active, true),
+        ),
+      )
+      .limit(1);
+    expect(tech).toBeDefined();
+
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .limit(1);
+    expect(prop).toBeDefined();
+
+    // 2. Customer creates service request for 200A panel upgrade
+    const createReq = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: prop!.id,
+        verticalId: elecVertical!.id,
+        categoryId: elecCat!.id,
+        issueTypeId: elecIssue!.id,
+        urgency: "STANDARD",
+        description:
+          "200A main service panel upgrade requiring ESA permit and Toronto Hydro disconnect",
+      },
+    });
+    expect(createReq.statusCode).toBe(201);
+    const reqId = createReq.json<{ id: string }>().id;
+
+    for (const to of [
+      "QUALIFICATION_PENDING",
+      "QUALIFIED",
+      "SCHEDULING",
+      "SCHEDULED",
+      "CONTRACTOR_SEARCH",
+    ] as const) {
+      const trans = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${reqId}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(trans.statusCode).toBe(200);
+    }
+
+    // 3. Dispatch assignment and worker commencement
+    const assignRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${reqId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(assignRes.statusCode).toBe(201);
+    const assignJson = assignRes.json<{ jobId: string; id?: string }>();
+    const jobId = assignJson.jobId ?? assignJson.id;
+    expect(jobId).toBeDefined();
+
+    // Verify worker identity
+    const verifyIdRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/verify-worker-identity`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        method: "GOVT_PHOTO_ID",
+        documentReference: "DL-ON-448822-192",
+      },
+    });
+    expect(verifyIdRes.statusCode).toBe(200);
+
+    // Commence work
+    const commenceRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/commence-work`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(commenceRes.statusCode).toBe(200);
+
+    // 4. Contractor files Electrical Permit / ESA Notification
+    const filePermitRes = await app.inject({
+      method: "POST",
+      url: "/v1/permits/electrical",
+      headers: auth("dispatch@example.test"),
+      payload: {
+        jobId,
+        esaNotificationNumber: "ESA-NOTIF-2026-88129",
+        ecraLicenseNumber: "ECRA-ESA-7001122",
+        designatedMasterElectrician: "David Chen (ME-309A-1082)",
+        scopeOfWork:
+          "Complete 200A service disconnect, meter base replacement, and 40-circuit breaker panel installation",
+        utilityDisconnectRequired: true,
+        utilityProvider: "Toronto Hydro",
+        utilityMeterNumber: "TH-MTR-449102",
+        utilityDisconnectDate: new Date().toISOString(),
+      },
+    });
+    expect(filePermitRes.statusCode).toBe(201);
+    const permitJson = filePermitRes.json<{
+      id: string;
+      permitNumber: string;
+      status: string;
+      regulatorySignOffStatus: string;
+    }>();
+    expect(permitJson.id).toBeDefined();
+    expect(permitJson.permitNumber).toMatch(/^PERM-/);
+    expect(permitJson.status).toBe("FILED");
+    expect(permitJson.regulatorySignOffStatus).toBe("PENDING");
+    const permitId = permitJson.id;
+
+    // Verify jobs table updated
+    const [permitJob] = await db
+      .select({
+        permitRequired: jobs.permitRequired,
+        regulatorySignOffStatus: jobs.regulatorySignOffStatus,
+      })
+      .from(jobs)
+      .where(eq(jobs.id, jobId));
+    expect(permitJob?.permitRequired).toBe(true);
+    expect(permitJob?.regulatorySignOffStatus).toBe("PENDING");
+
+    // 5. Utility Disconnect & Reconnect Coordination
+    const coordUtilityRes = await app.inject({
+      method: "POST",
+      url: `/v1/permits/electrical/${permitId}/utility`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        utilityProvider: "Toronto Hydro",
+        utilityMeterNumber: "TH-MTR-449102",
+        utilityDisconnectDate: new Date().toISOString(),
+        utilityReconnectAuthorizationCode: "TH-RECONN-AUTH-88219",
+        utilityReconnectDate: new Date().toISOString(),
+      },
+    });
+    expect(coordUtilityRes.statusCode).toBe(200);
+    expect(
+      coordUtilityRes.json<{ utilityReconnectAuthorizationCode: string }>()
+        .utilityReconnectAuthorizationCode,
+    ).toBe("TH-RECONN-AUTH-88219");
+
+    // 6. Contractor finishes physical work
+    const completeLaborRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/complete`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        summary:
+          "200A panel installed, breakers torqued to spec, power restored via Toronto Hydro authorization",
+        equipment: {
+          panelManufacturer: "Schneider Square D",
+          amps: "200",
+        },
+      },
+    });
+    expect(completeLaborRes.statusCode).toBe(200);
+
+    // 7. Full Acceptance Gate Enforcement (Fail Closed: Regulatory Sign-Off Pending)
+    const earlyAcceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/accept-completion`,
+      headers: auth("customer@example.test"),
+    });
+    expect(earlyAcceptRes.statusCode).toBe(422);
+    const earlyAcceptJson = earlyAcceptRes.json<{
+      code: string;
+      details: {
+        missingItems: string[];
+        customerSummary: {
+          requiresPermit: boolean;
+          utilityDisconnectCoordinated: boolean;
+        };
+      };
+    }>();
+    expect(earlyAcceptJson.code).toBe("REGULATORY_SIGN_OFF_REQUIRED");
+    expect(earlyAcceptJson.details.missingItems).toContain(
+      "MISSING_CERTIFICATE_OF_ACCEPTANCE",
+    );
+    expect(earlyAcceptJson.details.customerSummary.requiresPermit).toBe(true);
+    expect(
+      earlyAcceptJson.details.customerSummary.utilityDisconnectCoordinated,
+    ).toBe(true);
+
+    // 8. ESA Inspector issues Defect Notice (Deficiency Recorded)
+    const defectRes = await app.inject({
+      method: "POST",
+      url: `/v1/permits/electrical/${permitId}/deficiencies`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        defectCode: "OESC-10-204",
+        severity: "MAJOR",
+        description:
+          "Cold water bonding jumper connection loose at water meter shutoff",
+        correctiveActionRequired:
+          "Tighten approved bronze ground clamp and verify continuous 0.5 ohm continuity",
+      },
+    });
+    expect(defectRes.statusCode).toBe(201);
+    const defectJson = defectRes.json<{ id: string; status: string }>();
+    expect(defectJson.status).toBe("OPEN");
+    const defectId = defectJson.id;
+
+    // Verify acceptance gate reports unresolved defects
+    const defectGateRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/accept-completion`,
+      headers: auth("customer@example.test"),
+    });
+    expect(defectGateRes.statusCode).toBe(422);
+    expect(
+      defectGateRes.json<{ details: { missingItems: string[] } }>().details
+        .missingItems,
+    ).toContain("UNRESOLVED_ESA_DEFICIENCIES");
+
+    // 9. Contractor Rectification & Inspector Defect Clearance
+    const rectifyRes = await app.inject({
+      method: "POST",
+      url: `/v1/permits/electrical/${permitId}/deficiencies/${defectId}/rectify`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        rectificationNotes:
+          "Installed new bronze grounding clamp torqued to 35 in-lbs, continuity verified at 0.1 ohms",
+        rectificationEvidenceUrl:
+          "https://evidence.example.test/permits/ground-clamp-rectified.jpg",
+      },
+    });
+    expect(rectifyRes.statusCode).toBe(200);
+    expect(rectifyRes.json<{ status: string }>().status).toBe("RECTIFIED");
+
+    // Rectified but un-cleared by inspector still blocks acceptance
+    const unclearedGateRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/accept-completion`,
+      headers: auth("customer@example.test"),
+    });
+    expect(unclearedGateRes.statusCode).toBe(422);
+    expect(
+      unclearedGateRes.json<{ details: { missingItems: string[] } }>().details
+        .missingItems,
+    ).toContain("UNRESOLVED_ESA_DEFICIENCIES");
+
+    // Inspector clears defect
+    const clearRes = await app.inject({
+      method: "POST",
+      url: `/v1/permits/electrical/${permitId}/deficiencies/${defectId}/clear`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        clearedByInspector: "ESA Inspector #4109 (Marcus Vance)",
+        clearedNotes:
+          "Re-inspection verified compliant bonding connection to OESC 10-204",
+      },
+    });
+    expect(clearRes.statusCode).toBe(200);
+    expect(clearRes.json<{ status: string }>().status).toBe(
+      "CLEARED_BY_INSPECTOR",
+    );
+
+    // 10. Authoritative Certificate of Acceptance Registration
+    const coaRes = await app.inject({
+      method: "POST",
+      url: `/v1/permits/electrical/${permitId}/certificate-of-acceptance`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        certificateOfAcceptanceNumber: "ESA-COA-2026-992144",
+        certificateOfAcceptanceUrl:
+          "https://evidence.example.test/esa/coa-992144.pdf",
+        inspectorName: "Marcus Vance",
+        inspectorBadgeNumber: "ESA-INSP-4109",
+        issuedAt: new Date().toISOString(),
+      },
+    });
+    expect(coaRes.statusCode).toBe(200);
+    const coaJson = coaRes.json<{
+      status: string;
+      regulatorySignOffStatus: string;
+      certificateOfAcceptanceNumber: string;
+    }>();
+    expect(coaJson.status).toBe("CERTIFICATE_ISSUED");
+    expect(coaJson.regulatorySignOffStatus).toBe("FULLY_ACCEPTED");
+    expect(coaJson.certificateOfAcceptanceNumber).toBe("ESA-COA-2026-992144");
+
+    // Verify DB on jobs and service_records
+    const [updatedJob] = await db
+      .select({
+        regulatorySignOffStatus: jobs.regulatorySignOffStatus,
+        certificateOfAcceptanceNumber: jobs.certificateOfAcceptanceNumber,
+      })
+      .from(jobs)
+      .where(eq(jobs.id, jobId));
+    expect(updatedJob?.regulatorySignOffStatus).toBe("FULLY_ACCEPTED");
+    expect(updatedJob?.certificateOfAcceptanceNumber).toBe(
+      "ESA-COA-2026-992144",
+    );
+
+    // 11. Customer Full Acceptance Gate Passed
+    const finalAcceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/accept-completion`,
+      headers: auth("customer@example.test"),
+    });
+    expect(finalAcceptRes.statusCode).toBe(200);
+    const finalAcceptJson = finalAcceptRes.json<{
+      fullyAccepted: boolean;
+      status: string;
+      regulatorySignOffStatus: string;
+      certificateOfAcceptanceNumber: string;
+    }>();
+    expect(finalAcceptJson.fullyAccepted).toBe(true);
+    expect(finalAcceptJson.status).toBe("CLOSED");
+    expect(finalAcceptJson.regulatorySignOffStatus).toBe("FULLY_ACCEPTED");
+    expect(finalAcceptJson.certificateOfAcceptanceNumber).toBe(
+      "ESA-COA-2026-992144",
+    );
+
+    // 12. Property Service Record & Transparency Dossier
+    const permitDossierRes = await app.inject({
+      method: "GET",
+      url: `/v1/permits/jobs/${jobId}`,
+      headers: auth("customer@example.test"),
+    });
+    expect(permitDossierRes.statusCode).toBe(200);
+    const dossierJson = permitDossierRes.json<{
+      permit: { esaNotificationNumber: string; certificateOfAcceptanceNumber: string };
+      acceptanceEvaluation: {
+        canFullyAccept: boolean;
+        customerSummary: {
+          requiresPermit: boolean;
+          utilityDisconnectCoordinated: boolean;
+          hasOutstandingDefects: boolean;
+        };
+      };
+    }>();
+    expect(dossierJson.permit.esaNotificationNumber).toBe("ESA-NOTIF-2026-88129");
+    expect(dossierJson.permit.certificateOfAcceptanceNumber).toBe(
+      "ESA-COA-2026-992144",
+    );
+    expect(dossierJson.acceptanceEvaluation.canFullyAccept).toBe(true);
+    expect(
+      dossierJson.acceptanceEvaluation.customerSummary.hasOutstandingDefects,
+    ).toBe(false);
+    expect(
+      dossierJson.acceptanceEvaluation.customerSummary
+        .utilityDisconnectCoordinated,
+    ).toBe(true);
   });
 });
 

@@ -394,4 +394,56 @@ export const conductQualityAuditSchema = z.object({
   reportNotes: z.string().max(2000).optional(),
 });
 
+// Electrical Permits, Inspection Evidence & ESA Compliance (#59)
+export const fileElectricalPermitSchema = z.object({
+  jobId: uuid,
+  esaNotificationNumber: z.string().min(5).max(100),
+  ecraLicenseNumber: z.string().min(5).max(100),
+  designatedMasterElectrician: z.string().min(2).max(150),
+  scopeOfWork: z.string().min(10).max(2000),
+  utilityDisconnectRequired: z.boolean().default(false),
+  utilityProvider: z.string().max(100).optional(),
+  utilityMeterNumber: z.string().max(100).optional(),
+  utilityDisconnectDate: z.string().optional(),
+});
+
+export const coordinateUtilitySchema = z.object({
+  utilityProvider: z.string().min(2).max(100),
+  utilityMeterNumber: z.string().min(2).max(100),
+  utilityDisconnectDate: z.string().optional(),
+  utilityReconnectAuthorizationCode: z.string().min(3).max(100),
+  utilityReconnectDate: z.string().optional(),
+});
+
+export const recordPermitDeficiencySchema = z.object({
+  defectCode: z.string().min(2).max(50),
+  severity: z.enum(["CRITICAL", "MAJOR", "MINOR"]).default("MAJOR"),
+  description: z.string().min(5).max(1000),
+  correctiveActionRequired: z.string().min(5).max(1000),
+});
+
+export const rectifyPermitDeficiencySchema = z.object({
+  rectificationNotes: z.string().min(5).max(1000),
+  rectificationEvidenceUrl: z.string().url().max(512).optional(),
+});
+
+export const clearPermitDeficiencySchema = z.object({
+  clearedByInspector: z.string().min(2).max(150),
+  clearedNotes: z.string().max(1000).optional(),
+});
+
+export const uploadCertificateOfAcceptanceSchema = z.object({
+  certificateOfAcceptanceNumber: z.string().min(5).max(100),
+  certificateOfAcceptanceUrl: z.string().url().max(512).optional(),
+  inspectorName: z.string().min(2).max(150),
+  inspectorBadgeNumber: z.string().min(2).max(100).optional(),
+  issuedAt: z.string().optional(),
+});
+
+export const documentRegulatoryExceptionSchema = z.object({
+  documentedExceptionReason: z.string().min(10).max(2000),
+  exceptionRuleReference: z.string().min(3).max(100),
+});
+
+
 

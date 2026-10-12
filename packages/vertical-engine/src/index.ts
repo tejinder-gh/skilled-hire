@@ -17,6 +17,7 @@ export * from "./regulatory.js";
 export * from "./capability.js";
 export * from "./predispatch.js";
 export * from "./safety.js";
+export * from "./permits.js";
 
 export function validateVerticalConfig(config: VerticalConfig): void {
   const categoryIds = new Set(

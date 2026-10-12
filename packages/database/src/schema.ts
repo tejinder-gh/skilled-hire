@@ -353,6 +353,11 @@ export const serviceRequests = pgTable("service_requests", {
   status: requestStatusEnum("status").notNull().default("DRAFT"),
   description: text("description").notNull(),
   equipment: jsonb("equipment").notNull().default({}),
+  permitId: uuid("permit_id"),
+  certificateOfAcceptanceNumber: text("certificate_of_acceptance_number"),
+  regulatorySignOffStatus: text("regulatory_sign_off_status")
+    .notNull()
+    .default("NOT_APPLICABLE"),
   preferredStartsAt: timestamp("preferred_starts_at", { withTimezone: true }),
   preferredEndsAt: timestamp("preferred_ends_at", { withTimezone: true }),
   attachmentKeys: jsonb("attachment_keys").notNull().default([]),
@@ -388,6 +393,14 @@ export const jobs = pgTable("jobs", {
   workerIdentityNotes: text("worker_identity_notes"),
   assignedJurisdiction: text("assigned_jurisdiction").notNull().default("ON"),
   assignedScope: jsonb("assigned_scope").notNull().default({}),
+  permitRequired: boolean("permit_required").notNull().default(false),
+  regulatorySignOffStatus: text("regulatory_sign_off_status")
+    .notNull()
+    .default("NOT_APPLICABLE"),
+  certificateOfAcceptanceNumber: text("certificate_of_acceptance_number"),
+  regulatorySignedOffAt: timestamp("regulatory_signed_off_at", {
+    withTimezone: true,
+  }),
   assignedAt: timestamp("assigned_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -518,6 +531,11 @@ export const serviceRecords = pgTable("service_records", {
     .references(() => verticals.id),
   summary: text("summary").notNull(),
   equipment: jsonb("equipment").notNull().default({}),
+  permitId: uuid("permit_id").references(() => electricalPermits.id),
+  certificateOfAcceptanceNumber: text("certificate_of_acceptance_number"),
+  regulatorySignOffStatus: text("regulatory_sign_off_status")
+    .notNull()
+    .default("NOT_APPLICABLE"),
   completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -1464,4 +1482,136 @@ export const qualityAuditsRelations = relations(qualityAudits, ({ one }) => ({
     references: [users.id],
   }),
 }));
+
+// 14. Electrical Permits, Inspection Evidence & Deficiencies (#59)
+export const electricalPermits = pgTable("electrical_permits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  permitNumber: text("permit_number").notNull().unique(),
+  jobId: uuid("job_id")
+    .notNull()
+    .references(() => jobs.id),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id),
+  technicianId: uuid("technician_id").references(() => technicians.id),
+  jurisdiction: text("jurisdiction").notNull().default("ON"),
+  permitAuthority: text("permit_authority").notNull().default("ESA"),
+  permitType: text("permit_type").notNull().default("ESA_LEC_NOTIFICATION"),
+  esaNotificationNumber: text("esa_notification_number").notNull(),
+  ecraLicenseNumber: text("ecra_license_number").notNull(),
+  designatedMasterElectrician: text("designated_master_electrician").notNull(),
+  scopeOfWork: text("scope_of_work").notNull(),
+  status: text("status").notNull().default("FILED"),
+  utilityDisconnectRequired: boolean("utility_disconnect_required")
+    .notNull()
+    .default(false),
+  utilityProvider: text("utility_provider"),
+  utilityMeterNumber: text("utility_meter_number"),
+  utilityDisconnectDate: timestamp("utility_disconnect_date", {
+    withTimezone: true,
+  }),
+  utilityReconnectAuthorizationCode: text(
+    "utility_reconnect_authorization_code",
+  ),
+  utilityReconnectDate: timestamp("utility_reconnect_date", {
+    withTimezone: true,
+  }),
+  inspectionStatus: text("inspection_status")
+    .notNull()
+    .default("NOT_REQUESTED"),
+  inspectorName: text("inspector_name"),
+  inspectorBadgeNumber: text("inspector_badge_number"),
+  inspectedAt: timestamp("inspected_at", { withTimezone: true }),
+  certificateOfAcceptanceNumber: text("certificate_of_acceptance_number"),
+  certificateOfAcceptanceUrl: text("certificate_of_acceptance_url"),
+  certificateOfAcceptanceIssuedAt: timestamp(
+    "certificate_of_acceptance_issued_at",
+    { withTimezone: true },
+  ),
+  documentedExceptionReason: text("documented_exception_reason"),
+  documentedExceptionApprovedByUserId: uuid(
+    "documented_exception_approved_by_user_id",
+  ).references(() => users.id),
+  documentedExceptionAt: timestamp("documented_exception_at", {
+    withTimezone: true,
+  }),
+  regulatorySignOffStatus: text("regulatory_sign_off_status")
+    .notNull()
+    .default("PENDING"),
+  provenanceAudit: jsonb("provenance_audit").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const permitDeficiencies = pgTable("permit_deficiencies", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  permitId: uuid("permit_id")
+    .notNull()
+    .references(() => electricalPermits.id),
+  defectCode: text("defect_code").notNull(),
+  severity: text("severity").notNull().default("MAJOR"),
+  description: text("description").notNull(),
+  correctiveActionRequired: text("corrective_action_required").notNull(),
+  status: text("status").notNull().default("OPEN"),
+  issuedAt: timestamp("issued_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  rectifiedAt: timestamp("rectified_at", { withTimezone: true }),
+  rectifiedByUserId: uuid("rectified_by_user_id").references(() => users.id),
+  rectificationNotes: text("rectification_notes"),
+  rectificationEvidenceUrl: text("rectification_evidence_url"),
+  clearedAt: timestamp("cleared_at", { withTimezone: true }),
+  clearedByInspector: text("cleared_by_inspector"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const electricalPermitsRelations = relations(
+  electricalPermits,
+  ({ one, many }) => ({
+    job: one(jobs, {
+      fields: [electricalPermits.jobId],
+      references: [jobs.id],
+    }),
+    property: one(properties, {
+      fields: [electricalPermits.propertyId],
+      references: [properties.id],
+    }),
+    contractor: one(contractors, {
+      fields: [electricalPermits.contractorId],
+      references: [contractors.id],
+    }),
+    technician: one(technicians, {
+      fields: [electricalPermits.technicianId],
+      references: [technicians.id],
+    }),
+    deficiencies: many(permitDeficiencies),
+  }),
+);
+
+export const permitDeficienciesRelations = relations(
+  permitDeficiencies,
+  ({ one }) => ({
+    permit: one(electricalPermits, {
+      fields: [permitDeficiencies.permitId],
+      references: [electricalPermits.id],
+    }),
+    rectifiedByUser: one(users, {
+      fields: [permitDeficiencies.rectifiedByUserId],
+      references: [users.id],
+    }),
+  }),
+);
+
 

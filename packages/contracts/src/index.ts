@@ -877,4 +877,134 @@ export interface QualityAudit {
   updatedAt: string;
 }
 
+// Electrical Permits, Inspection Evidence & ESA Compliance (#59)
+export const permitStatuses = [
+  "FILED",
+  "DISCONNECT_SCHEDULED",
+  "DISCONNECTED",
+  "WORK_COMPLETED",
+  "INSPECTION_REQUESTED",
+  "DEFICIENCIES_RECORDED",
+  "CERTIFICATE_ISSUED",
+  "EXCEPTION_APPROVED",
+  "CLOSED",
+] as const;
+export type PermitStatus = (typeof permitStatuses)[number];
+
+export const inspectionStatuses = [
+  "NOT_REQUESTED",
+  "REQUESTED",
+  "SCHEDULED",
+  "DEFICIENCIES_ISSUED",
+  "PASSED",
+  "WAIVED_EXCEPTION",
+] as const;
+export type InspectionStatus = (typeof inspectionStatuses)[number];
+
+export const regulatorySignOffStatuses = [
+  "NOT_APPLICABLE",
+  "PENDING",
+  "DEFICIENCIES_OUTSTANDING",
+  "FULLY_ACCEPTED",
+  "EXCEPTION_APPROVED",
+] as const;
+export type RegulatorySignOffStatus =
+  (typeof regulatorySignOffStatuses)[number];
+
+export const defectSeverities = ["CRITICAL", "MAJOR", "MINOR"] as const;
+export type DefectSeverity = (typeof defectSeverities)[number];
+
+export const defectStatuses = [
+  "OPEN",
+  "RECTIFIED",
+  "CLEARED_BY_INSPECTOR",
+] as const;
+export type DefectStatus = (typeof defectStatuses)[number];
+
+export const regulatoryAcceptanceDenyCodes = [
+  "PERMIT_NOT_FILED",
+  "UNRESOLVED_ESA_DEFICIENCIES",
+  "MISSING_CERTIFICATE_OF_ACCEPTANCE",
+  "ECRA_LICENSE_MISMATCH",
+  "REGULATORY_EXCEPTION_NOT_DOCUMENTED",
+] as const;
+export type RegulatoryAcceptanceDenyCode =
+  (typeof regulatoryAcceptanceDenyCodes)[number];
+
+export interface ElectricalPermit {
+  id: string;
+  permitNumber: string;
+  jobId: string;
+  propertyId: string;
+  contractorId: string;
+  technicianId?: string | null | undefined;
+  jurisdiction: string;
+  permitAuthority: string;
+  permitType: string;
+  esaNotificationNumber: string;
+  ecraLicenseNumber: string;
+  designatedMasterElectrician: string;
+  scopeOfWork: string;
+  status: PermitStatus;
+  utilityDisconnectRequired: boolean;
+  utilityProvider?: string | null | undefined;
+  utilityMeterNumber?: string | null | undefined;
+  utilityDisconnectDate?: string | null | undefined;
+  utilityReconnectAuthorizationCode?: string | null | undefined;
+  utilityReconnectDate?: string | null | undefined;
+  inspectionStatus: InspectionStatus;
+  inspectorName?: string | null | undefined;
+  inspectorBadgeNumber?: string | null | undefined;
+  inspectedAt?: string | null | undefined;
+  certificateOfAcceptanceNumber?: string | null | undefined;
+  certificateOfAcceptanceUrl?: string | null | undefined;
+  certificateOfAcceptanceIssuedAt?: string | null | undefined;
+  documentedExceptionReason?: string | null | undefined;
+  documentedExceptionApprovedByUserId?: string | null | undefined;
+  documentedExceptionAt?: string | null | undefined;
+  regulatorySignOffStatus: RegulatorySignOffStatus;
+  provenanceAudit: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PermitDeficiency {
+  id: string;
+  permitId: string;
+  defectCode: string;
+  severity: DefectSeverity;
+  description: string;
+  correctiveActionRequired: string;
+  status: DefectStatus;
+  issuedAt: string;
+  rectifiedAt?: string | null | undefined;
+  rectifiedByUserId?: string | null | undefined;
+  rectificationNotes?: string | null | undefined;
+  rectificationEvidenceUrl?: string | null | undefined;
+  clearedAt?: string | null | undefined;
+  clearedByInspector?: string | null | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ElectricalAcceptanceEvaluation {
+  canFullyAccept: boolean;
+  regulatorySignOffStatus: RegulatorySignOffStatus;
+  workFinished: boolean;
+  regulatorySignOffAchieved: boolean;
+  missingItems: RegulatoryAcceptanceDenyCode[];
+  permit: ElectricalPermit | null;
+  deficiencies: PermitDeficiency[];
+  customerSummary: {
+    requiresPermit: boolean;
+    permitAuthority: string;
+    esaNotificationNumber?: string | undefined;
+    ecraLicenseNumber?: string | undefined;
+    certificateOfAcceptanceNumber?: string | undefined;
+    utilityDisconnectCoordinated: boolean;
+    hasOutstandingDefects: boolean;
+    missingArtifactsText: string[];
+  };
+}
+
 
