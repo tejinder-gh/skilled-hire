@@ -553,3 +553,108 @@ export interface CapabilityEvaluationResult {
   restrictions: string[];
   evaluatedAt: string;
 }
+
+export const workerIdentityMethods = [
+  "GOVT_PHOTO_ID",
+  "BIOMETRIC_CHECK",
+  "SUPERVISOR_CONFIRMATION",
+  "DISPATCHER_OVERRIDE",
+] as const;
+export type WorkerIdentityMethod = (typeof workerIdentityMethods)[number];
+
+export const preDispatchDenyCodes = [
+  "REGULATORY_POLICY_DEFICIENCY",
+  "REGULATORY_CREDENTIAL_LAPSED",
+  "CAPABILITY_NOT_FOUND",
+  "CAPABILITY_SCOPE_MISMATCH",
+  "CAPABILITY_ASSESSMENT_NOT_APPROVED",
+  "INSUFFICIENT_COMPLEXITY_TIER",
+  "EXCEEDS_MAX_JOB_VALUE_CEILING",
+  "UNAUTHORIZED_WORKER_SUBSTITUTION",
+  "CONTRACTOR_COMPANY_MISMATCH",
+  "TECHNICIAN_NOT_ACTIVE",
+  "CONTRACTOR_NOT_VERIFIED",
+  "WORKER_IDENTITY_UNVERIFIED",
+  "INSURANCE_GAP_DETECTED",
+] as const;
+export type PreDispatchDenyCode = (typeof preDispatchDenyCodes)[number];
+
+export interface EvidenceSnapshot {
+  snapshotVersion: number;
+  capturedAt: string;
+  regulatoryPolicy?: {
+    policyId: string;
+    policyVersion: number;
+    verticalSlug: string;
+    categorySlug?: string | undefined;
+    variantSlug?: string | undefined;
+    geography: string;
+    verifiedContractorCredentialCodes: string[];
+    verifiedTechnicianCredentialCodes: string[];
+  } | null | undefined;
+  capabilityAssessment?: {
+    assessmentId: string;
+    status: CapabilityAssessmentStatus;
+    complexityTier: ComplexityTier;
+    maxJobValueCents: number;
+    validUntil?: string | null | undefined;
+    supervised: boolean;
+    provisional: boolean;
+  } | null | undefined;
+  contractor: {
+    contractorId: string;
+    companyName: string;
+    status: string;
+  };
+  technician: {
+    technicianId: string;
+    displayName: string;
+    active: boolean;
+    credentials: Array<{
+      code: string;
+      status: CredentialStatus;
+      expiryDate?: string | null | undefined;
+    }>;
+  };
+  jurisdiction: string;
+  serviceScope: {
+    verticalId: string;
+    verticalSlug?: string | undefined;
+    categoryId?: string | null | undefined;
+    categorySlug?: string | null | undefined;
+    issueTypeId?: string | null | undefined;
+    variantSlug?: string | null | undefined;
+    urgency?: BookingUrgency | undefined;
+  };
+}
+
+export interface PreDispatchEvaluationResult {
+  eligible: boolean;
+  serviceRequestId: string;
+  contractorId: string;
+  technicianId: string;
+  failClosedReason?: string | undefined;
+  denyCodes: PreDispatchDenyCode[];
+  evidenceSnapshot: EvidenceSnapshot;
+  requiresSupervisorOnSite: boolean;
+  mandatorySupervisorSignoff: boolean;
+  evaluatedAt: string;
+}
+
+export interface PreWorkCheckResult {
+  allowedToCommence: boolean;
+  jobId: string;
+  workerIdentityVerified: boolean;
+  workerIdentityMethod?: WorkerIdentityMethod | null | undefined;
+  failClosedReason?: string | undefined;
+  denyCodes: PreDispatchDenyCode[];
+  evaluatedAt: string;
+}
+
+export interface WorkerIdentityVerificationInput {
+  method: WorkerIdentityMethod;
+  documentReference?: string | undefined;
+  verifiedByUserId: string;
+  notes?: string | undefined;
+}
+

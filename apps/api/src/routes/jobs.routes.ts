@@ -22,8 +22,15 @@ import {
   paymentMilestones,
   paymentSchedules,
   payouts,
+  credentials,
+  dispatchEligibilityChecks,
 } from "@marketplace/database";
-import { reviewSchema } from "@marketplace/validation";
+import {
+  reviewSchema,
+  verifyWorkerIdentitySchema,
+  preWorkCommenceSchema,
+} from "@marketplace/validation";
+import { evaluatePreWorkCommencement } from "@marketplace/vertical-engine";
 import { actor, authenticate, isOps, parse, uuid } from "../common/auth.js";
 import { audit } from "../common/events.js";
 
@@ -54,6 +61,10 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
         request_description: serviceRequests.description,
         address_line1: properties.addressLine1,
         city: properties.city,
+        worker_identity_verified: jobs.workerIdentityVerified,
+        worker_identity_verified_at: jobs.workerIdentityVerifiedAt,
+        worker_identity_method: jobs.workerIdentityMethod,
+        evidence_snapshot: jobs.evidenceSnapshot,
       })
       .from(jobs)
       .innerJoin(contractors, eq(contractors.id, jobs.contractorId))
@@ -68,6 +79,51 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
         .limit(50);
     }
     return await queryBuilder.orderBy(desc(jobs.createdAt)).limit(50);
+  });
+
+  app.get("/v1/jobs/:id", { preHandler: authenticate }, async (request, reply) => {
+    const jobId = parse(z.object({ id: uuid }), request.params).id;
+    const currentActor = actor(request);
+
+    const [job] = await db
+      .select({
+        id: jobs.id,
+        status: jobs.status,
+        service_request_id: jobs.serviceRequestId,
+        contractor_id: jobs.contractorId,
+        technician_id: jobs.technicianId,
+        worker_identity_verified: jobs.workerIdentityVerified,
+        worker_identity_verified_at: jobs.workerIdentityVerifiedAt,
+        worker_identity_method: jobs.workerIdentityMethod,
+        worker_identity_notes: jobs.workerIdentityNotes,
+        assigned_jurisdiction: jobs.assignedJurisdiction,
+        assigned_scope: jobs.assignedScope,
+        evidence_snapshot: jobs.evidenceSnapshot,
+        created_at: jobs.createdAt,
+        updated_at: jobs.updatedAt,
+        contractor_name: contractors.name,
+        technician_name: technicians.displayName,
+        technician_user_id: technicians.userId,
+      })
+      .from(jobs)
+      .innerJoin(contractors, eq(contractors.id, jobs.contractorId))
+      .innerJoin(technicians, eq(technicians.id, jobs.technicianId))
+      .where(eq(jobs.id, jobId))
+      .limit(1);
+
+    if (!job) {
+      return reply.code(404).send({ code: "NOT_FOUND", message: "Job not found" });
+    }
+
+    if (
+      !isOps(currentActor) &&
+      currentActor.contractorId !== job.contractor_id &&
+      currentActor.id !== job.technician_user_id
+    ) {
+      return reply.code(403).send({ code: "FORBIDDEN", message: "Access denied" });
+    }
+
+    return job;
   });
 
   app.post(
@@ -476,6 +532,222 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
         { newServiceRequestId: result.id },
       );
       return reply.code(201).send({ id: result.id, status: "SUBMITTED" });
+    },
+  );
+
+  app.post(
+    "/v1/jobs/:id/verify-worker-identity",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(
+        actor(request),
+        "TECHNICIAN",
+        "OPERATIONS_AGENT",
+        "DISPATCHER",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
+      const jobId = parse(z.object({ id: uuid }), request.params).id;
+      const body = parse(verifyWorkerIdentitySchema, request.body);
+
+      const [job] = await db
+        .select({
+          id: jobs.id,
+          contractorId: jobs.contractorId,
+          technicianId: jobs.technicianId,
+          technicianUserId: technicians.userId,
+        })
+        .from(jobs)
+        .innerJoin(technicians, eq(technicians.id, jobs.technicianId))
+        .where(eq(jobs.id, jobId))
+        .limit(1);
+
+      if (!job) {
+        return reply.code(404).send({ code: "NOT_FOUND", message: "Job not found" });
+      }
+
+      if (
+        !isOps(actor(request)) &&
+        actor(request).contractorId !== job.contractorId &&
+        actor(request).id !== job.technicianUserId
+      ) {
+        return reply.code(403).send({ code: "FORBIDDEN", message: "Access denied" });
+      }
+
+      const verifiedAt = new Date();
+      await db
+        .update(jobs)
+        .set({
+          workerIdentityVerified: true,
+          workerIdentityVerifiedAt: verifiedAt,
+          workerIdentityMethod: body.method,
+          workerIdentityNotes:
+            body.notes ??
+            (body.documentReference ? `Doc Ref: ${body.documentReference}` : null),
+          updatedAt: verifiedAt,
+        })
+        .where(eq(jobs.id, jobId));
+
+      await audit(
+        actor(request).id,
+        "WORKER_IDENTITY_VERIFIED",
+        "JOB",
+        jobId,
+        null,
+        {
+          method: body.method,
+          documentReference: body.documentReference ?? null,
+          technicianId: job.technicianId,
+        },
+      );
+
+      return reply.code(200).send({
+        jobId,
+        workerIdentityVerified: true,
+        workerIdentityMethod: body.method,
+        workerIdentityVerifiedAt: verifiedAt.toISOString(),
+      });
+    },
+  );
+
+  app.post(
+    "/v1/jobs/:id/commence-work",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(
+        actor(request),
+        "TECHNICIAN",
+        "OPERATIONS_AGENT",
+        "DISPATCHER",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
+      const jobId = parse(z.object({ id: uuid }), request.params).id;
+      const body = parse(preWorkCommenceSchema, request.body);
+
+      const result = await db.transaction(async (tx) => {
+        const [job] = await tx
+          .select({
+            id: jobs.id,
+            status: jobs.status,
+            serviceRequestId: jobs.serviceRequestId,
+            contractorId: jobs.contractorId,
+            technicianId: jobs.technicianId,
+            technicianUserId: technicians.userId,
+            workerIdentityVerified: jobs.workerIdentityVerified,
+            workerIdentityMethod: jobs.workerIdentityMethod,
+            evidenceSnapshot: jobs.evidenceSnapshot,
+          })
+          .from(jobs)
+          .innerJoin(technicians, eq(technicians.id, jobs.technicianId))
+          .where(eq(jobs.id, jobId))
+          .for("update", { of: jobs });
+
+        if (!job) throw new Error("NOT_FOUND");
+
+        // Determine attempting technician
+        let attemptingTechId = body.technicianId ?? job.technicianId;
+        if (!isOps(actor(request))) {
+          const [callingTech] = await tx
+            .select({ id: technicians.id })
+            .from(technicians)
+            .where(eq(technicians.userId, actor(request).id))
+            .limit(1);
+          if (callingTech) {
+            attemptingTechId = callingTech.id;
+          }
+        }
+
+        // Fetch live credentials
+        const tCredRows = await tx
+          .select({
+            id: credentials.id,
+            code: credentials.code,
+            geography: credentials.geography,
+            status: credentials.status,
+            expiryDate: credentials.expiryDate,
+            checkedAt: credentials.checkedAt,
+          })
+          .from(credentials)
+          .where(eq(credentials.technicianId, job.technicianId));
+
+        const tCreds = tCredRows.map((c) => ({
+          id: c.id,
+          code: c.code,
+          geography: c.geography,
+          status: c.status,
+          expiryDate: c.expiryDate ?? null,
+          checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
+        }));
+
+        const check = evaluatePreWorkCommencement({
+          job: {
+            id: job.id,
+            contractorId: job.contractorId,
+            technicianId: job.technicianId,
+            workerIdentityVerified: job.workerIdentityVerified,
+            workerIdentityMethod: job.workerIdentityMethod as any,
+            evidenceSnapshot: job.evidenceSnapshot as any,
+          },
+          attemptingTechnicianId: attemptingTechId,
+          technicianCredentials: tCreds,
+          now: new Date(),
+        });
+
+        await tx.insert(dispatchEligibilityChecks).values({
+          serviceRequestId: job.serviceRequestId,
+          contractorId: job.contractorId,
+          technicianId: job.technicianId,
+          evaluationStage: "PRE_WORK_COMMENCEMENT",
+          eligible: check.allowedToCommence,
+          failClosedReason: check.failClosedReason ?? null,
+          denyCodes: check.denyCodes,
+          evidenceSnapshot: job.evidenceSnapshot,
+          evaluatedByUserId: actor(request).id,
+          escalatedToOps: !check.allowedToCommence,
+        });
+
+        if (!check.allowedToCommence) {
+          const err = new Error(
+            `Pre-work safety check failed: ${check.failClosedReason}`,
+          );
+          (err as any).statusCode = 422;
+          (err as any).code = "PRE_WORK_CHECK_FAILED";
+          (err as any).details = {
+            denyCodes: check.denyCodes,
+            failClosedReason: check.failClosedReason,
+          };
+          throw err;
+        }
+
+        await tx
+          .update(jobs)
+          .set({ status: "WORK_IN_PROGRESS", updatedAt: new Date() })
+          .where(eq(jobs.id, jobId));
+
+        await tx
+          .update(serviceRequests)
+          .set({ status: "WORK_IN_PROGRESS", updatedAt: new Date() })
+          .where(eq(serviceRequests.id, job.serviceRequestId));
+
+        return { jobId, status: "WORK_IN_PROGRESS" };
+      });
+
+      await audit(
+        actor(request).id,
+        "WORK_COMMENCED",
+        "JOB",
+        jobId,
+        null,
+        { status: "WORK_IN_PROGRESS" },
+        body.notes ? { notes: body.notes } : {},
+      );
+
+      return reply.code(200).send({
+        jobId: result.jobId,
+        status: result.status,
+        allowedToCommence: true,
+      });
     },
   );
 };

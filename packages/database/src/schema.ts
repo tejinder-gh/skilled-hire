@@ -371,6 +371,17 @@ export const jobs = pgTable("jobs", {
     .notNull()
     .references(() => technicians.id),
   status: requestStatusEnum("status").notNull(),
+  evidenceSnapshot: jsonb("evidence_snapshot").notNull().default({}),
+  workerIdentityVerified: boolean("worker_identity_verified")
+    .notNull()
+    .default(false),
+  workerIdentityVerifiedAt: timestamp("worker_identity_verified_at", {
+    withTimezone: true,
+  }),
+  workerIdentityMethod: text("worker_identity_method"),
+  workerIdentityNotes: text("worker_identity_notes"),
+  assignedJurisdiction: text("assigned_jurisdiction").notNull().default("ON"),
+  assignedScope: jsonb("assigned_scope").notNull().default({}),
   assignedAt: timestamp("assigned_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -989,7 +1000,34 @@ export const contractorCapabilityAssessments = pgTable(
   ],
 );
 
-// 13. Relational mappings
+// 13. Pre-Dispatch & Pre-Work Eligibility Checks History
+export const dispatchEligibilityChecks = pgTable(
+  "dispatch_eligibility_checks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    serviceRequestId: uuid("service_request_id")
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: "cascade" }),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "cascade" }),
+    technicianId: uuid("technician_id")
+      .notNull()
+      .references(() => technicians.id, { onDelete: "cascade" }),
+    evaluationStage: text("evaluation_stage").notNull(),
+    eligible: boolean("eligible").notNull(),
+    failClosedReason: text("fail_closed_reason"),
+    denyCodes: jsonb("deny_codes").notNull().default([]),
+    evidenceSnapshot: jsonb("evidence_snapshot").notNull().default({}),
+    evaluatedByUserId: uuid("evaluated_by_user_id").references(() => users.id),
+    escalatedToOps: boolean("escalated_to_ops").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+// 14. Relational mappings
 export const verticalsRelations = relations(verticals, ({ many }) => ({
   categories: many(serviceCategories),
 }));

@@ -22,11 +22,15 @@ import {
   serviceCategories,
   issueTypes,
   tradeRegulatoryPolicies,
+  contractorCapabilityAssessments,
+  dispatchEligibilityChecks,
 } from "@marketplace/database";
 import {
   evaluateRegulatoryEligibility,
   resolveRegulatoryPolicy,
+  evaluatePreDispatchEligibility,
 } from "@marketplace/vertical-engine";
+import { evaluatePreDispatchSchema } from "@marketplace/validation";
 import { actor, authenticate, parse, uuid } from "../common/auth.js";
 import { audit } from "../common/events.js";
 
@@ -334,6 +338,232 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
   );
 
   app.post(
+    "/v1/dispatch/:requestId/evaluate-eligibility",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(
+        actor(request),
+        "OPERATIONS_AGENT",
+        "DISPATCHER",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
+      const requestId = parse(
+        z.object({ requestId: uuid }),
+        request.params,
+      ).requestId;
+      const body = parse(evaluatePreDispatchSchema, request.body);
+
+      const [service] = await db
+        .select({
+          status: serviceRequests.status,
+          vertical_id: serviceRequests.verticalId,
+          category_id: serviceRequests.categoryId,
+          issue_type_id: serviceRequests.issueTypeId,
+          urgency: serviceRequests.urgency,
+          region: properties.region,
+          config: verticals.config,
+          vertical_slug: verticals.slug,
+          category_slug: serviceCategories.slug,
+          variant_slug: issueTypes.slug,
+        })
+        .from(serviceRequests)
+        .innerJoin(properties, eq(properties.id, serviceRequests.propertyId))
+        .innerJoin(verticals, eq(verticals.id, serviceRequests.verticalId))
+        .leftJoin(
+          serviceCategories,
+          eq(serviceCategories.id, serviceRequests.categoryId),
+        )
+        .leftJoin(issueTypes, eq(issueTypes.id, serviceRequests.issueTypeId))
+        .where(eq(serviceRequests.id, requestId))
+        .limit(1);
+
+      if (!service) {
+        return reply
+          .code(404)
+          .send({ code: "NOT_FOUND", message: "Service request not found" });
+      }
+
+      const [candidate] = await db
+        .select({
+          technician_id: technicians.id,
+          technician_name: technicians.displayName,
+          technician_active: technicians.active,
+          contractor_id: technicians.contractorId,
+          contractor_name: contractors.name,
+          contractor_status: contractors.status,
+          contractor_vertical_ids: contractors.verticalIds,
+        })
+        .from(technicians)
+        .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
+        .where(eq(technicians.id, body.technicianId))
+        .limit(1);
+
+      if (!candidate) {
+        return reply.code(404).send({
+          code: "NOT_FOUND",
+          message: "Technician or contractor not found",
+        });
+      }
+
+      const cCredRows = await db
+        .select({
+          id: credentials.id,
+          code: credentials.code,
+          geography: credentials.geography,
+          status: credentials.status,
+          verificationSource: credentials.verificationSource,
+          regulatorReference: credentials.regulatorReference,
+          expiryDate: credentials.expiryDate,
+          checkedAt: credentials.checkedAt,
+        })
+        .from(credentials)
+        .where(eq(credentials.contractorId, candidate.contractor_id));
+
+      const tCredRows = await db
+        .select({
+          id: credentials.id,
+          code: credentials.code,
+          geography: credentials.geography,
+          status: credentials.status,
+          verificationSource: credentials.verificationSource,
+          regulatorReference: credentials.regulatorReference,
+          expiryDate: credentials.expiryDate,
+          checkedAt: credentials.checkedAt,
+        })
+        .from(credentials)
+        .where(eq(credentials.technicianId, body.technicianId));
+
+      const matchingPolicies = await db
+        .select()
+        .from(tradeRegulatoryPolicies)
+        .where(
+          and(
+            eq(tradeRegulatoryPolicies.verticalSlug, service.vertical_slug),
+            eq(tradeRegulatoryPolicies.geography, service.region),
+            eq(tradeRegulatoryPolicies.active, true),
+          ),
+        );
+
+      const resolvedPolicy = resolveRegulatoryPolicy(
+        matchingPolicies.map((p) => ({
+          id: p.id,
+          verticalSlug: p.verticalSlug,
+          categorySlug: p.categorySlug,
+          variantSlug: p.variantSlug,
+          geography: p.geography,
+          policyVersion: p.policyVersion,
+          contractorMandatoryCodes:
+            (p.contractorMandatoryCodes as string[]) ?? [],
+          technicianMandatoryCodes:
+            (p.technicianMandatoryCodes as string[]) ?? [],
+          apprenticeEligible: p.apprenticeEligible,
+          supervisorRatio: p.supervisorRatio ?? "1:1",
+          permitRequired: p.permitRequired,
+          inspectionAuthority: p.inspectionAuthority ?? null,
+          legalAuthorityDisclaimer: p.legalAuthorityDisclaimer,
+          active: p.active,
+        })),
+        {
+          verticalSlug: service.vertical_slug,
+          categorySlug: service.category_slug ?? undefined,
+          variantSlug: service.variant_slug ?? undefined,
+          geography: service.region,
+        },
+      );
+
+      const [capabilityRow] = service.issue_type_id
+        ? await db
+            .select()
+            .from(contractorCapabilityAssessments)
+            .where(
+              and(
+                eq(
+                  contractorCapabilityAssessments.contractorId,
+                  candidate.contractor_id,
+                ),
+                eq(
+                  contractorCapabilityAssessments.issueTypeId,
+                  service.issue_type_id,
+                ),
+                eq(contractorCapabilityAssessments.geography, service.region),
+              ),
+            )
+            .limit(1)
+        : [null];
+
+      const cCreds = cCredRows.map((c) => ({
+        id: c.id,
+        code: c.code,
+        geography: c.geography,
+        status: c.status,
+        verificationSource: c.verificationSource as any,
+        regulatorReference: c.regulatorReference ?? null,
+        expiryDate: c.expiryDate ?? null,
+        checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
+      }));
+
+      const tCreds = tCredRows.map((c) => ({
+        id: c.id,
+        code: c.code,
+        geography: c.geography,
+        status: c.status,
+        verificationSource: c.verificationSource as any,
+        regulatorReference: c.regulatorReference ?? null,
+        expiryDate: c.expiryDate ?? null,
+        checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
+      }));
+
+      const preDispatch = evaluatePreDispatchEligibility({
+        serviceRequest: {
+          id: requestId,
+          verticalId: service.vertical_id,
+          verticalSlug: service.vertical_slug,
+          categoryId: service.category_id,
+          categorySlug: service.category_slug,
+          issueTypeId: service.issue_type_id,
+          variantSlug: service.variant_slug,
+          urgency: service.urgency as any,
+          region: service.region,
+        },
+        contractor: {
+          id: candidate.contractor_id,
+          name: candidate.contractor_name,
+          status: candidate.contractor_status,
+          verticalIds: (candidate.contractor_vertical_ids as string[]) ?? [],
+        },
+        technician: {
+          id: candidate.technician_id,
+          contractorId: candidate.contractor_id,
+          displayName: candidate.technician_name,
+          active: candidate.technician_active,
+        },
+        contractorCredentials: cCreds,
+        technicianCredentials: tCreds,
+        regulatoryPolicy: resolvedPolicy,
+        capabilityAssessment: capabilityRow
+          ? {
+              id: capabilityRow.id,
+              contractorId: capabilityRow.contractorId,
+              issueTypeId: capabilityRow.issueTypeId,
+              geography: capabilityRow.geography,
+              status: capabilityRow.status as any,
+              complexityTier: capabilityRow.complexityTier as any,
+              maxJobValueCents: Number(capabilityRow.maxJobValueCents),
+              validUntil: capabilityRow.validUntil
+                ? capabilityRow.validUntil.toISOString()
+                : null,
+              supervisedRequirements:
+                capabilityRow.supervisedRequirements as any,
+            }
+          : null,
+      });
+
+      return reply.code(200).send(preDispatch);
+    },
+  );
+
+  app.post(
     "/v1/dispatch/:requestId/assign",
     { preHandler: authenticate },
     async (request, reply) => {
@@ -391,33 +621,15 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
 
         if (existingJob) throw new Error("ALREADY_ASSIGNED");
 
-        const config = z
-          .object({
-            credentialRequirements: z
-              .array(
-                z.object({
-                  code: z.string(),
-                  geography: z.string(),
-                  verificationRequired: z.boolean(),
-                }),
-              )
-              .default([]),
-          })
-          .passthrough()
-          .parse(service.config);
-        const required = config.credentialRequirements
-          .filter(
-            (requirement) =>
-              requirement.verificationRequired &&
-              (requirement.geography === "*" ||
-                requirement.geography === service.region),
-          )
-          .map((requirement) => requirement.code);
-
         const [candidate] = await tx
           .select({
             technician_id: technicians.id,
+            technician_name: technicians.displayName,
+            technician_active: technicians.active,
             contractor_id: technicians.contractorId,
+            contractor_name: contractors.name,
+            contractor_status: contractors.status,
+            contractor_vertical_ids: contractors.verticalIds,
             rating_bps: contractors.ratingBps,
             completion_rate_bps: contractors.completionRateBps,
             avg_response_minutes: contractors.avgResponseMinutes,
@@ -454,7 +666,58 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
           throw new Error("INELIGIBLE_TECHNICIAN");
         }
 
-        // Enforce fail-closed trade regulatory eligibility policy (Ticket #55 / PR #65)
+        // Fetch credentials for comprehensive pre-dispatch check
+        const cCredRows = await tx
+          .select({
+            id: credentials.id,
+            code: credentials.code,
+            geography: credentials.geography,
+            status: credentials.status,
+            verificationSource: credentials.verificationSource,
+            regulatorReference: credentials.regulatorReference,
+            expiryDate: credentials.expiryDate,
+            checkedAt: credentials.checkedAt,
+          })
+          .from(credentials)
+          .where(eq(credentials.contractorId, candidate.contractor_id));
+
+        const tCredRows = await tx
+          .select({
+            id: credentials.id,
+            code: credentials.code,
+            geography: credentials.geography,
+            status: credentials.status,
+            verificationSource: credentials.verificationSource,
+            regulatorReference: credentials.regulatorReference,
+            expiryDate: credentials.expiryDate,
+            checkedAt: credentials.checkedAt,
+          })
+          .from(credentials)
+          .where(eq(credentials.technicianId, body.technicianId));
+
+        const cCreds = cCredRows.map((c) => ({
+          id: c.id,
+          code: c.code,
+          geography: c.geography,
+          status: c.status,
+          verificationSource: c.verificationSource as any,
+          regulatorReference: c.regulatorReference ?? null,
+          expiryDate: c.expiryDate ?? null,
+          checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
+        }));
+
+        const tCreds = tCredRows.map((c) => ({
+          id: c.id,
+          code: c.code,
+          geography: c.geography,
+          status: c.status,
+          verificationSource: c.verificationSource as any,
+          regulatorReference: c.regulatorReference ?? null,
+          expiryDate: c.expiryDate ?? null,
+          checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
+        }));
+
+        // Resolve trade regulatory policy
         const matchingPolicies = await tx
           .select()
           .from(tradeRegulatoryPolicies)
@@ -493,80 +756,132 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
           },
         );
 
-        if (resolvedPolicy) {
-          const cCredRows = await tx
-            .select({
-              id: credentials.id,
-              code: credentials.code,
-              geography: credentials.geography,
-              status: credentials.status,
-              verificationSource: credentials.verificationSource,
-              regulatorReference: credentials.regulatorReference,
-              expiryDate: credentials.expiryDate,
-              checkedAt: credentials.checkedAt,
-            })
-            .from(credentials)
-            .where(eq(credentials.contractorId, candidate.contractor_id));
+        // Fetch capability assessment
+        const [capabilityRow] = service.issue_type_id
+          ? await tx
+              .select()
+              .from(contractorCapabilityAssessments)
+              .where(
+                and(
+                  eq(
+                    contractorCapabilityAssessments.contractorId,
+                    candidate.contractor_id,
+                  ),
+                  eq(
+                    contractorCapabilityAssessments.issueTypeId,
+                    service.issue_type_id,
+                  ),
+                  eq(
+                    contractorCapabilityAssessments.geography,
+                    service.region,
+                  ),
+                ),
+              )
+              .limit(1)
+          : [null];
 
-          const tCredRows = await tx
-            .select({
-              id: credentials.id,
-              code: credentials.code,
-              geography: credentials.geography,
-              status: credentials.status,
-              verificationSource: credentials.verificationSource,
-              regulatorReference: credentials.regulatorReference,
-              expiryDate: credentials.expiryDate,
-              checkedAt: credentials.checkedAt,
-            })
-            .from(credentials)
-            .where(eq(credentials.technicianId, body.technicianId));
+        // Perform atomic pre-dispatch safety and eligibility evaluation (#57)
+        const preDispatch = evaluatePreDispatchEligibility({
+          serviceRequest: {
+            id: requestId,
+            verticalId: service.vertical_id,
+            verticalSlug: service.vertical_slug,
+            categoryId: service.category_id,
+            categorySlug: service.category_slug,
+            issueTypeId: service.issue_type_id,
+            variantSlug: service.variant_slug,
+            urgency: service.urgency as any,
+            region: service.region,
+          },
+          contractor: {
+            id: candidate.contractor_id,
+            name: candidate.contractor_name,
+            status: candidate.contractor_status,
+            verticalIds:
+              (candidate.contractor_vertical_ids as string[]) ?? [],
+          },
+          technician: {
+            id: candidate.technician_id,
+            contractorId: candidate.contractor_id,
+            displayName: candidate.technician_name,
+            active: candidate.technician_active,
+          },
+          contractorCredentials: cCreds,
+          technicianCredentials: tCreds,
+          regulatoryPolicy: resolvedPolicy,
+          capabilityAssessment: capabilityRow
+            ? {
+                id: capabilityRow.id,
+                contractorId: capabilityRow.contractorId,
+                issueTypeId: capabilityRow.issueTypeId,
+                geography: capabilityRow.geography,
+                status: capabilityRow.status as any,
+                complexityTier: capabilityRow.complexityTier as any,
+                maxJobValueCents: Number(capabilityRow.maxJobValueCents),
+                validUntil: capabilityRow.validUntil
+                  ? capabilityRow.validUntil.toISOString()
+                  : null,
+                supervisedRequirements:
+                  capabilityRow.supervisedRequirements as any,
+              }
+            : null,
+        });
 
-          const cCreds = cCredRows.map((c) => ({
-            id: c.id,
-            code: c.code,
-            geography: c.geography,
-            status: c.status,
-            verificationSource: c.verificationSource as any,
-            regulatorReference: c.regulatorReference ?? null,
-            expiryDate: c.expiryDate ?? null,
-            checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
-          }));
+        // Record check in audit history table
+        await tx.insert(dispatchEligibilityChecks).values({
+          serviceRequestId: requestId,
+          contractorId: candidate.contractor_id,
+          technicianId: body.technicianId,
+          evaluationStage: "PRE_DISPATCH",
+          eligible: preDispatch.eligible,
+          failClosedReason: preDispatch.failClosedReason ?? null,
+          denyCodes: preDispatch.denyCodes,
+          evidenceSnapshot: preDispatch.evidenceSnapshot,
+          evaluatedByUserId: actor(request).id,
+          escalatedToOps: !preDispatch.eligible,
+        });
 
-          const tCreds = tCredRows.map((c) => ({
-            id: c.id,
-            code: c.code,
-            geography: c.geography,
-            status: c.status,
-            verificationSource: c.verificationSource as any,
-            regulatorReference: c.regulatorReference ?? null,
-            expiryDate: c.expiryDate ?? null,
-            checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
-          }));
-
-          const eligibility = evaluateRegulatoryEligibility({
-            policy: resolvedPolicy,
-            contractorCredentials: cCreds,
-            technicianCredentials: tCreds,
-            isApprentice: false,
-          });
-
-          if (!eligibility.eligible) {
-            const err = new Error(
-              `Regulatory compliance verification failed: ${eligibility.reasons.join("; ")}`,
-            );
-            (err as any).statusCode = 422;
-            (err as any).code = "REGULATORY_ELIGIBILITY_FAILED";
-            (err as any).details = {
-              contractorDeficiencies: eligibility.contractorDeficiencies,
-              technicianDeficiencies: eligibility.technicianDeficiencies,
-              reasons: eligibility.reasons,
-              inspectionAuthority: eligibility.inspectionAuthority,
-              policyVersion: eligibility.policyVersion,
-            };
-            throw err;
-          }
+        if (!preDispatch.eligible) {
+          const isRegulatory = preDispatch.denyCodes.includes(
+            "REGULATORY_POLICY_DEFICIENCY",
+          );
+          const err = new Error(
+            `Pre-dispatch safety check failed: ${preDispatch.failClosedReason}`,
+          );
+          (err as any).statusCode = 422;
+          (err as any).code = isRegulatory
+            ? "REGULATORY_ELIGIBILITY_FAILED"
+            : "PRE_DISPATCH_INELIGIBLE";
+          (err as any).details = {
+            denyCodes: preDispatch.denyCodes,
+            failClosedReason: preDispatch.failClosedReason,
+            evidenceSnapshot: preDispatch.evidenceSnapshot,
+          };
+          throw err;
         }
+
+        const config = z
+          .object({
+            credentialRequirements: z
+              .array(
+                z.object({
+                  code: z.string(),
+                  geography: z.string(),
+                  verificationRequired: z.boolean(),
+                }),
+              )
+              .default([]),
+          })
+          .passthrough()
+          .parse(service.config);
+        const required = config.credentialRequirements
+          .filter(
+            (requirement) =>
+              requirement.verificationRequired &&
+              (requirement.geography === "*" ||
+                requirement.geography === service.region),
+          )
+          .map((requirement) => requirement.code);
 
         const ranked = candidate
           ? rankCandidates(
@@ -616,6 +931,18 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
             contractorId: candidate.contractor_id,
             technicianId: body.technicianId,
             status: "ASSIGNED",
+            evidenceSnapshot: preDispatch.evidenceSnapshot,
+            assignedJurisdiction: service.region,
+            assignedScope: {
+              verticalId: service.vertical_id,
+              verticalSlug: service.vertical_slug,
+              categoryId: service.category_id,
+              categorySlug: service.category_slug,
+              issueTypeId: service.issue_type_id,
+              variantSlug: service.variant_slug,
+              urgency: service.urgency,
+            },
+            workerIdentityVerified: false,
           })
           .returning({ id: jobs.id });
 
@@ -624,9 +951,10 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
           .set({ status: "ASSIGNED", updatedAt: new Date() })
           .where(eq(serviceRequests.id, requestId));
 
-        return job;
+        return { job, evidenceSnapshot: preDispatch.evidenceSnapshot };
       });
-      if (!assigned) throw new Error("ASSIGNMENT_FAILED");
+
+      if (!assigned || !assigned.job) throw new Error("ASSIGNMENT_FAILED");
       await audit(
         actor(request).id,
         "TECHNICIAN_ASSIGNED",
@@ -636,7 +964,11 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
         { technicianId: body.technicianId },
         body.overrideReason ? { overrideReason: body.overrideReason } : {},
       );
-      return reply.code(201).send({ jobId: assigned.id, status: "ASSIGNED" });
+      return reply.code(201).send({
+        jobId: assigned.job.id,
+        status: "ASSIGNED",
+        evidenceSnapshot: assigned.evidenceSnapshot,
+      });
     },
   );
 };

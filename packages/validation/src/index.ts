@@ -215,3 +215,25 @@ export const evaluateCapabilitySchema = z.object({
     .default("TIER_1_BASIC"),
   estimatedJobValueCents: z.number().int().nonnegative().default(0),
 });
+
+export const evaluatePreDispatchSchema = z.object({
+  technicianId: uuid,
+  overrideReason: z.string().min(5).max(1000).optional(),
+});
+
+export const verifyWorkerIdentitySchema = z.object({
+  method: z.enum([
+    "GOVT_PHOTO_ID",
+    "BIOMETRIC_CHECK",
+    "SUPERVISOR_CONFIRMATION",
+    "DISPATCHER_OVERRIDE",
+  ]),
+  documentReference: z.string().min(1).max(200).optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+export const preWorkCommenceSchema = z.object({
+  technicianId: uuid.optional(),
+  notes: z.string().max(1000).optional(),
+});
+

@@ -21,11 +21,13 @@ import {
   technicians,
   credentials,
   contractorCapabilityAssessments,
+  dispatchEligibilityChecks,
   auditEvents,
   refunds,
   eq,
   ne,
   and,
+  or,
   asc,
   desc,
   sql,
@@ -2100,4 +2102,323 @@ describeSuite("Skilled Hire lifecycle", () => {
       "NO_CAPABILITY_ASSESSMENT_ON_FILE",
     );
   });
+
+  it("enforces pre-dispatch eligibility reevaluation, immutable evidence snapshot, and worker identity verification (#57)", async () => {
+    // 1. Identify primary contractor, technician, and trade vertical (Electrical)
+    const [elecVertical] = await db
+      .select({ id: verticals.id, slug: verticals.slug })
+      .from(verticals)
+      .where(eq(verticals.slug, "electrical"))
+      .limit(1);
+    expect(elecVertical).toBeDefined();
+
+    const [elecCat] = await db
+      .select({ id: serviceCategories.id, slug: serviceCategories.slug })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, elecVertical!.id))
+      .limit(1);
+    expect(elecCat).toBeDefined();
+
+    const [elecIssue] = await db
+      .select({ id: issueTypes.id, slug: issueTypes.slug })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, elecCat!.id))
+      .limit(1);
+    expect(elecIssue).toBeDefined();
+
+    const [cont] = await db
+      .select({ id: contractors.id, verticalIds: contractors.verticalIds })
+      .from(contractors)
+      .where(eq(contractors.status, "VERIFIED"))
+      .limit(1);
+    expect(cont).toBeDefined();
+
+    // Ensure contractor is associated with electrical vertical
+    const vIds = (cont!.verticalIds as string[]) ?? [];
+    if (!vIds.includes(elecVertical!.id)) {
+      await db
+        .update(contractors)
+        .set({ verticalIds: [...vIds, elecVertical!.id] })
+        .where(eq(contractors.id, cont!.id));
+    }
+
+    const [tech] = await db
+      .select({ id: technicians.id, userId: technicians.userId })
+      .from(technicians)
+      .where(
+        and(
+          eq(technicians.contractorId, cont!.id),
+          eq(technicians.active, true),
+        ),
+      )
+      .limit(1);
+    expect(tech).toBeDefined();
+
+    // Ensure valid credentials on file
+    const futureDate = "2028-12-31";
+    await db
+      .delete(credentials)
+      .where(
+        or(
+          eq(credentials.contractorId, cont!.id),
+          eq(credentials.technicianId, tech!.id),
+        ),
+      );
+
+    await db.insert(credentials).values([
+      {
+        contractorId: cont!.id,
+        code: "ECRA_ESA_LICENSE",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "ECRA-ESA-7001122",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: tech!.id,
+        code: "309A_ELECTRICIAN_C_OF_Q",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "COFQ-309A-88339",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+    ]);
+
+    // Ensure contractor has approved capability assessment for this variant
+    await db
+      .delete(contractorCapabilityAssessments)
+      .where(
+        and(
+          eq(contractorCapabilityAssessments.contractorId, cont!.id),
+          eq(contractorCapabilityAssessments.issueTypeId, elecIssue!.id),
+        ),
+      );
+
+    const [assessorUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .innerJoin(userRoles, eq(userRoles.userId, users.id))
+      .where(eq(userRoles.role, "ADMIN"))
+      .limit(1);
+
+    await db.insert(contractorCapabilityAssessments).values({
+      contractorId: cont!.id,
+      issueTypeId: elecIssue!.id,
+      geography: "ON",
+      status: "APPROVED",
+      complexityTier: "TIER_3_ADVANCED",
+      yearsExperience: 8,
+      maxJobValueCents: 1000000,
+      assessedByUserId: assessorUser?.id ?? tech!.userId,
+      assessedAt: new Date(),
+      validUntil: new Date("2028-12-31T00:00:00Z"),
+      decisionNotes: "Verified technical competency and certifications",
+    });
+
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .limit(1);
+    expect(prop).toBeDefined();
+
+    // 2. Customer creates a service request
+    const createReq = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: prop!.id,
+        verticalId: elecVertical!.id,
+        categoryId: elecCat!.id,
+        issueTypeId: elecIssue!.id,
+        urgency: "STANDARD",
+        description: "Electrical high-capacity breaker panel replacement",
+      },
+    });
+    expect(createReq.statusCode).toBe(201);
+    const reqId = createReq.json<{ id: string }>().id;
+
+    // Progress request to CONTRACTOR_SEARCH
+    for (const to of [
+      "QUALIFICATION_PENDING",
+      "QUALIFIED",
+      "SCHEDULING",
+      "SCHEDULED",
+      "CONTRACTOR_SEARCH",
+    ] as const) {
+      const trans = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${reqId}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(trans.statusCode).toBe(200);
+    }
+
+    // 3. Dry-Run Pre-Dispatch Eligibility Evaluation Endpoint
+    const dryRunRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${reqId}/evaluate-eligibility`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(dryRunRes.statusCode).toBe(200);
+    const dryRunJson = dryRunRes.json<{
+      eligible: boolean;
+      denyCodes: string[];
+      evidenceSnapshot: {
+        snapshotVersion: number;
+        regulatoryPolicy: { policyVersion: number };
+        contractor: { contractorId: string };
+        technician: { technicianId: string };
+      };
+    }>();
+    expect(dryRunJson.eligible).toBe(true);
+    expect(dryRunJson.denyCodes).toHaveLength(0);
+    expect(dryRunJson.evidenceSnapshot.snapshotVersion).toBe(1);
+    expect(dryRunJson.evidenceSnapshot.contractor.contractorId).toBe(cont!.id);
+    expect(dryRunJson.evidenceSnapshot.technician.technicianId).toBe(tech!.id);
+
+    // 4. Live Dispatch Assignment: Stores immutable evidence snapshot
+    const assignRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${reqId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(assignRes.statusCode).toBe(201);
+    const assignJson = assignRes.json<{
+      jobId: string;
+      status: string;
+      evidenceSnapshot: {
+        snapshotVersion: number;
+        jurisdiction: string;
+      };
+    }>();
+    expect(assignJson.status).toBe("ASSIGNED");
+    expect(assignJson.evidenceSnapshot.snapshotVersion).toBe(1);
+    expect(assignJson.evidenceSnapshot.jurisdiction).toBe("ON");
+
+    const jobId = assignJson.jobId;
+
+    // Verify job in database has evidence_snapshot and worker_identity_verified=false
+    const [dbJob] = await db
+      .select({
+        workerIdentityVerified: jobs.workerIdentityVerified,
+        assignedJurisdiction: jobs.assignedJurisdiction,
+        evidenceSnapshot: jobs.evidenceSnapshot,
+      })
+      .from(jobs)
+      .where(eq(jobs.id, jobId));
+    expect(dbJob?.workerIdentityVerified).toBe(false);
+    expect(dbJob?.assignedJurisdiction).toBe("ON");
+    expect(dbJob?.evidenceSnapshot).toBeDefined();
+
+    // Verify audit check recorded in dispatch_eligibility_checks
+    const [auditCheck] = await db
+      .select()
+      .from(dispatchEligibilityChecks)
+      .where(
+        and(
+          eq(dispatchEligibilityChecks.serviceRequestId, reqId),
+          eq(dispatchEligibilityChecks.evaluationStage, "PRE_DISPATCH"),
+        ),
+      );
+    expect(auditCheck?.eligible).toBe(true);
+
+    // 5. Pre-Work Commencement Guard: Fails closed when worker identity is unverified
+    const unverifiedCommence = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/commence-work`,
+      headers: auth("dispatch@example.test"),
+      payload: {},
+    });
+    expect(unverifiedCommence.statusCode).toBe(422);
+    expect(unverifiedCommence.json<{ code: string }>().code).toBe(
+      "PRE_WORK_CHECK_FAILED",
+    );
+    expect(
+      unverifiedCommence.json<{ details: { denyCodes: string[] } }>().details
+        .denyCodes,
+    ).toContain("WORKER_IDENTITY_UNVERIFIED");
+
+    // 6. Worker Identity Verification Endpoint RBAC
+    // Customer cannot verify worker identity -> 403 Forbidden
+    const custVerify = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/verify-worker-identity`,
+      headers: auth("customer@example.test"),
+      payload: { method: "GOVT_PHOTO_ID" },
+    });
+    expect(custVerify.statusCode).toBe(403);
+
+    // Dispatcher / Ops verifies technician's government photo ID
+    const validVerify = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/verify-worker-identity`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        method: "GOVT_PHOTO_ID",
+        documentReference: "DL-ON-448822",
+        notes: "Verified Ontario driver's license match against registry",
+      },
+    });
+    expect(validVerify.statusCode).toBe(200);
+    expect(validVerify.json<{ workerIdentityVerified: boolean }>().workerIdentityVerified).toBe(true);
+
+    // Verify DB update
+    const [updatedJob] = await db
+      .select({
+        workerIdentityVerified: jobs.workerIdentityVerified,
+        workerIdentityMethod: jobs.workerIdentityMethod,
+      })
+      .from(jobs)
+      .where(eq(jobs.id, jobId));
+    expect(updatedJob?.workerIdentityVerified).toBe(true);
+    expect(updatedJob?.workerIdentityMethod).toBe("GOVT_PHOTO_ID");
+
+    // 7. Worker Substitution Guard: Reject different technician attempting to commence
+    const [fakeTech] = await db
+      .select({ id: technicians.id })
+      .from(technicians)
+      .where(ne(technicians.id, tech!.id))
+      .limit(1);
+
+    if (fakeTech) {
+      const subCommence = await app.inject({
+        method: "POST",
+        url: `/v1/jobs/${jobId}/commence-work`,
+        headers: auth("dispatch@example.test"),
+        payload: { technicianId: fakeTech.id },
+      });
+      expect(subCommence.statusCode).toBe(422);
+      expect(
+        subCommence.json<{ details: { denyCodes: string[] } }>().details
+          .denyCodes,
+      ).toContain("UNAUTHORIZED_WORKER_SUBSTITUTION");
+    }
+
+    // 8. Authorized Work Commencement
+    const commenceRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/commence-work`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(commenceRes.statusCode).toBe(200);
+    expect(commenceRes.json<{ status: string; allowedToCommence: boolean }>().status).toBe("WORK_IN_PROGRESS");
+    expect(commenceRes.json<{ status: string; allowedToCommence: boolean }>().allowedToCommence).toBe(true);
+
+    // Verify DB updated to WORK_IN_PROGRESS
+    const [commencedJob] = await db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, jobId));
+    expect(commencedJob?.status).toBe("WORK_IN_PROGRESS");
+  });
 });
+
