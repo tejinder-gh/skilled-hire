@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { requireRole } from "@marketplace/auth";
+import { requireRole, hasRole } from "@marketplace/auth";
 import type {
   ComplianceStandard,
   EntityLevel,
@@ -539,7 +539,7 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
         supervisorCredentials: supervisorCreds,
       });
 
-      return eligibility;
+      return reply.code(200).send(eligibility);
     },
   );
 
@@ -669,8 +669,9 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
     "/v1/credentials/submit",
     { preHandler: authenticate },
     async (request, reply) => {
+      const currentActor = actor(request);
       requireRole(
-        actor(request),
+        currentActor,
         "CONTRACTOR_OWNER",
         "CONTRACTOR_MANAGER",
         "TECHNICIAN",
@@ -678,37 +679,146 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
         "SUPER_ADMIN",
       );
       const body = parse(submitCredentialSchema, request.body);
-      const actorId = actor(request).id;
-      const contractorId = actor(request).contractorId;
+      const actorId = currentActor.id;
+      const callerContractorId = currentActor.contractorId;
+      const isTech = hasRole(currentActor, "TECHNICIAN");
+      const isStaff = hasRole(currentActor, "ADMIN", "SUPER_ADMIN");
+      const isContractor = hasRole(
+        currentActor,
+        "CONTRACTOR_OWNER",
+        "CONTRACTOR_MANAGER",
+      );
+
       let targetContractorId: string | null = null;
       let targetTechnicianId: string | null = null;
+
       if (body.entityType === "CONTRACTOR") {
-        if (!contractorId)
-          return reply
-            .code(400)
-            .send({
+        if (isTech && !isContractor && !isStaff) {
+          return reply.code(403).send({
+            code: "FORBIDDEN",
+            message: "Technicians cannot submit contractor-level credentials",
+          });
+        }
+
+        if (isStaff) {
+          const desiredContractorId = body.contractorId ?? callerContractorId;
+          if (!desiredContractorId) {
+            return reply.code(400).send({
               code: "CONTRACTOR_REQUIRED",
-              message: "Must belong to a contractor",
+              message: "Target contractorId is required for contractor credentials",
             });
-        targetContractorId = contractorId;
+          }
+          const [contractor] = await db
+            .select({ id: contractors.id })
+            .from(contractors)
+            .where(eq(contractors.id, desiredContractorId))
+            .limit(1);
+          if (!contractor) {
+            return reply.code(404).send({
+              code: "CONTRACTOR_NOT_FOUND",
+              message: "Target contractor not found",
+            });
+          }
+          targetContractorId = contractor.id;
+        } else {
+          // CONTRACTOR_OWNER or CONTRACTOR_MANAGER
+          if (!callerContractorId) {
+            return reply.code(400).send({
+              code: "CONTRACTOR_REQUIRED",
+              message: "Must belong to a contractor organization",
+            });
+          }
+          if (body.contractorId && body.contractorId !== callerContractorId) {
+            return reply.code(403).send({
+              code: "FORBIDDEN",
+              message: "Cannot submit credentials for another contractor organization",
+            });
+          }
+          targetContractorId = callerContractorId;
+        }
       } else {
-        if (body.technicianId) targetTechnicianId = body.technicianId;
-        else {
-          const [tech] = await db
-            .select({ id: technicians.id })
+        // entityType === "TECHNICIAN"
+        if (isTech && !isStaff && !isContractor) {
+          const [ownTech] = await db
+            .select({ id: technicians.id, contractorId: technicians.contractorId })
             .from(technicians)
             .where(eq(technicians.userId, actorId))
             .limit(1);
-          if (tech?.id) targetTechnicianId = tech.id;
-          else
-            return reply
-              .code(400)
-              .send({
-                code: "TECHNICIAN_NOT_FOUND",
-                message: "No technician profile linked",
-              });
+
+          if (!ownTech) {
+            return reply.code(404).send({
+              code: "TECHNICIAN_NOT_FOUND",
+              message: "No technician profile linked to current user",
+            });
+          }
+
+          if (body.technicianId && body.technicianId !== ownTech.id) {
+            return reply.code(403).send({
+              code: "FORBIDDEN",
+              message: "Technicians may only submit credentials for their own profile",
+            });
+          }
+
+          targetTechnicianId = ownTech.id;
+        } else if (isStaff) {
+          if (!body.technicianId) {
+            return reply.code(400).send({
+              code: "TECHNICIAN_ID_REQUIRED",
+              message: "technicianId is required for technician credential submission",
+            });
+          }
+          const [targetTech] = await db
+            .select({ id: technicians.id, contractorId: technicians.contractorId })
+            .from(technicians)
+            .where(eq(technicians.id, body.technicianId))
+            .limit(1);
+
+          if (!targetTech) {
+            return reply.code(404).send({
+              code: "TECHNICIAN_NOT_FOUND",
+              message: "Target technician not found",
+            });
+          }
+
+          targetTechnicianId = targetTech.id;
+        } else {
+          // CONTRACTOR_OWNER or CONTRACTOR_MANAGER
+          if (!callerContractorId) {
+            return reply.code(400).send({
+              code: "CONTRACTOR_REQUIRED",
+              message: "Must belong to a contractor organization",
+            });
+          }
+          if (!body.technicianId) {
+            return reply.code(400).send({
+              code: "TECHNICIAN_ID_REQUIRED",
+              message: "technicianId is required when contractor submits technician credentials",
+            });
+          }
+          const [targetTech] = await db
+            .select({ id: technicians.id, contractorId: technicians.contractorId })
+            .from(technicians)
+            .where(eq(technicians.id, body.technicianId))
+            .limit(1);
+
+          if (!targetTech) {
+            return reply.code(404).send({
+              code: "TECHNICIAN_NOT_FOUND",
+              message: "Target technician not found",
+            });
+          }
+
+          if (targetTech.contractorId !== callerContractorId) {
+            return reply.code(403).send({
+              code: "FORBIDDEN",
+              message: "Technician does not belong to your contractor organization",
+            });
+          }
+
+          targetTechnicianId = targetTech.id;
         }
       }
+
       const [inserted] = await db
         .insert(credentials)
         .values({
@@ -724,14 +834,21 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
 
       const credId = inserted?.id;
       if (!credId) throw new Error("INSERT_FAILED");
+
       await audit(
         actorId,
         "CREDENTIAL_SUBMITTED",
         "CREDENTIAL",
         credId,
         null,
-        body,
+        {
+          ...body,
+          targetContractorId,
+          targetTechnicianId,
+          isStaffOverride: isOps(currentActor),
+        },
       );
+
       return reply.code(201).send({ id: credId, status: "PENDING" });
     },
   );

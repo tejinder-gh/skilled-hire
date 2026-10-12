@@ -7,6 +7,7 @@ import {
   db,
   pool,
   users,
+  userRoles,
   properties,
   verticals,
   serviceCategories,
@@ -144,9 +145,17 @@ describeSuite("Skilled Hire lifecycle", () => {
       headers: auth("dispatch@example.test"),
     });
     expect(candidates.statusCode).toBe(200);
-    const technicianId = candidates.json<{
+    const [compliantTech] = await db
+      .select({ id: technicians.id })
+      .from(technicians)
+      .where(and(eq(technicians.active, true), eq(technicians.displayName, "John S.")))
+      .limit(1);
+    const candidateList = candidates.json<{
       candidates: Array<{ technicianId: string }>;
-    }>().candidates[0]?.technicianId;
+    }>().candidates;
+    const technicianId =
+      candidateList.find((c) => c.technicianId === compliantTech?.id)
+        ?.technicianId ?? candidateList[0]?.technicianId;
     expect(technicianId).toBeTruthy();
 
     const assigned = await app.inject({
@@ -1513,5 +1522,257 @@ describeSuite("Skilled Hire lifecycle", () => {
         err.cause?.message?.includes("credentials_fail_closed_verification");
     }
     expect(constraintTriggered).toBe(true);
+  });
+
+  it("enforces cross-contractor tenant isolation and prevents unauthorized credential submissions (SH-25 / #26)", async () => {
+    // 1. Identify primary contractor A and technician A
+    const [techUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, "technician@example.test"))
+      .limit(1);
+    expect(techUser).toBeDefined();
+
+    const [techA] = await db
+      .select({ id: technicians.id, contractorId: technicians.contractorId })
+      .from(technicians)
+      .where(eq(technicians.userId, techUser!.id))
+      .limit(1);
+    expect(techA).toBeDefined();
+
+    const [contractorA] = await db
+      .select({ id: contractors.id, ownerUserId: contractors.ownerUserId })
+      .from(contractors)
+      .where(eq(contractors.id, techA!.contractorId))
+      .limit(1);
+    expect(contractorA).toBeDefined();
+
+    const [ownerUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, contractorA!.ownerUserId))
+      .limit(1);
+    expect(ownerUser).toBeDefined();
+
+    // 2. Provision or retrieve isolated rival contractor B and technician B
+    let [contractorB] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(eq(contractors.name, "Rival Trade Services Inc"))
+      .limit(1);
+
+    let techBId: string;
+    if (!contractorB) {
+      const [u] = await db
+        .insert(users)
+        .values({
+          email: "rival-owner@example.test",
+          passwordHash: "hash",
+          displayName: "Rival Owner",
+        })
+        .onConflictDoNothing()
+        .returning({ id: users.id });
+      const rivalUserId =
+        u?.id ??
+        (
+          await db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.email, "rival-owner@example.test"))
+        )[0]!.id;
+      await db
+        .insert(userRoles)
+        .values({ userId: rivalUserId, role: "CONTRACTOR_OWNER" })
+        .onConflictDoNothing();
+
+      const [c] = await db
+        .insert(contractors)
+        .values({
+          name: "Rival Trade Services Inc",
+          ownerUserId: rivalUserId,
+          status: "VERIFIED",
+        })
+        .returning({ id: contractors.id });
+      contractorB = c!;
+
+      const [tUser] = await db
+        .insert(users)
+        .values({
+          email: "rival-tech@example.test",
+          passwordHash: "hash",
+          displayName: "Rival Technician",
+        })
+        .onConflictDoNothing()
+        .returning({ id: users.id });
+      const rivalTechUserId =
+        tUser?.id ??
+        (
+          await db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.email, "rival-tech@example.test"))
+        )[0]!.id;
+      await db
+        .insert(userRoles)
+        .values({ userId: rivalTechUserId, role: "TECHNICIAN" })
+        .onConflictDoNothing();
+
+      const [t] = await db
+        .insert(technicians)
+        .values({
+          userId: rivalTechUserId,
+          contractorId: contractorB.id,
+          displayName: "Rival Tech",
+          active: false,
+        })
+        .returning({ id: technicians.id });
+      techBId = t!.id;
+    } else {
+      await db
+        .update(technicians)
+        .set({ active: false })
+        .where(eq(technicians.contractorId, contractorB.id));
+      const [t] = await db
+        .select({ id: technicians.id })
+        .from(technicians)
+        .where(eq(technicians.contractorId, contractorB.id))
+        .limit(1);
+      techBId = t!.id;
+    }
+
+    const testMaliciousCode = "TEST_CROSS_TENANT_MALICIOUS";
+
+    // 3. Test: Contractor A attempts to submit credential for Contractor B's technician -> 403 FORBIDDEN
+    const crossContractorRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth("owner@example.test"),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techBId,
+        code: testMaliciousCode,
+        geography: "ON",
+        documentKey: "uploads/compliance/forged-credential.pdf",
+      },
+    });
+    expect(crossContractorRes.statusCode).toBe(403);
+    expect(crossContractorRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 4. Test: Technician A attempts to submit credential for Technician B -> 403 FORBIDDEN
+    const crossTechRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth("technician@example.test"),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techBId,
+        code: testMaliciousCode,
+        geography: "ON",
+        documentKey: "uploads/compliance/forged-tech-credential.pdf",
+      },
+    });
+    expect(crossTechRes.statusCode).toBe(403);
+    expect(crossTechRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 5. Test: Technician attempts to submit CONTRACTOR level credential -> 403 FORBIDDEN
+    const techSubmitsContractorRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth("technician@example.test"),
+      payload: {
+        entityType: "CONTRACTOR",
+        code: "ON_TSSA_CONTRACTOR_REG",
+        geography: "ON",
+        documentKey: "uploads/compliance/tech-forged-contractor.pdf",
+      },
+    });
+    expect(techSubmitsContractorRes.statusCode).toBe(403);
+    expect(techSubmitsContractorRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 6. Test: Contractor attempts to submit for non-existent technician -> 404 NOT_FOUND
+    const fakeTechRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth("owner@example.test"),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: crypto.randomUUID(),
+        code: "ON_SKILLED_TRADES_309A",
+        geography: "ON",
+        documentKey: "uploads/compliance/fake-tech.pdf",
+      },
+    });
+    expect(fakeTechRes.statusCode).toBe(404);
+    expect(fakeTechRes.json<{ code: string }>().code).toBe("TECHNICIAN_NOT_FOUND");
+
+    // 7. Test: Contractor A attempts to submit CONTRACTOR credential with forged contractorId -> 403 FORBIDDEN
+    const crossContractorOrgRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth("owner@example.test"),
+      payload: {
+        entityType: "CONTRACTOR",
+        contractorId: contractorB.id,
+        code: "ON_TSSA_CONTRACTOR_REG",
+        geography: "ON",
+        documentKey: "uploads/compliance/forged-org.pdf",
+      },
+    });
+    expect(crossContractorOrgRes.statusCode).toBe(403);
+    expect(crossContractorOrgRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 8. Test: Unauthenticated request -> 401 UNAUTHORIZED
+    const unauthRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: {},
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techBId,
+        code: "ON_SKILLED_TRADES_309A",
+        geography: "ON",
+        documentKey: "uploads/compliance/unauth.pdf",
+      },
+    });
+    expect(unauthRes.statusCode).toBe(401);
+
+    // 9. Verify zero credentials were created in DB for malicious code
+    const maliciousCreds = await db
+      .select({ id: credentials.id })
+      .from(credentials)
+      .where(eq(credentials.code, testMaliciousCode));
+    expect(maliciousCreds.length).toBe(0);
+
+    // 10. Test: Admin staff override can legitimately submit for Technician B -> 201 PENDING
+    const adminStaffOverrideRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth("admin@example.test"),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techBId,
+        code: "ON_SKILLED_TRADES_309A",
+        geography: "ON",
+        documentKey: "uploads/compliance/admin-verified-309a.pdf",
+      },
+    });
+    expect(adminStaffOverrideRes.statusCode).toBe(201);
+    expect(adminStaffOverrideRes.json<{ status: string }>().status).toBe("PENDING");
+
+    // 11. Test: Contractor A legitimately submits for own Technician A -> 201 PENDING
+    const legitOwnerSubmitRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth("owner@example.test"),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techA!.id,
+        code: "ON_SKILLED_TRADES_313A",
+        geography: "ON",
+        documentKey: "uploads/compliance/owner-legit-tech-313a.pdf",
+      },
+    });
+    expect(legitOwnerSubmitRes.statusCode).toBe(201);
+    expect(legitOwnerSubmitRes.json<{ status: string }>().status).toBe("PENDING");
   });
 });

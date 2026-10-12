@@ -29,4 +29,5 @@ export const submitCredentialSchema = z.object({
   licenseNumber: z.string().max(100).optional(),
   entityType: z.enum(["CONTRACTOR", "TECHNICIAN"]),
   technicianId: uuid.optional(),
+  contractorId: uuid.optional(),
 });
