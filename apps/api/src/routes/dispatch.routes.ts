@@ -22,8 +22,10 @@ import {
   serviceCategories,
   issueTypes,
   tradeRegulatoryPolicies,
+  contractorCapabilityAssessments,
 } from "@marketplace/database";
 import {
+  evaluateContractorCapability,
   evaluateRegulatoryEligibility,
   resolveRegulatoryPolicy,
 } from "@marketplace/vertical-engine";
@@ -577,6 +579,57 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
               policyVersion: eligibility.policyVersion,
             };
             throw err;
+          }
+        }
+
+        if (service.issue_type_id) {
+          const [assessmentRow] = await tx
+            .select()
+            .from(contractorCapabilityAssessments)
+            .where(
+              and(
+                eq(
+                  contractorCapabilityAssessments.contractorId,
+                  candidate.contractor_id,
+                ),
+                eq(
+                  contractorCapabilityAssessments.issueTypeId,
+                  service.issue_type_id,
+                ),
+                eq(
+                  contractorCapabilityAssessments.geography,
+                  service.region,
+                ),
+              ),
+            )
+            .limit(1);
+
+          if (assessmentRow) {
+            const capEval = evaluateContractorCapability({
+              assessment: {
+                ...assessmentRow,
+                createdAt: assessmentRow.createdAt.toISOString(),
+                updatedAt: assessmentRow.updatedAt.toISOString(),
+                validUntil: assessmentRow.validUntil
+                  ? assessmentRow.validUntil.toISOString()
+                  : null,
+                assessedAt: assessmentRow.assessedAt
+                  ? assessmentRow.assessedAt.toISOString()
+                  : null,
+              } as any,
+              requiredComplexityTier: "TIER_1_BASIC",
+              estimatedJobValueCents: 0,
+            });
+
+            if (!capEval.eligible && !body.overrideReason) {
+              const err = new Error(
+                `Contractor capability verification failed: ${capEval.failClosedReason}`,
+              );
+              (err as any).statusCode = 422;
+              (err as any).code = "CAPABILITY_EVALUATION_FAILED";
+              (err as any).details = capEval;
+              throw err;
+            }
           }
         }
 

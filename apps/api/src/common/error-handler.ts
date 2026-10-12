@@ -14,11 +14,13 @@ export function errorHandler(
       ? "VALIDATION_ERROR"
       : errorObj?.code === "REGULATORY_ELIGIBILITY_FAILED"
         ? "REGULATORY_ELIGIBILITY_FAILED"
-        : message === "FORBIDDEN"
-          ? "FORBIDDEN"
-          : message === "NOT_FOUND"
-            ? "NOT_FOUND"
-            : "REQUEST_FAILED";
+        : errorObj?.code === "CAPABILITY_EVALUATION_FAILED"
+          ? "CAPABILITY_EVALUATION_FAILED"
+          : message === "FORBIDDEN"
+            ? "FORBIDDEN"
+            : message === "NOT_FOUND"
+              ? "NOT_FOUND"
+              : errorObj?.code ?? "REQUEST_FAILED";
   const status =
     errorObj?.statusCode ??
     (code === "VALIDATION_ERROR"
