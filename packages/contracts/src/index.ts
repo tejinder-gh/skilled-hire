@@ -576,6 +576,7 @@ export const preDispatchDenyCodes = [
   "CONTRACTOR_NOT_VERIFIED",
   "WORKER_IDENTITY_UNVERIFIED",
   "INSURANCE_GAP_DETECTED",
+  "SUPERVISOR_REQUIRED_ON_SITE",
 ] as const;
 export type PreDispatchDenyCode = (typeof preDispatchDenyCodes)[number];
 
@@ -600,6 +601,8 @@ export interface EvidenceSnapshot {
     validUntil?: string | null | undefined;
     supervised: boolean;
     provisional: boolean;
+    requiresSupervisorOnSite?: boolean | undefined;
+    mandatorySupervisorSignoff?: boolean | undefined;
   } | null | undefined;
   contractor: {
     contractorId: string;

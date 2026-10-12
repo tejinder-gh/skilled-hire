@@ -234,6 +234,7 @@ export const verifyWorkerIdentitySchema = z.object({
 
 export const preWorkCommenceSchema = z.object({
   technicianId: uuid.optional(),
+  supervisorPresentOnSite: z.boolean().optional(),
   notes: z.string().max(1000).optional(),
 });
 

@@ -193,6 +193,31 @@ describe("Pre-Dispatch Eligibility Evaluator", () => {
     expect(result.denyCodes).toContain("REGULATORY_CREDENTIAL_LAPSED");
   });
 
+  it("does not fail when an unrelated non-mandatory credential expired prior to dispatch (Finding 68-6)", () => {
+    const result = evaluatePreDispatchEligibility({
+      serviceRequest: baseServiceRequest,
+      contractor: baseContractor,
+      technician: baseTechnician,
+      contractorCredentials: [
+        ...baseContractorCreds,
+        {
+          id: "cred-unrelated",
+          code: "UNRELATED_OPTIONAL_CERT",
+          geography: "ON",
+          status: "VERIFIED" as const,
+          expiryDate: lapsedExpiry,
+        },
+      ],
+      technicianCredentials: baseTechnicianCreds,
+      regulatoryPolicy: mockPolicy,
+      capabilityAssessment: baseCapability,
+      now,
+    });
+
+    expect(result.eligible).toBe(true);
+    expect(result.denyCodes).not.toContain("REGULATORY_CREDENTIAL_LAPSED");
+  });
+
   it("fails closed when no capability assessment is on file for the variant", () => {
     const result = evaluatePreDispatchEligibility({
       serviceRequest: baseServiceRequest,
@@ -397,5 +422,105 @@ describe("Pre-Work Commencement Evaluator", () => {
 
     expect(result.allowedToCommence).toBe(false);
     expect(result.denyCodes).toContain("REGULATORY_CREDENTIAL_LAPSED");
+  });
+
+  it("fails closed when contractor credential lapsed post-dispatch (Finding 68-2)", () => {
+    const result = evaluatePreWorkCommencement({
+      job: baseJob,
+      attemptingTechnicianId: "tech-1",
+      technicianCredentials: liveTechCreds,
+      contractorCredentials: [
+        {
+          id: "cred-c-1",
+          code: "ECRA_ESA_LICENSE",
+          geography: "ON",
+          status: "VERIFIED" as const,
+          expiryDate: lapsedExpiry,
+        },
+      ],
+      now,
+    });
+
+    expect(result.allowedToCommence).toBe(false);
+    expect(result.denyCodes).toContain("REGULATORY_CREDENTIAL_LAPSED");
+  });
+
+  it("fails closed with INSURANCE_GAP_DETECTED when contractor insurance credential lapsed (Finding 68-2)", () => {
+    const jobWithInsurance = {
+      ...baseJob,
+      evidenceSnapshot: {
+        ...baseSnapshot,
+        regulatoryPolicy: {
+          ...baseSnapshot.regulatoryPolicy,
+          verifiedContractorCredentialCodes: ["CGL_INSURANCE_2M"],
+        },
+      },
+    };
+    const result = evaluatePreWorkCommencement({
+      job: jobWithInsurance,
+      attemptingTechnicianId: "tech-1",
+      technicianCredentials: liveTechCreds,
+      contractorCredentials: [
+        {
+          id: "cred-c-ins",
+          code: "CGL_INSURANCE_2M",
+          geography: "ON",
+          status: "VERIFIED" as const,
+          expiryDate: lapsedExpiry,
+        },
+      ],
+      now,
+    });
+
+    expect(result.allowedToCommence).toBe(false);
+    expect(result.denyCodes).toContain("INSURANCE_GAP_DETECTED");
+  });
+
+  it("fails closed when supervised assessment requires supervisor on site but supervisor is absent (Finding 68-4)", () => {
+    const jobSupervised = {
+      ...baseJob,
+      evidenceSnapshot: {
+        ...baseSnapshot,
+        capabilityAssessment: {
+          ...baseSnapshot.capabilityAssessment,
+          supervised: true,
+          requiresSupervisorOnSite: true,
+        },
+      },
+    };
+    const result = evaluatePreWorkCommencement({
+      job: jobSupervised,
+      attemptingTechnicianId: "tech-1",
+      technicianCredentials: liveTechCreds,
+      supervisorPresentOnSite: false,
+      now,
+    });
+
+    expect(result.allowedToCommence).toBe(false);
+    expect(result.denyCodes).toContain("SUPERVISOR_REQUIRED_ON_SITE");
+  });
+
+  it("authorizes commencement when supervised assessment has supervisor present on site (Finding 68-4)", () => {
+    const jobSupervised = {
+      ...baseJob,
+      evidenceSnapshot: {
+        ...baseSnapshot,
+        capabilityAssessment: {
+          ...baseSnapshot.capabilityAssessment,
+          supervised: true,
+          requiresSupervisorOnSite: true,
+        },
+      },
+    };
+    const result = evaluatePreWorkCommencement({
+      job: jobSupervised,
+      attemptingTechnicianId: "tech-1",
+      technicianCredentials: liveTechCreds,
+      supervisorPresentOnSite: true,
+      now,
+    });
+
+    expect(result.allowedToCommence).toBe(true);
+    expect(result.denyCodes).not.toContain("SUPERVISOR_REQUIRED_ON_SITE");
   });
 });

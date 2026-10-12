@@ -598,7 +598,9 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
         }),
         request.body,
       );
-      const assigned = await db.transaction(async (tx) => {
+      let assigned;
+      try {
+        assigned = await db.transaction(async (tx) => {
         const [service] = await tx
           .select({
             status: serviceRequests.status,
@@ -858,36 +860,48 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
         });
 
         if (!preDispatch.eligible) {
-          // Record failed check in audit history table outside transaction so it is preserved upon rollback (Finding 68-5)
-          await db.insert(dispatchEligibilityChecks).values({
-            serviceRequestId: requestId,
-            contractorId: candidate.contractor_id,
-            technicianId: body.technicianId,
-            evaluationStage: "PRE_DISPATCH",
-            eligible: false,
-            failClosedReason: preDispatch.failClosedReason ?? null,
-            denyCodes: preDispatch.denyCodes,
-            evidenceSnapshot: preDispatch.evidenceSnapshot,
-            evaluatedByUserId: actor(request).id,
-            escalatedToOps: true,
-          });
-
           const isRegulatory = preDispatch.denyCodes.includes(
             "REGULATORY_POLICY_DEFICIENCY",
           );
-          const err = new Error(
-            `Pre-dispatch safety check failed: ${preDispatch.failClosedReason}`,
+          const isCapability = preDispatch.denyCodes.some((c) =>
+            [
+              "CAPABILITY_NOT_FOUND",
+              "CAPABILITY_SCOPE_MISMATCH",
+              "CAPABILITY_ASSESSMENT_NOT_APPROVED",
+              "INSUFFICIENT_COMPLEXITY_TIER",
+              "EXCEEDS_MAX_JOB_VALUE_CEILING",
+            ].includes(c),
           );
-          (err as any).statusCode = 422;
-          (err as any).code = isRegulatory
-            ? "REGULATORY_ELIGIBILITY_FAILED"
-            : "PRE_DISPATCH_INELIGIBLE";
-          (err as any).details = {
-            denyCodes: preDispatch.denyCodes,
-            failClosedReason: preDispatch.failClosedReason,
-            evidenceSnapshot: preDispatch.evidenceSnapshot,
-          };
-          throw err;
+
+          if (!isCapability || isRegulatory || !body.overrideReason) {
+            const err = new Error(
+              `Pre-dispatch safety check failed: ${preDispatch.failClosedReason}`,
+            );
+            (err as any).statusCode = 422;
+            (err as any).code = isRegulatory
+              ? "REGULATORY_ELIGIBILITY_FAILED"
+              : isCapability
+                ? "CAPABILITY_EVALUATION_FAILED"
+                : "PRE_DISPATCH_INELIGIBLE";
+            (err as any).details = {
+              denyCodes: preDispatch.denyCodes,
+              failClosedReason: preDispatch.failClosedReason,
+              evidenceSnapshot: preDispatch.evidenceSnapshot,
+            };
+            (err as any).failedEligibilityCheck = {
+              serviceRequestId: requestId,
+              contractorId: candidate.contractor_id,
+              technicianId: body.technicianId,
+              evaluationStage: "PRE_DISPATCH",
+              eligible: false,
+              failClosedReason: preDispatch.failClosedReason ?? null,
+              denyCodes: preDispatch.denyCodes,
+              evidenceSnapshot: preDispatch.evidenceSnapshot,
+              evaluatedByUserId: actor(request).id,
+              escalatedToOps: true,
+            };
+            throw err;
+          }
         }
 
         // Record check in audit history table for successful assignment
@@ -997,6 +1011,14 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
 
         return { job, evidenceSnapshot: preDispatch.evidenceSnapshot };
       });
+    } catch (err: any) {
+      if (err?.failedEligibilityCheck) {
+        await db
+          .insert(dispatchEligibilityChecks)
+          .values(err.failedEligibilityCheck);
+      }
+      throw err;
+    }
 
       if (!assigned || !assigned.job) throw new Error("ASSIGNMENT_FAILED");
       await audit(

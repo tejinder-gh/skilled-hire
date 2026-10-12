@@ -2640,7 +2640,38 @@ describeSuite("Skilled Hire lifecycle", () => {
       );
     expect(auditCheck?.eligible).toBe(true);
 
-    // 5. Pre-Work Commencement Guard: Fails closed when worker identity is unverified
+    // 5a. Status Transition Guard: Cannot commence work while job is in ASSIGNED status (Finding 68-1)
+    const invalidStatusCommence = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/commence-work`,
+      headers: auth("dispatch@example.test"),
+      payload: {},
+    });
+    expect(invalidStatusCommence.statusCode).toBe(409);
+    expect(invalidStatusCommence.json<{ code: string }>().code).toBe(
+      "INVALID_STATUS_TRANSITION",
+    );
+
+    // Transition request/job lifecycle up to WORK_SCHEDULED
+    for (const to of [
+      "TECHNICIAN_EN_ROUTE",
+      "TECHNICIAN_ARRIVED",
+      "ASSESSMENT_IN_PROGRESS",
+      "QUOTE_PENDING",
+      "QUOTE_SUBMITTED",
+      "QUOTE_APPROVED",
+      "WORK_SCHEDULED",
+    ] as const) {
+      const trans = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${reqId}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(trans.statusCode).toBe(200);
+    }
+
+    // 5b. Pre-Work Commencement Guard: Fails closed when worker identity is unverified
     const unverifiedCommence = await app.inject({
       method: "POST",
       url: `/v1/jobs/${jobId}/commence-work`,
@@ -2655,6 +2686,20 @@ describeSuite("Skilled Hire lifecycle", () => {
       unverifiedCommence.json<{ details: { denyCodes: string[] } }>().details
         .denyCodes,
     ).toContain("WORKER_IDENTITY_UNVERIFIED");
+
+    // Verify denied pre-work check is recorded in dispatch_eligibility_checks outside transaction (Finding 68-5)
+    const [failedPreWorkAudit] = await db
+      .select()
+      .from(dispatchEligibilityChecks)
+      .where(
+        and(
+          eq(dispatchEligibilityChecks.serviceRequestId, reqId),
+          eq(dispatchEligibilityChecks.evaluationStage, "PRE_WORK_COMMENCEMENT"),
+          eq(dispatchEligibilityChecks.eligible, false),
+        ),
+      );
+    expect(failedPreWorkAudit).toBeDefined();
+    expect(failedPreWorkAudit?.denyCodes).toContain("WORKER_IDENTITY_UNVERIFIED");
 
     // 6. Worker Identity Verification Endpoint RBAC
     // Customer cannot verify worker identity -> 403 Forbidden

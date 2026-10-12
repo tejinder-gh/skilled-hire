@@ -625,7 +625,9 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
       const jobId = parse(z.object({ id: uuid }), request.params).id;
       const body = parse(preWorkCommenceSchema, request.body);
 
-      const result = await db.transaction(async (tx) => {
+      let result;
+      try {
+        result = await db.transaction(async (tx) => {
         const [job] = await tx
           .select({
             id: jobs.id,
@@ -645,6 +647,17 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
 
         if (!job) throw new Error("NOT_FOUND");
 
+        // Enforce state transition: job must be in WORK_SCHEDULED before commencing (Finding 68-1)
+        if (job.status !== "WORK_SCHEDULED") {
+          const err = new Error(
+            `Cannot commence work on job in '${job.status}' status; must be in 'WORK_SCHEDULED'.`,
+          );
+          (err as any).statusCode = 409;
+          (err as any).code = "INVALID_STATUS_TRANSITION";
+          throw err;
+        }
+        assertTransition(job.status, "WORK_IN_PROGRESS");
+
         // Determine attempting technician
         let attemptingTechId = body.technicianId ?? job.technicianId;
         if (!isOps(actor(request))) {
@@ -658,7 +671,7 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
           }
         }
 
-        // Fetch live credentials
+        // Fetch live technician credentials
         const tCredRows = await tx
           .select({
             id: credentials.id,
@@ -680,6 +693,28 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
           checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
         }));
 
+        // Fetch live contractor credentials (Finding 68-2)
+        const cCredRows = await tx
+          .select({
+            id: credentials.id,
+            code: credentials.code,
+            geography: credentials.geography,
+            status: credentials.status,
+            expiryDate: credentials.expiryDate,
+            checkedAt: credentials.checkedAt,
+          })
+          .from(credentials)
+          .where(eq(credentials.contractorId, job.contractorId));
+
+        const cCreds = cCredRows.map((c) => ({
+          id: c.id,
+          code: c.code,
+          geography: c.geography,
+          status: c.status,
+          expiryDate: c.expiryDate ?? null,
+          checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
+        }));
+
         const check = evaluatePreWorkCommencement({
           job: {
             id: job.id,
@@ -691,20 +726,9 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
           },
           attemptingTechnicianId: attemptingTechId,
           technicianCredentials: tCreds,
+          contractorCredentials: cCreds,
+          supervisorPresentOnSite: body.supervisorPresentOnSite,
           now: new Date(),
-        });
-
-        await tx.insert(dispatchEligibilityChecks).values({
-          serviceRequestId: job.serviceRequestId,
-          contractorId: job.contractorId,
-          technicianId: job.technicianId,
-          evaluationStage: "PRE_WORK_COMMENCEMENT",
-          eligible: check.allowedToCommence,
-          failClosedReason: check.failClosedReason ?? null,
-          denyCodes: check.denyCodes,
-          evidenceSnapshot: job.evidenceSnapshot,
-          evaluatedByUserId: actor(request).id,
-          escalatedToOps: !check.allowedToCommence,
         });
 
         if (!check.allowedToCommence) {
@@ -717,8 +741,34 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
             denyCodes: check.denyCodes,
             failClosedReason: check.failClosedReason,
           };
+          (err as any).failedEligibilityCheck = {
+            serviceRequestId: job.serviceRequestId,
+            contractorId: job.contractorId,
+            technicianId: job.technicianId,
+            evaluationStage: "PRE_WORK_COMMENCEMENT",
+            eligible: false,
+            failClosedReason: check.failClosedReason ?? null,
+            denyCodes: check.denyCodes,
+            evidenceSnapshot: job.evidenceSnapshot,
+            evaluatedByUserId: actor(request).id,
+            escalatedToOps: true,
+          };
           throw err;
         }
+
+        // Record successful pre-work check in audit history table
+        await tx.insert(dispatchEligibilityChecks).values({
+          serviceRequestId: job.serviceRequestId,
+          contractorId: job.contractorId,
+          technicianId: job.technicianId,
+          evaluationStage: "PRE_WORK_COMMENCEMENT",
+          eligible: true,
+          failClosedReason: null,
+          denyCodes: [],
+          evidenceSnapshot: job.evidenceSnapshot,
+          evaluatedByUserId: actor(request).id,
+          escalatedToOps: false,
+        });
 
         await tx
           .update(jobs)
@@ -730,8 +780,16 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
           .set({ status: "WORK_IN_PROGRESS", updatedAt: new Date() })
           .where(eq(serviceRequests.id, job.serviceRequestId));
 
-        return { jobId, status: "WORK_IN_PROGRESS" };
+        return { jobId, status: "WORK_IN_PROGRESS", allowedToCommence: true };
       });
+    } catch (err: any) {
+      if (err?.failedEligibilityCheck) {
+        await db
+          .insert(dispatchEligibilityChecks)
+          .values(err.failedEligibilityCheck);
+      }
+      throw err;
+    }
 
       await audit(
         actor(request).id,

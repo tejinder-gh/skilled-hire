@@ -167,9 +167,18 @@ export function evaluatePreDispatchEligibility(
     }
   }
 
-  // Check for expired credentials amongst relevant credentials
+  // Check for expired credentials amongst relevant credentials (Finding 68-6)
+  const mandatoryCodes = new Set([
+    ...(regulatoryPolicy?.contractorMandatoryCodes ?? []),
+    ...(regulatoryPolicy?.technicianMandatoryCodes ?? []),
+  ]);
   const allCreds = [...contractorCredentials, ...technicianCredentials];
-  const expiredCreds = allCreds.filter(
+  const relevantCreds =
+    mandatoryCodes.size > 0
+      ? allCreds.filter((c) => mandatoryCodes.has(c.code))
+      : allCreds;
+
+  const expiredCreds = relevantCreds.filter(
     (c) => c.expiryDate && new Date(c.expiryDate) < now,
   );
   if (
@@ -261,6 +270,8 @@ export function evaluatePreDispatchEligibility(
         validUntil: capabilityAssessment.validUntil ?? null,
         supervised: capResult.supervised,
         provisional: capResult.provisional,
+        requiresSupervisorOnSite: capResult.supervisorRequiredOnSite,
+        mandatorySupervisorSignoff: capResult.mandatorySupervisorSignoff,
       };
     }
   }
@@ -336,6 +347,8 @@ export interface EvaluatePreWorkCommencementParams {
   };
   attemptingTechnicianId: string;
   technicianCredentials: PreDispatchCredentialInput[];
+  contractorCredentials?: PreDispatchCredentialInput[] | undefined;
+  supervisorPresentOnSite?: boolean | undefined;
   now?: Date | undefined;
 }
 
@@ -380,6 +393,48 @@ export function evaluatePreWorkCommencement(
         `Technician credential '${code}' lapsed on ${cred.expiryDate} before work commenced.`,
       );
     }
+  }
+
+  // 3b. Contractor Live Credential Expiration Recheck (Finding 68-2)
+  if (params.contractorCredentials !== undefined) {
+    const snapshotContractorCredCodes =
+      job.evidenceSnapshot.regulatoryPolicy?.verifiedContractorCredentialCodes ?? [];
+    const contractorCreds = params.contractorCredentials;
+    for (const code of snapshotContractorCredCodes) {
+      const cred = contractorCreds.find((c) => c.code === code);
+      const isInsurance = code.includes("INSURANCE");
+      if (!cred || cred.status !== "VERIFIED") {
+        const codeToPush: PreDispatchDenyCode = isInsurance
+          ? "INSURANCE_GAP_DETECTED"
+          : "REGULATORY_CREDENTIAL_LAPSED";
+        if (!denyCodes.includes(codeToPush)) denyCodes.push(codeToPush);
+        reasons.push(
+          `Contractor credential '${code}' is no longer verified (status: ${cred?.status ?? "MISSING"}).`,
+        );
+      } else if (cred.expiryDate && new Date(cred.expiryDate) < now) {
+        if (!denyCodes.includes("REGULATORY_CREDENTIAL_LAPSED")) {
+          denyCodes.push("REGULATORY_CREDENTIAL_LAPSED");
+        }
+        if (isInsurance && !denyCodes.includes("INSURANCE_GAP_DETECTED")) {
+          denyCodes.push("INSURANCE_GAP_DETECTED");
+        }
+        reasons.push(
+          `Contractor credential '${code}' lapsed on ${cred.expiryDate} before work commenced.`,
+        );
+      }
+    }
+  }
+
+  // 4. Supervisor Requirement Check (Finding 68-4)
+  const cap = job.evidenceSnapshot.capabilityAssessment;
+  const requiresSupervisor =
+    cap?.requiresSupervisorOnSite === true ||
+    (cap?.supervised === true && cap?.requiresSupervisorOnSite !== false);
+  if (requiresSupervisor && !params.supervisorPresentOnSite) {
+    denyCodes.push("SUPERVISOR_REQUIRED_ON_SITE");
+    reasons.push(
+      "Supervised capability assessment requires a verified supervisor present on-site before work commences.",
+    );
   }
 
   const allowedToCommence = denyCodes.length === 0;
