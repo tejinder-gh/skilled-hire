@@ -10,3 +10,4 @@ uploads
 .pnpm-store
 .DS_Store
 *.tsbuildinfo
+.worktrees

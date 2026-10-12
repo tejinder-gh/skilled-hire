@@ -16,6 +16,7 @@ import {
   unique,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 // 1. Enums
@@ -356,6 +357,10 @@ export const serviceRequests = pgTable("service_requests", {
   preferredStartsAt: timestamp("preferred_starts_at", { withTimezone: true }),
   preferredEndsAt: timestamp("preferred_ends_at", { withTimezone: true }),
   attachmentKeys: jsonb("attachment_keys").notNull().default([]),
+  riskTier: text("risk_tier").notNull().default("LOW"),
+  riskScore: integer("risk_score"),
+  riskAssessmentId: uuid("risk_assessment_id"),
+  riskReviewStatus: text("risk_review_status").notNull().default("NOT_REQUIRED"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -396,6 +401,14 @@ export const jobs = pgTable("jobs", {
   regulatorySignedOffAt: timestamp("regulatory_signed_off_at", {
     withTimezone: true,
   }),
+  riskTier: text("risk_tier").notNull().default("LOW"),
+  riskScore: integer("risk_score"),
+  riskAssessmentId: uuid("risk_assessment_id").references(
+    (): AnyPgColumn => jobRiskAssessments.id,
+  ),
+  riskReviewStatus: text("risk_review_status")
+    .notNull()
+    .default("NOT_REQUIRED"),
   assignedAt: timestamp("assigned_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -1173,6 +1186,10 @@ export const serviceRequestsRelations = relations(
       fields: [serviceRequests.id],
       references: [jobs.serviceRequestId],
     }),
+    riskAssessment: one(jobRiskAssessments, {
+      fields: [serviceRequests.riskAssessmentId],
+      references: [jobRiskAssessments.id],
+    }),
   }),
 );
 
@@ -1191,6 +1208,10 @@ export const jobsRelations = relations(jobs, ({ one, many }) => ({
   }),
   quotes: many(quotes),
   changeOrders: many(changeOrders),
+  riskAssessment: one(jobRiskAssessments, {
+    fields: [jobs.riskAssessmentId],
+    references: [jobRiskAssessments.id],
+  }),
 }));
 
 export const quotesRelations = relations(quotes, ({ one, many }) => ({
@@ -1604,6 +1625,94 @@ export const permitDeficienciesRelations = relations(
     }),
     rectifiedByUser: one(users, {
       fields: [permitDeficiencies.rectifiedByUserId],
+      references: [users.id],
+    }),
+  }),
+);
+
+// 15. Versioned Job Risk Scoring & Dispatch Controls (#60)
+export const riskPolicies = pgTable("risk_policies", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  version: text("version").notNull().unique(),
+  name: text("name").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  effectiveDate: timestamp("effective_date", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  dimensionsConfig: jsonb("dimensions_config").notNull().default({}),
+  hazardFlagRules: jsonb("hazard_flag_rules").notNull().default([]),
+  tierThresholds: jsonb("tier_thresholds").notNull().default({}),
+  mandatoryControlsConfig: jsonb("mandatory_controls_config")
+    .notNull()
+    .default([]),
+  calibrationNotes: text("calibration_notes"),
+  provenanceAudit: jsonb("provenance_audit").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const jobRiskAssessments = pgTable("job_risk_assessments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  jobId: uuid("job_id").references((): AnyPgColumn => jobs.id),
+  serviceRequestId: uuid("service_request_id").references(
+    (): AnyPgColumn => serviceRequests.id,
+  ),
+  policyId: uuid("policy_id")
+    .notNull()
+    .references(() => riskPolicies.id),
+  policyVersion: text("policy_version").notNull(),
+  inherentScore: integer("inherent_score").notNull(),
+  mitigationsScore: integer("mitigations_score").notNull(),
+  residualScore: integer("residual_score").notNull(),
+  riskTier: text("risk_tier").notNull(),
+  hazardFlags: jsonb("hazard_flags").notNull().default([]),
+  mandatoryControls: jsonb("mandatory_controls").notNull().default([]),
+  verifiedControls: jsonb("verified_controls").notNull().default([]),
+  decisionLog: jsonb("decision_log").notNull().default({}),
+  requiresManualApproval: boolean("requires_manual_approval")
+    .notNull()
+    .default(false),
+  manualApprovalStatus: text("manual_approval_status")
+    .notNull()
+    .default("NOT_REQUIRED"),
+  manualApprovedByUserId: uuid("manual_approved_by_user_id").references(
+    () => users.id,
+  ),
+  manualApprovedAt: timestamp("manual_approved_at", { withTimezone: true }),
+  manualApprovalNotes: text("manual_approval_notes"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const riskPoliciesRelations = relations(riskPolicies, ({ many }) => ({
+  assessments: many(jobRiskAssessments),
+}));
+
+export const jobRiskAssessmentsRelations = relations(
+  jobRiskAssessments,
+  ({ one }) => ({
+    job: one(jobs, {
+      fields: [jobRiskAssessments.jobId],
+      references: [jobs.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [jobRiskAssessments.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+    policy: one(riskPolicies, {
+      fields: [jobRiskAssessments.policyId],
+      references: [riskPolicies.id],
+    }),
+    manualApprovedByUser: one(users, {
+      fields: [jobRiskAssessments.manualApprovedByUserId],
       references: [users.id],
     }),
   }),

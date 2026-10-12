@@ -445,5 +445,71 @@ export const documentRegulatoryExceptionSchema = z.object({
   exceptionRuleReference: z.string().min(3).max(100),
 });
 
+// Versioned Job Risk Scoring & Dispatch Controls (#60)
+export const assessJobRiskSchema = z.object({
+  policyVersion: z.string().min(1).max(50).optional(),
+  hazardFlags: z.array(z.string()).default([]),
+  jobValueCents: z.number().int().nonnegative().optional(),
+  propertyAgeYears: z.number().int().nonnegative().optional(),
+  isCommercialOrIndustrial: z.boolean().default(false),
+  heightMeters: z.number().nonnegative().optional(),
+  confinedSpaceAccess: z.boolean().default(false),
+  voltageLevelVolts: z.number().nonnegative().optional(),
+  gasApplianceInvolved: z.boolean().default(false),
+  mitigationFactors: z
+    .array(
+      z.object({
+        mitigation: z.string(),
+        verified: z.boolean(),
+        notes: z.string().optional(),
+      }),
+    )
+    .default([]),
+});
+
+export const reviewJobRiskAssessmentSchema = z.object({
+  decision: z.enum(["APPROVED", "REJECTED"]),
+  approvalNotes: z.string().min(5).max(2000),
+  conditions: z.array(z.string()).optional(),
+});
+
+export const fulfillMandatoryControlSchema = z.object({
+  control: z.string().min(2).max(100),
+  notes: z.string().min(5).max(1000).optional(),
+  evidenceUrl: z.string().url().max(512).optional(),
+});
+
+export const createRiskPolicySchema = z.object({
+  version: z.string().min(1).max(50),
+  name: z.string().min(3).max(200),
+  dimensionsConfig: z.record(z.string(), z.unknown()).default({}),
+  hazardFlagRules: z
+    .array(
+      z.object({
+        flag: z.string(),
+        severity: z.enum(["RED_FLAG", "HIGH", "MODERATE"]),
+        inherentAdd: z.number().int().min(0).max(100),
+        requiresManualApproval: z.boolean(),
+      }),
+    )
+    .default([]),
+  tierThresholds: z.object({
+    lowMax: z.number().int().min(0).max(100),
+    moderateMax: z.number().int().min(0).max(100),
+    highMax: z.number().int().min(0).max(100),
+    criticalMin: z.number().int().min(0).max(100),
+  }),
+  mandatoryControlsConfig: z
+    .array(
+      z.object({
+        trigger: z.string(),
+        control: z.string(),
+      }),
+    )
+    .default([]),
+  calibrationNotes: z.string().max(2000).optional(),
+});
+
+
 
 

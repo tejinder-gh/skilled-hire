@@ -421,17 +421,25 @@ export function evaluatePreWorkCommencement(
   const snapshotTechCredCodes =
     job.evidenceSnapshot.regulatoryPolicy?.verifiedTechnicianCredentialCodes ?? [];
   for (const code of snapshotTechCredCodes) {
-    const cred = technicianCredentials.find((c) => c.code === code);
-    if (!cred || cred.status !== "VERIFIED") {
-      denyCodes.push("REGULATORY_CREDENTIAL_LAPSED");
-      reasons.push(
-        `Technician credential '${code}' is no longer verified (status: ${cred?.status ?? "MISSING"}).`,
-      );
-    } else if (cred.expiryDate && new Date(cred.expiryDate) < now) {
-      denyCodes.push("REGULATORY_CREDENTIAL_LAPSED");
-      reasons.push(
-        `Technician credential '${code}' lapsed on ${cred.expiryDate} before work commenced.`,
-      );
+    const validCred = technicianCredentials.find(
+      (c) =>
+        c.code === code &&
+        c.status === "VERIFIED" &&
+        (!c.expiryDate || new Date(c.expiryDate) >= now),
+    );
+    if (!validCred) {
+      const anyCred = technicianCredentials.find((c) => c.code === code);
+      if (anyCred?.expiryDate && new Date(anyCred.expiryDate) < now) {
+        denyCodes.push("REGULATORY_CREDENTIAL_LAPSED");
+        reasons.push(
+          `Technician credential '${code}' lapsed on ${anyCred.expiryDate} before work commenced.`,
+        );
+      } else {
+        denyCodes.push("REGULATORY_CREDENTIAL_LAPSED");
+        reasons.push(
+          `Technician credential '${code}' is no longer verified (status: ${anyCred?.status ?? "MISSING"}).`,
+        );
+      }
     }
   }
 

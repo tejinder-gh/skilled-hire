@@ -6,6 +6,7 @@ import {
   db,
   eq,
   and,
+  or,
   desc,
   sql,
   jobs,
@@ -24,6 +25,7 @@ import {
   payouts,
   credentials,
   dispatchEligibilityChecks,
+  jobRiskAssessments,
 } from "@marketplace/database";
 import {
   reviewSchema,
@@ -693,6 +695,54 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
           technicianCredentials: tCreds,
           now: new Date(),
         });
+
+        // Enforce job risk assessment controls before work begins
+        const [riskAssessment] = await tx
+          .select()
+          .from(jobRiskAssessments)
+          .where(
+            or(
+              eq(jobRiskAssessments.jobId, jobId),
+              eq(jobRiskAssessments.serviceRequestId, job.serviceRequestId),
+            ),
+          )
+          .orderBy(desc(jobRiskAssessments.createdAt))
+          .limit(1);
+
+        if (riskAssessment) {
+          if (
+            riskAssessment.requiresManualApproval &&
+            riskAssessment.manualApprovalStatus !== "APPROVED"
+          ) {
+            const err = new Error(
+              `Pre-work safety check failed: job risk tier (${riskAssessment.riskTier}) requires operations safety approval before commencement`,
+            );
+            (err as any).statusCode = 422;
+            (err as any).code = "CRITICAL_RISK_MANUAL_APPROVAL_REQUIRED";
+            (err as any).details = {
+              riskAssessmentId: riskAssessment.id,
+              riskTier: riskAssessment.riskTier,
+              manualApprovalStatus: riskAssessment.manualApprovalStatus,
+            };
+            throw err;
+          }
+
+          const mandatoryControls =
+            (riskAssessment.mandatoryControls as Array<{ control: string; fulfilled?: boolean }>) ?? [];
+          const unfulfilled = mandatoryControls.filter((c) => !c.fulfilled);
+          if (unfulfilled.length > 0) {
+            const err = new Error(
+              `Pre-work safety check failed: ${unfulfilled.length} mandatory safety controls are unfulfilled`,
+            );
+            (err as any).statusCode = 422;
+            (err as any).code = "UNFULFILLED_MANDATORY_SAFETY_CONTROLS";
+            (err as any).details = {
+              riskAssessmentId: riskAssessment.id,
+              unfulfilledControls: unfulfilled.map((c) => c.control),
+            };
+            throw err;
+          }
+        }
 
         await tx.insert(dispatchEligibilityChecks).values({
           serviceRequestId: job.serviceRequestId,

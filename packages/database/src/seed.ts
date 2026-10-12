@@ -325,9 +325,9 @@ for (const { code, ref } of contractorCredCodes) {
   const existing = await db.query.credentials.findFirst({
     where: and(eq(credentials.contractorId, contractor), eq(credentials.code, code)),
   });
+  const expiry = new Date();
+  expiry.setFullYear(expiry.getFullYear() + 1);
   if (!existing) {
-    const expiry = new Date();
-    expiry.setFullYear(expiry.getFullYear() + 1);
     await db.insert(credentials).values({
       contractorId: contractor,
       code,
@@ -339,6 +339,18 @@ for (const { code, ref } of contractorCredCodes) {
       verifiedAt: new Date(),
       expiryDate: expiry.toISOString().split("T")[0]!,
     });
+  } else {
+    await db
+      .update(credentials)
+      .set({
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: ref,
+        checkedAt: new Date(),
+        verifiedAt: new Date(),
+        expiryDate: expiry.toISOString().split("T")[0]!,
+      })
+      .where(eq(credentials.id, existing.id));
   }
 }
 
@@ -355,9 +367,9 @@ for (const { code, ref } of techCredCodes) {
   const existing = await db.query.credentials.findFirst({
     where: and(eq(credentials.technicianId, technician), eq(credentials.code, code)),
   });
+  const expiry = new Date();
+  expiry.setFullYear(expiry.getFullYear() + 1);
   if (!existing) {
-    const expiry = new Date();
-    expiry.setFullYear(expiry.getFullYear() + 1);
     await db.insert(credentials).values({
       technicianId: technician,
       code,
@@ -369,6 +381,18 @@ for (const { code, ref } of techCredCodes) {
       verifiedAt: new Date(),
       expiryDate: expiry.toISOString().split("T")[0]!,
     });
+  } else {
+    await db
+      .update(credentials)
+      .set({
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: ref,
+        checkedAt: new Date(),
+        verifiedAt: new Date(),
+        expiryDate: expiry.toISOString().split("T")[0]!,
+      })
+      .where(eq(credentials.id, existing.id));
   }
 }
 
@@ -406,9 +430,9 @@ const existingCapability = await db.query.contractorCapabilityAssessments.findFi
     eq(contractorCapabilityAssessments.geography, "ON"),
   ),
 });
+const expiry = new Date();
+expiry.setFullYear(expiry.getFullYear() + 2);
 if (!existingCapability) {
-  const expiry = new Date();
-  expiry.setFullYear(expiry.getFullYear() + 2);
   await db.insert(contractorCapabilityAssessments).values({
     contractorId: contractor,
     issueTypeId: issue,
@@ -422,6 +446,19 @@ if (!existingCapability) {
     validUntil: expiry,
     decisionNotes: "Verified HVAC technical competency during platform onboarding",
   });
+} else {
+  await db
+    .update(contractorCapabilityAssessments)
+    .set({
+      status: "APPROVED",
+      complexityTier: "TIER_1_BASIC",
+      maxJobValueCents: 500000,
+      assessedByUserId: admin,
+      assessedAt: new Date(),
+      validUntil: expiry,
+      decisionNotes: "Verified HVAC technical competency during platform onboarding",
+    })
+    .where(eq(contractorCapabilityAssessments.id, existingCapability.id));
 }
 
 // 8. Fixtures for dispatch and discovery testing

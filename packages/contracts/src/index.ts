@@ -1007,4 +1007,139 @@ export interface ElectricalAcceptanceEvaluation {
   };
 }
 
+// 15. Versioned Job Risk Scoring & Dispatch Controls (#60)
+export const hazardFlags = [
+  "LIVE_ELECTRICAL_WORK",
+  "HIGH_VOLTAGE",
+  "GAS_COMBUSTION",
+  "CONFINED_SPACE",
+  "WORKING_AT_HEIGHTS",
+  "STRUCTURAL_LOAD_BEARING",
+  "HAZARDOUS_MATERIALS_ASBESTOS",
+  "WATER_PROXIMITY_ELECTRICAL",
+] as const;
+export type HazardFlag = (typeof hazardFlags)[number];
+
+export const hazardSeverities = ["RED_FLAG", "HIGH", "MODERATE"] as const;
+export type HazardSeverity = (typeof hazardSeverities)[number];
+
+export const manualApprovalStatuses = [
+  "NOT_REQUIRED",
+  "PENDING_REVIEW",
+  "APPROVED",
+  "REJECTED",
+] as const;
+export type ManualApprovalStatus = (typeof manualApprovalStatuses)[number];
+
+export const riskDenyCodes = [
+  "CRITICAL_RISK_MANUAL_APPROVAL_REQUIRED",
+  "UNFULFILLED_MANDATORY_SAFETY_CONTROLS",
+  "HAZARD_FLAG_RESTRICTION",
+  "CONTRACTOR_TIER_INSUFFICIENT",
+] as const;
+export type RiskDenyCode = (typeof riskDenyCodes)[number];
+
+export interface MandatoryControlItem {
+  control: string;
+  description: string;
+  requiredFor: string;
+  fulfilled: boolean;
+  fulfilledAt?: string | null | undefined;
+  fulfilledByUserId?: string | null | undefined;
+  notes?: string | null | undefined;
+  evidenceUrl?: string | null | undefined;
+}
+
+export interface RiskDecisionLog {
+  baseScore: number;
+  complexityAdjustment: number;
+  valueAdjustment: number;
+  hazardFlagAdjustments: Array<{
+    flag: string;
+    add: number;
+    severity: string;
+    reason: string;
+  }>;
+  totalInherent: number;
+  mitigationsApplied: Array<{
+    mitigation: string;
+    deduction: number;
+    verified: boolean;
+  }>;
+  totalMitigations: number;
+  residualScore: number;
+  calculatedTier: RiskTier;
+  redFlagTriggered: boolean;
+  triggerReasons: string[];
+  mandatoryControlsMandated: string[];
+}
+
+export interface RiskPolicy {
+  id: string;
+  version: string;
+  name: string;
+  isActive: boolean;
+  effectiveDate: string;
+  dimensionsConfig: Record<string, unknown>;
+  hazardFlagRules: Array<{
+    flag: string;
+    severity: string;
+    inherentAdd: number;
+    requiresManualApproval: boolean;
+  }>;
+  tierThresholds: {
+    lowMax: number;
+    moderateMax: number;
+    highMax: number;
+    criticalMin: number;
+  };
+  mandatoryControlsConfig: Array<{
+    trigger: string;
+    control: string;
+  }>;
+  calibrationNotes?: string | null | undefined;
+  provenanceAudit: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JobRiskAssessment {
+  id: string;
+  jobId: string | null;
+  serviceRequestId?: string | null | undefined;
+  policyId: string;
+  policyVersion: string;
+  inherentScore: number;
+  mitigationsScore: number;
+  residualScore: number;
+  riskTier: RiskTier;
+  hazardFlags: HazardFlag[];
+  mandatoryControls: MandatoryControlItem[];
+  verifiedControls: MandatoryControlItem[];
+  decisionLog: RiskDecisionLog;
+  requiresManualApproval: boolean;
+  manualApprovalStatus: ManualApprovalStatus;
+  manualApprovedByUserId?: string | null | undefined;
+  manualApprovedAt?: string | null | undefined;
+  manualApprovalNotes?: string | null | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RiskEvaluationResult {
+  canDispatch: boolean;
+  riskTier: RiskTier;
+  inherentScore: number;
+  mitigationsScore: number;
+  residualScore: number;
+  hazardFlags: HazardFlag[];
+  mandatoryControls: MandatoryControlItem[];
+  unfulfilledControls: string[];
+  requiresManualApproval: boolean;
+  manualApprovalStatus: ManualApprovalStatus;
+  denyCodes: RiskDenyCode[];
+  decisionLog: RiskDecisionLog;
+}
+
+
 

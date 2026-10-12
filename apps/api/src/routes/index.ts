@@ -14,6 +14,7 @@ import { supportRoutes } from "./support.routes.js";
 import { capabilityRoutes } from "./capability.routes.js";
 import { safetyRoutes } from "./safety.routes.js";
 import { permitsRoutes } from "./permits.routes.js";
+import { riskRoutes } from "./risk.routes.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(authRoutes);
@@ -23,6 +24,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(capabilityRoutes);
   await app.register(safetyRoutes);
   await app.register(permitsRoutes);
+  await app.register(riskRoutes);
   await app.register(propertiesRoutes);
   await app.register(requestRoutes);
   await app.register(jobsRoutes);

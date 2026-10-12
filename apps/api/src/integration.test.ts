@@ -28,6 +28,8 @@ import {
   qualityAudits,
   electricalPermits,
   permitDeficiencies,
+  riskPolicies,
+  jobRiskAssessments,
   auditEvents,
   refunds,
   eq,
@@ -88,6 +90,12 @@ describeSuite("Skilled Hire lifecycle", () => {
       .limit(1);
     if (!cUser) throw new Error("Missing customer user");
     custUser = cUser;
+
+    // Reset leftover uncompleted jobs from previously interrupted test runs
+    await db
+      .update(jobs)
+      .set({ status: "CLOSED" })
+      .where(sql`${jobs.status} NOT IN ('COMPLETED', 'CANCELLED', 'CLOSED')`);
   });
 
   afterAll(async () => {
@@ -1359,6 +1367,7 @@ describeSuite("Skilled Hire lifecycle", () => {
         contractorId: technicians.contractorId,
       })
       .from(technicians)
+      .where(eq(technicians.displayName, "John S."))
       .limit(1);
     const techId = techWithContractor?.id;
     const contId = techWithContractor?.contractorId;
@@ -1416,6 +1425,16 @@ describeSuite("Skilled Hire lifecycle", () => {
     }
 
     // 7. Authoritative Dispatch Eligibility: Fail-closed when technician lacks mandatory trade credentials
+    if (techId) {
+      await db
+        .delete(credentials)
+        .where(
+          and(
+            eq(credentials.technicianId, techId),
+            eq(credentials.code, "ON_SKILLED_TRADES_309A"),
+          ),
+        );
+    }
     const failClosedCheck = await app.inject({
       method: "POST",
       url: "/v1/compliance/eligibility-check",
@@ -1845,13 +1864,16 @@ describeSuite("Skilled Hire lifecycle", () => {
     const issueTypeA = issueTypeList[0]!;
     const issueTypeB = issueTypeList[1]!;
 
-    // Clean up any existing capability assessment for contractorA + issueTypeA
+    // Clean up any existing capability assessment for contractorA + issueTypeA / issueTypeB
     await db
       .delete(contractorCapabilityAssessments)
       .where(
         and(
           eq(contractorCapabilityAssessments.contractorId, contractorA!.id),
-          eq(contractorCapabilityAssessments.issueTypeId, issueTypeA.id),
+          or(
+            eq(contractorCapabilityAssessments.issueTypeId, issueTypeA.id),
+            eq(contractorCapabilityAssessments.issueTypeId, issueTypeB.id),
+          ),
         ),
       );
 
@@ -2135,7 +2157,8 @@ describeSuite("Skilled Hire lifecycle", () => {
     const [cont] = await db
       .select({ id: contractors.id, verticalIds: contractors.verticalIds })
       .from(contractors)
-      .where(eq(contractors.status, "VERIFIED"))
+      .innerJoin(technicians, eq(technicians.contractorId, contractors.id))
+      .where(and(eq(contractors.status, "VERIFIED"), eq(technicians.active, true)))
       .limit(1);
     expect(cont).toBeDefined();
 
@@ -2513,7 +2536,13 @@ describeSuite("Skilled Hire lifecycle", () => {
     const [cont] = await db
       .select({ id: contractors.id, verticalIds: contractors.verticalIds })
       .from(contractors)
-      .where(eq(contractors.status, "VERIFIED"))
+      .innerJoin(technicians, eq(technicians.contractorId, contractors.id))
+      .where(
+        and(
+          eq(contractors.status, "VERIFIED"),
+          eq(technicians.active, true),
+        ),
+      )
       .limit(1);
     expect(cont).toBeDefined();
 
@@ -3124,7 +3153,8 @@ describeSuite("Skilled Hire lifecycle", () => {
     const [cont] = await db
       .select({ id: contractors.id, verticalIds: contractors.verticalIds })
       .from(contractors)
-      .where(eq(contractors.status, "VERIFIED"))
+      .innerJoin(technicians, eq(technicians.contractorId, contractors.id))
+      .where(and(eq(contractors.status, "VERIFIED"), eq(technicians.active, true)))
       .limit(1);
     expect(cont).toBeDefined();
 
@@ -3619,6 +3649,346 @@ describeSuite("Skilled Hire lifecycle", () => {
       dossierJson.acceptanceEvaluation.customerSummary
         .utilityDisconnectCoordinated,
     ).toBe(true);
+  });
+
+  it("enforces versioned risk policies, red-flag hazard triggers, ops review queue, and risk-tier dispatch gates (#60)", async () => {
+    // 1. Verify Active Risk Policy on file (v1.0.0)
+    const activePolicyRes = await app.inject({
+      method: "GET",
+      url: "/v1/risk/policies/active",
+      headers: auth("dispatch@example.test"),
+    });
+    expect(activePolicyRes.statusCode).toBe(200);
+    const activePolicy = activePolicyRes.json<{
+      policy: {
+        id: string;
+        version: string;
+        isActive: boolean;
+        tierThresholds: {
+          lowMax: number;
+          moderateMax: number;
+          highMax: number;
+          criticalMin: number;
+        };
+        hazardFlagRules: Array<{ flag: string; severity: string; inherentAdd: number; requiresManualApproval: boolean }>;
+        mandatoryControlsConfig: Array<{ trigger: string; control: string }>;
+      };
+    }>().policy;
+    expect(activePolicy.version).toBe("1.0.0");
+    expect(activePolicy.isActive).toBe(true);
+    expect(activePolicy.tierThresholds.criticalMin).toBe(81);
+    expect(
+      activePolicy.hazardFlagRules.some(
+        (r) => r.flag === "HIGH_VOLTAGE" && r.requiresManualApproval,
+      ),
+    ).toBe(true);
+
+    // 2. Locate Electrical vertical & panel upgrade issue
+    const [elecVertical] = await db
+      .select({ id: verticals.id, slug: verticals.slug })
+      .from(verticals)
+      .where(eq(verticals.slug, "electrical"))
+      .limit(1);
+    expect(elecVertical).toBeDefined();
+
+    const [elecCat] = await db
+      .select({ id: serviceCategories.id })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, elecVertical!.id))
+      .limit(1);
+    expect(elecCat).toBeDefined();
+
+    const [elecIssue] = await db
+      .select({ id: issueTypes.id, slug: issueTypes.slug })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, elecCat!.id))
+      .limit(1);
+    expect(elecIssue).toBeDefined();
+
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, custUser.id))
+      .limit(1);
+    expect(prop).toBeDefined();
+
+    // 3. Create Service Request for High-Risk Electrical Panel Work
+    const createReq = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: prop!.id,
+        verticalId: elecVertical!.id,
+        categoryId: elecCat!.id,
+        issueTypeId: elecIssue!.id,
+        urgency: "STANDARD",
+        description:
+          "600V Main Distribution Panel Upgrade in basement crawlspace with suspected hazards",
+        attachmentKeys: [],
+      },
+    });
+    expect(createReq.statusCode).toBe(201);
+    const requestId = createReq.json<{ id: string }>().id;
+
+    // Transition to CONTRACTOR_SEARCH
+    for (const to of [
+      "QUALIFICATION_PENDING",
+      "QUALIFIED",
+      "SCHEDULING",
+      "SCHEDULED",
+      "CONTRACTOR_SEARCH",
+    ] as const) {
+      const transRes = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${requestId}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(transRes.statusCode).toBe(200);
+    }
+
+    // 4. Score Service Request Risk with RED_FLAG Triggers (HIGH_VOLTAGE & CONFINED_SPACE)
+    const assessRes = await app.inject({
+      method: "POST",
+      url: `/v1/risk/service-requests/${requestId}/assess`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        hazardFlags: ["HIGH_VOLTAGE", "CONFINED_SPACE"],
+        jobValueCents: 450000,
+        propertyAgeYears: 55,
+        voltageLevelVolts: 600,
+        confinedSpaceAccess: true,
+        isCommercialOrIndustrial: false,
+        mitigationFactors: [
+          { mitigation: "SITE_INSPECTION_CONDUCTED", verified: true },
+        ],
+      },
+    });
+    expect(assessRes.statusCode).toBe(200);
+    const assessData = assessRes.json<{
+      assessment: {
+        id: string;
+        serviceRequestId: string;
+        riskTier: string;
+        inherentScore: number;
+        residualScore: number;
+        requiresManualApproval: boolean;
+        manualApprovalStatus: string;
+        hazardFlags: string[];
+        mandatoryControls: Array<{ control: string; fulfilled: boolean }>;
+        decisionLog: { redFlagTriggered: boolean };
+      };
+      evaluation: { canDispatch: boolean; riskTier: string; denyCodes: string[] };
+    }>();
+
+    const assessmentId = assessData.assessment.id;
+    expect(assessData.assessment.riskTier).toBe("CRITICAL");
+    expect(assessData.assessment.requiresManualApproval).toBe(true);
+    expect(assessData.assessment.manualApprovalStatus).toBe("PENDING_REVIEW");
+    expect(assessData.assessment.decisionLog.redFlagTriggered).toBe(true);
+    expect(assessData.evaluation.canDispatch).toBe(false);
+    expect(assessData.assessment.mandatoryControls.length).toBeGreaterThan(0);
+    expect(
+      assessData.assessment.mandatoryControls.some(
+        (c) => c.control === "LOCKOUT_TAGOUT_PLAN",
+      ),
+    ).toBe(true);
+    expect(
+      assessData.assessment.mandatoryControls.some(
+        (c) => c.control === "CAL_RATED_PPE",
+      ),
+    ).toBe(true);
+    expect(
+      assessData.assessment.mandatoryControls.some(
+        (c) => c.control === "ATMOSPHERIC_TESTING",
+      ),
+    ).toBe(true);
+
+    // Retrieve via GET /v1/risk/service-requests/:id/assessment
+    const getAssessRes = await app.inject({
+      method: "GET",
+      url: `/v1/risk/service-requests/${requestId}/assessment`,
+      headers: auth("dispatch@example.test"),
+    });
+    expect(getAssessRes.statusCode).toBe(200);
+    expect(
+      getAssessRes.json<{ assessment: { id: string } }>().assessment.id,
+    ).toBe(assessmentId);
+
+    // 5. Query candidate list for dispatch
+    const candRes = await app.inject({
+      method: "GET",
+      url: `/v1/dispatch/${requestId}/candidates`,
+      headers: auth("dispatch@example.test"),
+    });
+    expect(candRes.statusCode).toBe(200);
+    const candidateList = candRes.json<{
+      candidates: Array<{ technicianId: string }>;
+    }>().candidates;
+    expect(candidateList.length).toBeGreaterThan(0);
+    const techId = candidateList[0]!.technicianId;
+
+    // 6. DISPATCH GATE 1: Attempt assignment -> FAILS CLOSED on Pending Ops Manual Approval
+    const blockedAssignRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${requestId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: techId },
+    });
+    expect(blockedAssignRes.statusCode).toBe(422);
+    const blockedJson = blockedAssignRes.json<{
+      code: string;
+      details: { manualApprovalStatus: string; requiresManualApproval: boolean };
+    }>();
+    expect(blockedJson.code).toBe("CRITICAL_RISK_MANUAL_APPROVAL_REQUIRED");
+    expect(blockedJson.details.manualApprovalStatus).toBe("PENDING_REVIEW");
+    expect(blockedJson.details.requiresManualApproval).toBe(true);
+
+    // 7. Verify Job Risk Review Queue (Operations Dashboard)
+    const queueRes = await app.inject({
+      method: "GET",
+      url: "/v1/risk/review-queue",
+      headers: auth("dispatch@example.test"),
+    });
+    expect(queueRes.statusCode).toBe(200);
+    const queueData = queueRes.json<{
+      pendingReviews: Array<{ id: string; serviceRequestId: string; riskTier: string }>;
+      totalPending: number;
+    }>();
+    expect(queueData.totalPending).toBeGreaterThan(0);
+    expect(
+      queueData.pendingReviews.some(
+        (r) => r.id === assessmentId && r.serviceRequestId === requestId,
+      ),
+    ).toBe(true);
+
+    // 8. Operations Safety Officer Approves Critical Risk Assessment
+    const reviewRes = await app.inject({
+      method: "POST",
+      url: `/v1/risk/assessments/${assessmentId}/review`,
+      headers: auth("admin@example.test"),
+      payload: {
+        decision: "APPROVED",
+        approvalNotes:
+          "Site-specific engineering control reviewed. High-voltage 600V safety procedures verified.",
+      },
+    });
+    expect(reviewRes.statusCode).toBe(200);
+    const reviewJson = reviewRes.json<{
+      decision: string;
+      assessment: { manualApprovalStatus: string };
+    }>();
+    expect(reviewJson.decision).toBe("APPROVED");
+    expect(reviewJson.assessment.manualApprovalStatus).toBe("APPROVED");
+
+    // 9. DISPATCH GATE 2: Attempt assignment -> FAILS CLOSED on Unfulfilled Mandatory Controls
+    const blockedControlsRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${requestId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: techId },
+    });
+    expect(blockedControlsRes.statusCode).toBe(422);
+    const blockedControlsJson = blockedControlsRes.json<{
+      code: string;
+      details: { unfulfilledControls: string[] };
+    }>();
+    expect(blockedControlsJson.code).toBe(
+      "UNFULFILLED_MANDATORY_SAFETY_CONTROLS",
+    );
+    expect(
+      blockedControlsJson.details.unfulfilledControls.length,
+    ).toBeGreaterThan(0);
+
+    // 10. Fulfill each mandated control sequentially
+    for (const ctrl of assessData.assessment.mandatoryControls) {
+      const fulfillRes = await app.inject({
+        method: "POST",
+        url: `/v1/risk/assessments/${assessmentId}/fulfill-control`,
+        headers: auth("technician@example.test"),
+        payload: {
+          control: ctrl.control,
+          notes: `Uploaded compliance checklist and equipment cert for ${ctrl.control}`,
+          evidenceUrl: `https://storage.skilledhire.ca/safety-dossiers/${ctrl.control.toLowerCase()}.pdf`,
+        },
+      });
+      expect(fulfillRes.statusCode).toBe(200);
+      expect(
+        fulfillRes.json<{ fulfilledControl: { fulfilled: boolean } }>()
+          .fulfilledControl.fulfilled,
+      ).toBe(true);
+    }
+
+    // 11. DISPATCH GATE 3: Assignment Succeeds Now That Risk Gates Are Cleared
+    const assignSuccessRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${requestId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: techId },
+    });
+    expect(assignSuccessRes.statusCode).toBe(201);
+    const assignedJobId = assignSuccessRes.json<{ jobId: string }>().jobId;
+    expect(assignedJobId).toBeDefined();
+
+    // Verify DB linkage on jobs table
+    const [assignedJobRow] = await db
+      .select({
+        id: jobs.id,
+        riskTier: jobs.riskTier,
+        riskScore: jobs.riskScore,
+        riskAssessmentId: jobs.riskAssessmentId,
+        riskReviewStatus: jobs.riskReviewStatus,
+      })
+      .from(jobs)
+      .where(eq(jobs.id, assignedJobId));
+    expect(assignedJobRow?.riskTier).toBe("CRITICAL");
+    expect(assignedJobRow?.riskReviewStatus).toBe("APPROVED");
+    expect(assignedJobRow?.riskAssessmentId).toBe(assessmentId);
+
+    // 12. Pre-work Worker Identity & Commencement Gate
+    const idVerifyRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${assignedJobId}/verify-worker-identity`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        method: "GOVT_PHOTO_ID",
+        notes: "Ontario Trade Certificate Card #STO-309A verified",
+      },
+    });
+    expect(idVerifyRes.statusCode).toBe(200);
+
+    const commenceRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${assignedJobId}/commence-work`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        technicianId: techId,
+        notes:
+          "LOTO applied, atmospheric gas detector zeroed, arc-flash suit donned",
+      },
+    });
+    expect(commenceRes.statusCode).toBe(200);
+    expect(commenceRes.json<{ status: string }>().status).toBe(
+      "WORK_IN_PROGRESS",
+    );
+
+    // 13. Safe Unknown-Input Behavior Invariant Test
+    // Even if parameters are missing or anomalous, evaluateJobRisk does not crash and defaults conservatively
+    const missingInputRes = await app.inject({
+      method: "POST",
+      url: `/v1/risk/service-requests/${requestId}/assess`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        hazardFlags: ["LIVE_ELECTRICAL_WORK"],
+      },
+    });
+    expect(missingInputRes.statusCode).toBe(200);
+    const missingInputJson = missingInputRes.json<{
+      assessment: { riskTier: string; requiresManualApproval: boolean };
+    }>();
+    expect(missingInputJson.assessment.riskTier).toBe("CRITICAL");
+    expect(missingInputJson.assessment.requiresManualApproval).toBe(true);
   });
 });
 

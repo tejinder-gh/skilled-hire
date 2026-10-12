@@ -11,6 +11,7 @@ import {
   eq,
   and,
   or,
+  desc,
   sql,
   verticals,
   technicians,
@@ -25,6 +26,7 @@ import {
   contractorCapabilityAssessments,
   dispatchEligibilityChecks,
   contractorSafetyQuarantines,
+  jobRiskAssessments,
 } from "@marketplace/database";
 import {
   evaluateRegulatoryEligibility,
@@ -111,7 +113,19 @@ const getCandidatesHandler = async (
     })
     .from(technicians)
     .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
-    .leftJoin(credentials, eq(credentials.technicianId, technicians.id))
+    .leftJoin(
+      credentials,
+      and(
+        or(
+          eq(credentials.technicianId, technicians.id),
+          eq(credentials.contractorId, contractors.id),
+        ),
+        or(
+          eq(credentials.geography, "*"),
+          eq(credentials.geography, service.region),
+        ),
+      ),
+    )
     .where(
       and(
         eq(technicians.active, true),
@@ -973,6 +987,55 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
         if (!ranked.some((item) => item.technicianId === body.technicianId))
           throw new Error("INELIGIBLE_TECHNICIAN");
 
+        // Check job risk assessment for service request
+        const [riskAssessment] = await tx
+          .select()
+          .from(jobRiskAssessments)
+          .where(eq(jobRiskAssessments.serviceRequestId, requestId))
+          .orderBy(desc(jobRiskAssessments.createdAt))
+          .limit(1);
+
+        if (riskAssessment) {
+          // Invariant 1: Manual review requirement fails closed if pending or not approved
+          if (
+            riskAssessment.requiresManualApproval &&
+            riskAssessment.manualApprovalStatus !== "APPROVED"
+          ) {
+            const err = new Error(
+              `Pre-dispatch safety check failed: job risk tier (${riskAssessment.riskTier}) requires operations safety approval before assignment`,
+            );
+            (err as any).statusCode = 422;
+            (err as any).code = "CRITICAL_RISK_MANUAL_APPROVAL_REQUIRED";
+            (err as any).details = {
+              riskAssessmentId: riskAssessment.id,
+              riskTier: riskAssessment.riskTier,
+              manualApprovalStatus: riskAssessment.manualApprovalStatus,
+              requiresManualApproval: true,
+            };
+            throw err;
+          }
+
+          // Invariant 2: Mandatory safety controls must all be fulfilled
+          const mandatoryControls =
+            (riskAssessment.mandatoryControls as Array<{ control: string; fulfilled?: boolean }>) ?? [];
+          const unfulfilledControls = mandatoryControls.filter(
+            (c) => !c.fulfilled,
+          );
+          if (unfulfilledControls.length > 0) {
+            const err = new Error(
+              `Pre-dispatch safety check failed: ${unfulfilledControls.length} mandatory safety controls are unfulfilled`,
+            );
+            (err as any).statusCode = 422;
+            (err as any).code = "UNFULFILLED_MANDATORY_SAFETY_CONTROLS";
+            (err as any).details = {
+              riskAssessmentId: riskAssessment.id,
+              unfulfilledControls: unfulfilledControls.map((c) => c.control),
+              totalMandated: mandatoryControls.length,
+            };
+            throw err;
+          }
+        }
+
         const [job] = await tx
           .insert(jobs)
           .values({
@@ -992,8 +1055,23 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
               urgency: service.urgency,
             },
             workerIdentityVerified: false,
+            riskTier: riskAssessment ? (riskAssessment.riskTier as any) : "LOW",
+            riskScore: riskAssessment ? riskAssessment.residualScore : null,
+            riskAssessmentId: riskAssessment ? riskAssessment.id : null,
+            riskReviewStatus: riskAssessment
+              ? (riskAssessment.manualApprovalStatus as any)
+              : "NOT_REQUIRED",
           })
           .returning({ id: jobs.id });
+
+        if (!job) throw new Error("ASSIGNMENT_FAILED");
+
+        if (riskAssessment && !riskAssessment.jobId) {
+          await tx
+            .update(jobRiskAssessments)
+            .set({ jobId: job.id, updatedAt: new Date() })
+            .where(eq(jobRiskAssessments.id, riskAssessment.id));
+        }
 
         await tx
           .update(serviceRequests)
