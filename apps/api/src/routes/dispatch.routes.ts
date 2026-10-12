@@ -26,6 +26,7 @@ import {
   dispatchEligibilityChecks,
 } from "@marketplace/database";
 import {
+  evaluateContractorCapability,
   evaluateRegulatoryEligibility,
   resolveRegulatoryPolicy,
   evaluatePreDispatchEligibility,
@@ -110,7 +111,19 @@ const getCandidatesHandler = async (
     })
     .from(technicians)
     .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
-    .leftJoin(credentials, eq(credentials.technicianId, technicians.id))
+    .leftJoin(
+      credentials,
+      and(
+        or(
+          eq(credentials.technicianId, technicians.id),
+          eq(credentials.contractorId, contractors.id),
+        ),
+        or(
+          eq(credentials.geography, "*"),
+          eq(credentials.geography, service.region),
+        ),
+      ),
+    )
     .where(
       and(
         eq(technicians.active, true),
@@ -598,6 +611,8 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
             vertical_slug: verticals.slug,
             category_slug: serviceCategories.slug,
             variant_slug: issueTypes.slug,
+            risk_tier: issueTypes.riskTier,
+            base_price_cents: issueTypes.basePriceCents,
           })
           .from(serviceRequests)
           .innerJoin(properties, eq(properties.id, serviceRequests.propertyId))
@@ -792,6 +807,21 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
             variantSlug: service.variant_slug,
             urgency: service.urgency as any,
             region: service.region,
+            requiredComplexityTier: service.risk_tier
+              ? ((
+                  {
+                    LOW: "TIER_1_BASIC",
+                    MODERATE: "TIER_2_STANDARD",
+                    HIGH: "TIER_3_ADVANCED",
+                    CRITICAL: "TIER_4_SPECIALIZED",
+                    TIER_1_BASIC: "TIER_1_BASIC",
+                    TIER_2_STANDARD: "TIER_2_STANDARD",
+                    TIER_3_ADVANCED: "TIER_3_ADVANCED",
+                    TIER_4_SPECIALIZED: "TIER_4_SPECIALIZED",
+                  } as const
+                )[service.risk_tier] ?? "TIER_1_BASIC")
+              : "TIER_1_BASIC",
+            estimatedJobValueCents: Number(service.base_price_cents ?? 0),
           },
           contractor: {
             id: candidate.contractor_id,
@@ -827,21 +857,21 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
             : null,
         });
 
-        // Record check in audit history table
-        await tx.insert(dispatchEligibilityChecks).values({
-          serviceRequestId: requestId,
-          contractorId: candidate.contractor_id,
-          technicianId: body.technicianId,
-          evaluationStage: "PRE_DISPATCH",
-          eligible: preDispatch.eligible,
-          failClosedReason: preDispatch.failClosedReason ?? null,
-          denyCodes: preDispatch.denyCodes,
-          evidenceSnapshot: preDispatch.evidenceSnapshot,
-          evaluatedByUserId: actor(request).id,
-          escalatedToOps: !preDispatch.eligible,
-        });
-
         if (!preDispatch.eligible) {
+          // Record failed check in audit history table outside transaction so it is preserved upon rollback (Finding 68-5)
+          await db.insert(dispatchEligibilityChecks).values({
+            serviceRequestId: requestId,
+            contractorId: candidate.contractor_id,
+            technicianId: body.technicianId,
+            evaluationStage: "PRE_DISPATCH",
+            eligible: false,
+            failClosedReason: preDispatch.failClosedReason ?? null,
+            denyCodes: preDispatch.denyCodes,
+            evidenceSnapshot: preDispatch.evidenceSnapshot,
+            evaluatedByUserId: actor(request).id,
+            escalatedToOps: true,
+          });
+
           const isRegulatory = preDispatch.denyCodes.includes(
             "REGULATORY_POLICY_DEFICIENCY",
           );
@@ -859,6 +889,20 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
           };
           throw err;
         }
+
+        // Record check in audit history table for successful assignment
+        await tx.insert(dispatchEligibilityChecks).values({
+          serviceRequestId: requestId,
+          contractorId: candidate.contractor_id,
+          technicianId: body.technicianId,
+          evaluationStage: "PRE_DISPATCH",
+          eligible: true,
+          failClosedReason: null,
+          denyCodes: [],
+          evidenceSnapshot: preDispatch.evidenceSnapshot,
+          evaluatedByUserId: actor(request).id,
+          escalatedToOps: false,
+        });
 
         const config = z
           .object({

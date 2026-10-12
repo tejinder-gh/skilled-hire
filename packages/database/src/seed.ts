@@ -1,6 +1,10 @@
 import "dotenv/config";
 import { hashPassword } from "@marketplace/auth";
-import { CANONICAL_TRADE_CATALOG, CANONICAL_TRADE_POLICIES } from "@marketplace/vertical-engine";
+import {
+  CANONICAL_TRADE_CATALOG,
+  CANONICAL_TRADE_POLICIES,
+  DEFAULT_COMPLIANCE_STANDARDS,
+} from "@marketplace/vertical-engine";
 import {
   db,
   pool,
@@ -73,16 +77,27 @@ const technicianUser = await seedUser("technician@example.test", "John Service",
 // 1. Seed all 21 Canonical Trade Verticals, Categories, and Service Variants
 for (const entry of CANONICAL_TRADE_CATALOG) {
   const branding = { displayName: entry.name, domain: "skilledhire.ca" };
+  const tradeStandards = DEFAULT_COMPLIANCE_STANDARDS.filter(
+    (s) => s.verticalSlug === entry.slug && s.active,
+  );
+  const credentialRequirements =
+    tradeStandards.length > 0
+      ? tradeStandards.map((s) => ({
+          code: s.credentialCode,
+          geography: s.geography,
+          verificationRequired: s.requirementLevel === "MANDATORY",
+        }))
+      : [
+          {
+            code: `${entry.slug.toUpperCase().replace(/-/g, "_")}_LICENSE`,
+            geography: "ON",
+            verificationRequired: true,
+          },
+        ];
   const config = {
     branding,
     emergencyRules: [{ targetMinutes: 120, calloutFeeCents: 14900 }],
-    credentialRequirements: [
-      {
-        code: `${entry.slug.toUpperCase()}_LICENSE`,
-        geography: "ON",
-        verificationRequired: true,
-      },
-    ],
+    credentialRequirements,
   };
 
   const [v] = await db
@@ -110,6 +125,7 @@ for (const entry of CANONICAL_TRADE_CATALOG) {
         permitAuthority: entry.permitAuthority ?? null,
         launchReady: entry.launchReady,
         displayOrder: entry.displayOrder,
+        config,
       },
     })
     .returning({ id: verticals.id });
@@ -495,23 +511,46 @@ for (const fixture of [
   const techId = t?.id;
   if (!techId) throw new Error("Missing fixture technician");
 
-  const existingFixtureCred = await db.query.credentials.findFirst({
-    where: and(eq(credentials.technicianId, techId), eq(credentials.code, "HVAC_LICENSE")),
-  });
-  if (!existingFixtureCred) {
-    const expiry = new Date();
-    expiry.setFullYear(expiry.getFullYear() + 1);
-    await db.insert(credentials).values({
-      technicianId: techId,
-      code: "HVAC_LICENSE",
-      geography: "ON",
-      status: "VERIFIED",
-      verificationSource: "REGULATOR_API",
-      regulatorReference: `TSSA-${techId.slice(0, 8)}`,
-      checkedAt: new Date(),
-      verifiedAt: new Date(),
-      expiryDate: expiry.toISOString().split("T")[0]!,
+  for (const { code, ref } of contractorCredCodes) {
+    const existing = await db.query.credentials.findFirst({
+      where: and(eq(credentials.contractorId, companyId), eq(credentials.code, code)),
     });
+    if (!existing) {
+      const expiry = new Date();
+      expiry.setFullYear(expiry.getFullYear() + 1);
+      await db.insert(credentials).values({
+        contractorId: companyId,
+        code,
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: `${ref}-${companyId.slice(0, 4)}`,
+        checkedAt: new Date(),
+        verifiedAt: new Date(),
+        expiryDate: expiry.toISOString().split("T")[0]!,
+      });
+    }
+  }
+
+  for (const { code, ref } of techCredCodes) {
+    const existing = await db.query.credentials.findFirst({
+      where: and(eq(credentials.technicianId, techId), eq(credentials.code, code)),
+    });
+    if (!existing) {
+      const expiry = new Date();
+      expiry.setFullYear(expiry.getFullYear() + 1);
+      await db.insert(credentials).values({
+        technicianId: techId,
+        code,
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: `${ref}-${techId.slice(0, 4)}`,
+        checkedAt: new Date(),
+        verifiedAt: new Date(),
+        expiryDate: expiry.toISOString().split("T")[0]!,
+      });
+    }
   }
 
   const existingFixtureCap = await db.query.contractorCapabilityAssessments.findFirst({

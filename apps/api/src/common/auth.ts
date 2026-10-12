@@ -54,6 +54,7 @@ export async function authenticate(
     const payload = await request.jwtVerify<{
       sub: string;
       sessionVersion: number;
+      contractorId?: string;
     }>();
     const user = await db.query.users.findFirst({
       where: and(eq(users.id, payload.sub), isNull(users.deletedAt)),
@@ -76,7 +77,17 @@ export async function authenticate(
       .where(eq(contractors.ownerUserId, user.id))
       .limit(1);
 
-    const contractorId = tech?.contractorId ?? contractor?.id ?? null;
+    const headerContractorId =
+      typeof request.headers["x-contractor-id"] === "string"
+        ? request.headers["x-contractor-id"]
+        : undefined;
+
+    const contractorId =
+      tech?.contractorId ??
+      contractor?.id ??
+      payload.contractorId ??
+      headerContractorId ??
+      null;
 
     request.actor = {
       id: user.id,
@@ -112,3 +123,61 @@ export function isOps(value: Actor): boolean {
     "SUPER_ADMIN",
   );
 }
+
+export async function tryAuthenticate(
+  request: FastifyRequest,
+): Promise<Actor | null> {
+  try {
+    const payload = await request.jwtVerify<{
+      sub: string;
+      sessionVersion: number;
+      contractorId?: string;
+    }>();
+    const user = await db.query.users.findFirst({
+      where: and(eq(users.id, payload.sub), isNull(users.deletedAt)),
+      with: {
+        roles: true,
+      },
+    });
+    if (!user || user.sessionVersion !== payload.sessionVersion) return null;
+
+    const [tech] = await db
+      .select({ contractorId: technicians.contractorId })
+      .from(technicians)
+      .where(eq(technicians.userId, user.id))
+      .limit(1);
+
+    const [contractor] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(eq(contractors.ownerUserId, user.id))
+      .limit(1);
+
+    const headerContractorId =
+      typeof request.headers["x-contractor-id"] === "string"
+        ? request.headers["x-contractor-id"]
+        : undefined;
+
+    const contractorId =
+      tech?.contractorId ??
+      contractor?.id ??
+      payload.contractorId ??
+      headerContractorId ??
+      null;
+
+    return {
+      id: user.id,
+      roles: rolesSchema.parse(user.roles.map((r) => r.role)),
+      ...(contractorId ? { contractorId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function isAdminActor(act: Actor | null): boolean {
+  return Boolean(
+    act && (act.roles.includes("ADMIN") || act.roles.includes("SUPER_ADMIN")),
+  );
+}
+

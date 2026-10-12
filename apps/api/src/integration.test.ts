@@ -22,6 +22,7 @@ import {
   credentials,
   contractorCapabilityAssessments,
   dispatchEligibilityChecks,
+  serviceRequests,
   auditEvents,
   refunds,
   eq,
@@ -1801,9 +1802,105 @@ describeSuite("Skilled Hire lifecycle", () => {
       },
     });
     expect(legitOwnerSubmitRes.statusCode).toBe(201);
-    expect(legitOwnerSubmitRes.json<{ status: string }>().status).toBe(
-      "PENDING",
-    );
+    expect(legitOwnerSubmitRes.json<{ status: string }>().status).toBe("PENDING");
+
+    // 12. Test: Manager submits credentials for own contractor and technician -> 201 PENDING
+    const managerEmail = "manager@example.test";
+    const [existingMgr] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, managerEmail))
+      .limit(1);
+    let managerUserId: string;
+    if (!existingMgr) {
+      const [newMgr] = await db
+        .insert(users)
+        .values({
+          email: managerEmail,
+          passwordHash: (
+            await db
+              .select({ hash: users.passwordHash })
+              .from(users)
+              .where(eq(users.email, "owner@example.test"))
+              .limit(1)
+          )[0]!.hash,
+          displayName: "Contractor Manager",
+        })
+        .returning({ id: users.id });
+      managerUserId = newMgr!.id;
+      await db.insert(userRoles).values([
+        { userId: managerUserId, role: "CONTRACTOR_MANAGER" },
+        { userId: managerUserId, role: "OPERATIONS_AGENT" }, // Multi-role user to verify isStaffOverride fix
+      ]);
+    } else {
+      managerUserId = existingMgr.id;
+    }
+
+    await login(managerEmail);
+    const contractorAId = contractorA!.id;
+
+    // Manager submits contractor credential specifying contractorA.id -> 201
+    const managerContractorSubRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth(managerEmail),
+      payload: {
+        entityType: "CONTRACTOR",
+        contractorId: contractorAId,
+        code: "CGL_INSURANCE_2M",
+        geography: "ON",
+        documentKey: "uploads/compliance/manager-cgl.pdf",
+      },
+    });
+    expect(managerContractorSubRes.statusCode).toBe(201);
+    const mgrCredId = managerContractorSubRes.json<{ id: string }>().id;
+
+    // Verify audit event: isStaffOverride must be false because manager+ops is NOT ADMIN/SUPER_ADMIN
+    const [auditEv] = await db
+      .select({ metadata: auditEvents.metadata })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "CREDENTIAL_SUBMITTED"),
+          eq(auditEvents.entityId, mgrCredId),
+        ),
+      )
+      .limit(1);
+    expect(
+      (auditEv?.metadata as { isStaffOverride?: boolean })?.isStaffOverride,
+    ).toBe(false);
+
+    // Manager submits technician credential for technician A -> 201
+    const managerTechSubRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth(managerEmail),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techA!.id,
+        contractorId: contractorAId,
+        code: "CA_ODS_REFRIGERANT",
+        geography: "ON",
+        documentKey: "uploads/compliance/manager-ods.pdf",
+      },
+    });
+    expect(managerTechSubRes.statusCode).toBe(201);
+
+    // Manager attempts to submit for rival Contractor B's technician -> 403 FORBIDDEN
+    const managerCrossTechRes = await app.inject({
+      method: "POST",
+      url: "/v1/credentials/submit",
+      headers: auth(managerEmail),
+      payload: {
+        entityType: "TECHNICIAN",
+        technicianId: techBId,
+        contractorId: contractorAId,
+        code: "CA_ODS_REFRIGERANT",
+        geography: "ON",
+        documentKey: "uploads/compliance/manager-cross-tech.pdf",
+      },
+    });
+    expect(managerCrossTechRes.statusCode).toBe(403);
   });
 
   it("enforces technical capability assessment, scoped approval, assessor review, and appeal lifecycle", async () => {
@@ -1832,7 +1929,11 @@ describeSuite("Skilled Hire lifecycle", () => {
 
     // Fetch two distinct issue types
     const issueTypeList = await db
-      .select({ id: issueTypes.id, slug: issueTypes.slug })
+      .select({
+        id: issueTypes.id,
+        slug: issueTypes.slug,
+        categoryId: issueTypes.categoryId,
+      })
       .from(issueTypes)
       .limit(2);
     expect(issueTypeList.length).toBeGreaterThanOrEqual(2);
@@ -2101,6 +2202,155 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(unassessedJson.failClosedReason).toBe(
       "NO_CAPABILITY_ASSESSMENT_ON_FILE",
     );
+
+    // 8. Finding 67-2: Dispatcher/Ops cannot review/approve capability assessments (Strict Assessor RBAC)
+    const opsReviewRes = await app.inject({
+      method: "POST",
+      url: `/v1/capability/assessments/${createdAssessment.id}/review`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        decision: "APPROVED",
+        complexityTier: "TIER_4_SPECIALIZED",
+      },
+    });
+    expect(opsReviewRes.statusCode).toBe(403);
+
+    // 9. Finding 67-4: Expired assessments allow resubmission without 409 Conflict
+    await db
+      .update(contractorCapabilityAssessments)
+      .set({
+        validUntil: new Date(Date.now() - 60_000), // expired 1 minute ago
+      })
+      .where(eq(contractorCapabilityAssessments.id, createdAssessment.id));
+
+    const resubmitExpiredRes = await app.inject({
+      method: "POST",
+      url: "/v1/capability/assessments",
+      headers: auth("owner@example.test"),
+      payload: {
+        issueTypeId: issueTypeA.id,
+        geography: "ON",
+        complexityTier: "TIER_2_STANDARD",
+        yearsExperience: 6,
+        maxJobValueCents: 500_000,
+        workSamples: [
+          {
+            id: "ws-test-resubmit",
+            title: "Re-certified Commercial Retrofit",
+            description: "Updated air handling retrofit",
+            completedAt: "2026-01-01",
+          },
+        ],
+        references: [
+          {
+            id: "ref-test-resubmit",
+            clientName: "Ontario Property Group",
+            clientContact: "905-555-0182",
+            projectScope: "Annual recertification maintenance",
+            relationship: "Commercial Client",
+          },
+        ],
+        toolsEquipment: [
+          {
+            toolName: "Digital Manifold Gauge",
+            description: "Fieldpiece SM480V",
+            verified: true, // Finding 67-3: submitter cannot self-verify
+          },
+        ],
+      },
+    });
+    expect(resubmitExpiredRes.statusCode).toBe(200);
+    const resubmittedData = resubmitExpiredRes.json<{
+      status: string;
+      toolsEquipment: Array<{ verified: boolean }>;
+    }>();
+    expect(resubmittedData.status).toBe("SUBMITTED");
+    // Finding 67-3: self-declared verified flag is sanitized to false
+    expect(resubmittedData.toolsEquipment[0]?.verified).toBe(false);
+
+    // 10. Finding 67-1: Dispatch assignment fails when contractor capability is unapproved (SUBMITTED status)
+    // Create a service request bound to issueTypeA
+    const [hvacVertical] = await db
+      .select({ id: verticals.id })
+      .from(verticals)
+      .where(eq(verticals.slug, "hvac"))
+      .limit(1);
+    const [custProp] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, custUser.id))
+      .limit(1);
+
+    const [techAProfile] = await db
+      .select({ id: technicians.id })
+      .from(technicians)
+      .where(eq(technicians.contractorId, contractorA!.id))
+      .limit(1);
+
+    if (hvacVertical && custProp && techAProfile) {
+      const createReqRes = await app.inject({
+        method: "POST",
+        url: "/v1/service-requests",
+        headers: auth("customer@example.test"),
+        payload: {
+          propertyId: custProp.id,
+          verticalId: hvacVertical.id,
+          categoryId: issueTypeA.categoryId,
+          issueTypeId: issueTypeA.id,
+          urgency: "STANDARD",
+          description: "Test dispatch capability fail-closed check",
+          attachmentKeys: [],
+        },
+      });
+      expect(createReqRes.statusCode).toBe(201);
+      const serviceReqId = createReqRes.json<{ id: string }>().id;
+
+      for (const to of [
+        "QUALIFICATION_PENDING",
+        "QUALIFIED",
+        "SCHEDULING",
+        "SCHEDULED",
+        "CONTRACTOR_SEARCH",
+      ] as const) {
+        expect(
+          (
+            await app.inject({
+              method: "POST",
+              url: `/v1/service-requests/${serviceReqId}/transition`,
+              headers: auth("dispatch@example.test"),
+              payload: { to },
+            })
+          ).statusCode,
+        ).toBe(200);
+      }
+
+      // Assignment without override must fail closed (422) because assessment is SUBMITTED (not approved)
+      const unapprovedAssignRes = await app.inject({
+        method: "POST",
+        url: `/v1/dispatch/${serviceReqId}/assign`,
+        headers: auth("dispatch@example.test"),
+        payload: {
+          technicianId: techAProfile.id,
+        },
+      });
+      expect(unapprovedAssignRes.statusCode).toBe(422);
+      expect(unapprovedAssignRes.json<{ code: string }>().code).toBe(
+        "CAPABILITY_EVALUATION_FAILED",
+      );
+
+      // Assignment with authorized dispatcher override reason succeeds -> 201
+      const overrideAssignRes = await app.inject({
+        method: "POST",
+        url: `/v1/dispatch/${serviceReqId}/assign`,
+        headers: auth("dispatch@example.test"),
+        payload: {
+          technicianId: techAProfile.id,
+          overrideReason:
+            "Dispatcher authorized override for contractor under expedited renewal",
+        },
+      });
+      expect(overrideAssignRes.statusCode).toBe(201);
+    }
   });
 
   it("enforces pre-dispatch eligibility reevaluation, immutable evidence snapshot, and worker identity verification (#57)", async () => {

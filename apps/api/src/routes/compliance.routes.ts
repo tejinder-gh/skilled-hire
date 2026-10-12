@@ -680,7 +680,7 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
       );
       const body = parse(submitCredentialSchema, request.body);
       const actorId = currentActor.id;
-      const callerContractorId = currentActor.contractorId;
+      let callerContractorId = currentActor.contractorId;
       const isTech = hasRole(currentActor, "TECHNICIAN");
       const isStaff = hasRole(currentActor, "ADMIN", "SUPER_ADMIN");
       const isContractor = hasRole(
@@ -688,6 +688,34 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
         "CONTRACTOR_OWNER",
         "CONTRACTOR_MANAGER",
       );
+
+      // If standalone manager without direct contractorId on actor, resolve contractor context
+      if (!callerContractorId && isContractor) {
+        const headerId =
+          typeof request.headers["x-contractor-id"] === "string"
+            ? request.headers["x-contractor-id"]
+            : undefined;
+        const candidateId = headerId ?? body.contractorId;
+        if (candidateId) {
+          const [found] = await db
+            .select({ id: contractors.id })
+            .from(contractors)
+            .where(eq(contractors.id, candidateId))
+            .limit(1);
+          if (found) {
+            callerContractorId = found.id;
+          }
+        } else if (body.technicianId) {
+          const [techContractor] = await db
+            .select({ contractorId: technicians.contractorId })
+            .from(technicians)
+            .where(eq(technicians.id, body.technicianId))
+            .limit(1);
+          if (techContractor) {
+            callerContractorId = techContractor.contractorId;
+          }
+        }
+      }
 
       let targetContractorId: string | null = null;
       let targetTechnicianId: string | null = null;
@@ -845,7 +873,9 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
           ...body,
           targetContractorId,
           targetTechnicianId,
-          isStaffOverride: isOps(currentActor),
+        },
+        {
+          isStaffOverride: isStaff,
         },
       );
 

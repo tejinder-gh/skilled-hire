@@ -15,7 +15,14 @@ import {
   CANONICAL_TRADE_CATALOG,
   searchCatalog,
 } from "@marketplace/vertical-engine";
-import { actor, authenticate, parse, uuid } from "../common/auth.js";
+import {
+  actor,
+  authenticate,
+  isAdminActor,
+  parse,
+  tryAuthenticate,
+  uuid,
+} from "../common/auth.js";
 import { audit } from "../common/events.js";
 
 const createVerticalSchema = z.object({
@@ -100,14 +107,18 @@ const getCatalogData = async (request: FastifyRequest) => {
         "OUTDOOR_SITE",
       ])
       .optional(),
+    geography: z.string().default("ON"),
     launchReadyOnly: z.coerce.boolean().optional(),
     riskTier: z.enum(["LOW", "MODERATE", "HIGH", "CRITICAL"]).optional(),
   });
   const q = querySchema.parse(request.query);
+  const currentActor = await tryAuthenticate(request);
+  const isAdmin = isAdminActor(currentActor);
+  const launchReadyOnly = isAdmin && q.launchReadyOnly === false ? false : true;
 
   const whereClauses = [eq(verticals.active, true)];
   if (q.family) whereClauses.push(eq(verticals.family, q.family));
-  if (q.launchReadyOnly) whereClauses.push(eq(verticals.launchReady, true));
+  if (launchReadyOnly) whereClauses.push(eq(verticals.launchReady, true));
   if (q.riskTier) whereClauses.push(eq(verticals.riskTier, q.riskTier));
 
   const verticalsResult = await db
@@ -130,7 +141,7 @@ const getCatalogData = async (request: FastifyRequest) => {
     .orderBy(asc(verticals.displayOrder), asc(verticals.name));
 
   const catWhere = [eq(serviceCategories.active, true)];
-  if (q.launchReadyOnly) catWhere.push(eq(serviceCategories.launchReady, true));
+  if (launchReadyOnly) catWhere.push(eq(serviceCategories.launchReady, true));
 
   const categoriesResult = await db
     .select({
@@ -149,7 +160,7 @@ const getCatalogData = async (request: FastifyRequest) => {
     .orderBy(asc(serviceCategories.displayOrder), asc(serviceCategories.name));
 
   const issueWhere = [eq(issueTypes.active, true)];
-  if (q.launchReadyOnly) issueWhere.push(eq(issueTypes.launchReady, true));
+  if (launchReadyOnly) issueWhere.push(eq(issueTypes.launchReady, true));
 
   const variantsResult = await db
     .select({
@@ -179,6 +190,16 @@ const getCatalogData = async (request: FastifyRequest) => {
 
   const variantsByCat = new Map<string, typeof variantsResult>();
   for (const variant of variantsResult) {
+    if (q.geography !== "*") {
+      const geos = Array.isArray(variant.geographic_restrictions)
+        ? (variant.geographic_restrictions as string[])
+        : [];
+      const matchesGeo =
+        geos.length === 0 ||
+        geos.includes("*") ||
+        geos.map((g) => g.toUpperCase()).includes(q.geography.toUpperCase());
+      if (!matchesGeo) continue;
+    }
     const list = variantsByCat.get(variant.category_id) ?? [];
     list.push(variant);
     variantsByCat.set(variant.category_id, list);
@@ -186,11 +207,12 @@ const getCatalogData = async (request: FastifyRequest) => {
 
   const catsByVertical = new Map<string, Array<unknown>>();
   for (const cat of categoriesResult) {
+    const rawVariants = variantsByCat.get(cat.id) ?? [];
+    if (rawVariants.length === 0) continue;
     const list = catsByVertical.get(cat.vertical_id) ?? [];
-    const catVariants = variantsByCat.get(cat.id) ?? [];
     list.push({
       ...cat,
-      variants: catVariants.map((v) => ({
+      variants: rawVariants.map((v) => ({
         ...v,
         basePriceCents: Number(v.base_price_cents),
       })),
@@ -203,9 +225,7 @@ const getCatalogData = async (request: FastifyRequest) => {
       ...v,
       categories: catsByVertical.get(v.id) ?? [],
     }))
-    .filter(
-      (v) => !q.launchReadyOnly || (v.categories && v.categories.length > 0),
-    );
+    .filter((v) => v.categories && v.categories.length > 0);
 };
 
 export const catalogRoutes: FastifyPluginAsync = async (app) => {
@@ -239,6 +259,9 @@ export const catalogRoutes: FastifyPluginAsync = async (app) => {
       limit: z.coerce.number().int().min(1).max(50).default(20),
     });
     const q = querySchema.parse(request.query);
+    const currentActor = await tryAuthenticate(request);
+    const isAdmin = isAdminActor(currentActor);
+    const launchReadyOnly = isAdmin && q.launchReadyOnly === false ? false : true;
     const queryTokens = q.q.toLowerCase().trim().split(/\s+/).filter(Boolean);
 
     const searchWhere = [
@@ -247,7 +270,7 @@ export const catalogRoutes: FastifyPluginAsync = async (app) => {
       eq(verticals.active, true),
     ];
     if (q.family) searchWhere.push(eq(verticals.family, q.family));
-    if (q.launchReadyOnly) {
+    if (launchReadyOnly) {
       searchWhere.push(
         eq(issueTypes.launchReady, true),
         eq(serviceCategories.launchReady, true),
@@ -741,6 +764,8 @@ export const catalogRoutes: FastifyPluginAsync = async (app) => {
         updateValues.launchReady = body.launchReady;
       if (body.displayOrder !== undefined)
         updateValues.displayOrder = body.displayOrder;
+      if (body.equipmentFields !== undefined)
+        updateValues.equipmentFields = body.equipmentFields;
 
       await db
         .update(issueTypes)

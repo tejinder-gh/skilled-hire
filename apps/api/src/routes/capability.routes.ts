@@ -41,8 +41,7 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
 
       // Resolve target contractor ID with strict tenant isolation
       let targetContractorId: string;
-      const isAssessorOrAdmin =
-        hasRole(currentActor, "ADMIN", "SUPER_ADMIN") || isOps(currentActor);
+      const isAssessorOrAdmin = hasRole(currentActor, "ADMIN", "SUPER_ADMIN");
       const isContractor = hasRole(
         currentActor,
         "CONTRACTOR_OWNER",
@@ -65,7 +64,7 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
           });
         }
         targetContractorId = ownedContractorId;
-      } else if (isAssessorOrAdmin) {
+      } else if (isAssessorOrAdmin || isOps(currentActor)) {
         if (!body.contractorId) {
           return reply.status(400).send({
             error: "CONTRACTOR_ID_REQUIRED",
@@ -126,9 +125,17 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
         .limit(1);
 
       const now = new Date();
+      const sanitizedTools = (body.toolsEquipment ?? []).map((t) => ({
+        ...t,
+        verified: isAssessorOrAdmin ? (t.verified ?? false) : false,
+      }));
 
       if (existing.length > 0 && existing[0]) {
         const current = existing[0];
+        const isExpired =
+          current.status === "EXPIRED" ||
+          (current.validUntil != null &&
+            new Date(current.validUntil).getTime() <= now.getTime());
         const activeStatuses: CapabilityAssessmentStatus[] = [
           "APPROVED",
           "PROVISIONAL",
@@ -139,6 +146,7 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
         ];
 
         if (
+          !isExpired &&
           activeStatuses.includes(current.status as CapabilityAssessmentStatus)
         ) {
           return reply.status(409).send({
@@ -161,8 +169,7 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
             workSamples: body.workSamples as unknown as WorkSampleRecord[],
             references:
               body.references as unknown as ReferenceVerificationRecord[],
-            toolsEquipment:
-              body.toolsEquipment as unknown as ToolEquipmentRecord[],
+            toolsEquipment: sanitizedTools as unknown as ToolEquipmentRecord[],
             supervisedRequirements: {},
             denialReasons: [],
             assessedByUserId: null,
@@ -201,8 +208,7 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
           workSamples: body.workSamples as unknown as WorkSampleRecord[],
           references:
             body.references as unknown as ReferenceVerificationRecord[],
-          toolsEquipment:
-            body.toolsEquipment as unknown as ToolEquipmentRecord[],
+          toolsEquipment: sanitizedTools as unknown as ToolEquipmentRecord[],
           supervisedRequirements: {},
           denialReasons: [],
           appealHistory: [],
@@ -369,11 +375,8 @@ export const capabilityRoutes: FastifyPluginAsync = async (app) => {
       const currentActor = actor(request);
       const { id } = request.params as { id: string };
 
-      // Strictly require qualified assessor / admin / ops
-      if (
-        !hasRole(currentActor, "ADMIN", "SUPER_ADMIN") &&
-        !isOps(currentActor)
-      ) {
+      // Strictly require qualified assessor (ADMIN or SUPER_ADMIN)
+      if (!hasRole(currentActor, "ADMIN", "SUPER_ADMIN")) {
         return reply.status(403).send({
           error: "FORBIDDEN",
           message:
