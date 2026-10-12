@@ -237,3 +237,161 @@ export const preWorkCommenceSchema = z.object({
   notes: z.string().max(1000).optional(),
 });
 
+// Safety Incident Response, Suspension & Quality Audits (#58)
+export const containmentActionSchema = z.object({
+  id: z.string().default(() => crypto.randomUUID()),
+  action: z.string().min(3).max(500),
+  executedBy: z.string().min(2).max(100),
+  executedAt: z.string().default(() => new Date().toISOString()),
+  confirmedSafe: z.boolean().default(true),
+  notes: z.string().max(1000).optional(),
+});
+
+export const evidenceLockerItemSchema = z.object({
+  id: z.string().default(() => crypto.randomUUID()),
+  title: z.string().min(2).max(200),
+  fileKey: z.string().max(512).optional(),
+  url: z.string().url().max(512).optional(),
+  artifactType: z.enum([
+    "PHOTO",
+    "VIDEO",
+    "INSPECTOR_REPORT",
+    "METER_READING",
+    "INCIDENT_FORM",
+    "INSURER_NOTICE",
+  ]),
+  checksumSha256: z.string().max(128).optional(),
+  chainOfCustodyVerified: z.boolean().default(true),
+  notes: z.string().max(1000).optional(),
+});
+
+export const reportSafetyIncidentSchema = z.object({
+  jobId: uuid.optional(),
+  serviceRequestId: uuid.optional(),
+  propertyId: uuid.optional(),
+  contractorId: uuid,
+  technicianId: uuid.optional(),
+  reporterRole: z.enum([
+    "CUSTOMER",
+    "CONTRACTOR",
+    "TECHNICIAN",
+    "DISPATCHER",
+    "INSPECTOR",
+    "INSURER",
+    "ADMIN",
+  ]),
+  severity: z
+    .enum([
+      "CRITICAL_EMERGENCY",
+      "MAJOR_SAFETY",
+      "MODERATE_DEFECT",
+      "MINOR_HAZARD",
+    ])
+    .default("MODERATE_DEFECT"),
+  incidentType: z.enum([
+    "ELECTRICAL_HAZARD_SHOCK",
+    "GAS_LEAK_FIRE_RISK",
+    "STRUCTURAL_COLLAPSE_RISK",
+    "WATER_DAMAGE_FLOODING",
+    "CARBON_MONOXIDE",
+    "PROPERTY_DAMAGE_MAJOR",
+    "REGULATORY_CODE_VIOLATION",
+    "UNAUTHORIZED_UNQUALIFIED_WORK",
+  ]),
+  title: z.string().min(5).max(200),
+  description: z.string().min(10).max(5000),
+  occurredAt: z.string().default(() => new Date().toISOString()),
+  containmentActions: z.array(containmentActionSchema).default([]),
+  evidenceLocker: z.array(evidenceLockerItemSchema).default([]),
+  immediateQuarantine: z.boolean().default(false),
+});
+
+export const triageSafetyIncidentSchema = z.object({
+  severity: z.enum([
+    "CRITICAL_EMERGENCY",
+    "MAJOR_SAFETY",
+    "MODERATE_DEFECT",
+    "MINOR_HAZARD",
+  ]),
+  triageNotes: z.string().min(5).max(2000),
+  applyQuarantine: z.boolean().default(false),
+  quarantineType: z
+    .enum([
+      "FULL_CONTRACTOR_SUSPENSION",
+      "TECHNICIAN_SUSPENSION",
+      "VERTICAL_SCOPE_RESTRICTION",
+      "PROVISIONAL_AUDIT_SUPERVISION",
+    ])
+    .optional(),
+  restrictedVerticalIds: z.array(uuid).default([]),
+  restrictedIssueTypeIds: z.array(uuid).default([]),
+  notifyInsurer: z.boolean().default(false),
+  insurerClaimReference: z.string().max(100).optional(),
+  legalRetentionHold: z.boolean().default(false),
+});
+
+export const recordSafetyActionSchema = z.object({
+  actionType: z.enum([
+    "TRIAGE",
+    "EMERGENCY_ESCALATION",
+    "EVIDENCE_PRESERVED",
+    "CONTRACTOR_SUSPENDED",
+    "TECHNICIAN_SUSPENDED",
+    "SCOPE_RESTRICTED",
+    "INSURER_NOTIFIED",
+    "INDEPENDENT_REVIEW_ASSIGNED",
+    "SPOT_INSPECTION_ORDERED",
+    "CORRECTIVE_ACTION_REQUIRED",
+    "REMEDIATION_SUBMITTED",
+    "REMEDIATION_ACCEPTED",
+    "QUARANTINE_LIFTED",
+    "APPEAL_FILED",
+    "APPEAL_DECIDED",
+    "CLOSED",
+  ]),
+  notes: z.string().min(3).max(2000).optional(),
+  payload: z.record(z.unknown()).default({}),
+});
+
+export const submitRemediationSchema = z.object({
+  resolutionSummary: z.string().min(10).max(5000),
+  correctiveActionsTaken: z.array(z.string().min(3).max(500)).min(1),
+  evidenceFiles: z.array(evidenceLockerItemSchema).default([]),
+  requestInspection: z.boolean().default(true),
+});
+
+export const createQualityAuditSchema = z.object({
+  jobId: uuid.optional(),
+  contractorId: uuid,
+  technicianId: uuid.optional(),
+  incidentId: uuid.optional(),
+  triggerType: z.enum([
+    "INCIDENT_REMEDIATION",
+    "REPEAT_DEFECT_FLAG",
+    "RANDOM_SPOT_CHECK",
+    "HIGH_RISK_TRADE",
+    "CUSTOMER_DISPUTE",
+  ]),
+  inspectorUserId: uuid.optional(),
+  scheduledDate: z.string().optional(),
+});
+
+export const conductQualityAuditSchema = z.object({
+  status: z.enum(["PASSED", "DEFECTS_IDENTIFIED", "FAILED_CRITICAL"]),
+  findings: z
+    .array(
+      z.object({
+        code: z.string().min(2).max(100),
+        description: z.string().min(5).max(1000),
+        severity: z.enum(["CRITICAL", "MAJOR", "MINOR"]),
+        rectified: z.boolean().default(false),
+      }),
+    )
+    .default([]),
+  repeatDefectCount: z.number().int().nonnegative().default(0),
+  remediationRequired: z.boolean().default(false),
+  remediationDeadline: z.string().optional(),
+  reportNotes: z.string().max(2000).optional(),
+});
+
+

@@ -12,6 +12,7 @@ import { changeOrdersRoutes } from "./change-orders.routes.js";
 import { paymentsRoutes } from "./payments.routes.js";
 import { supportRoutes } from "./support.routes.js";
 import { capabilityRoutes } from "./capability.routes.js";
+import { safetyRoutes } from "./safety.routes.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(authRoutes);
@@ -19,6 +20,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(catalogRoutes);
   await app.register(complianceRoutes);
   await app.register(capabilityRoutes);
+  await app.register(safetyRoutes);
   await app.register(propertiesRoutes);
   await app.register(requestRoutes);
   await app.register(jobsRoutes);

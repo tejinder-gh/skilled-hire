@@ -24,6 +24,7 @@ import {
   tradeRegulatoryPolicies,
   contractorCapabilityAssessments,
   dispatchEligibilityChecks,
+  contractorSafetyQuarantines,
 } from "@marketplace/database";
 import {
   evaluateRegulatoryEligibility,
@@ -389,9 +390,11 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
           technician_id: technicians.id,
           technician_name: technicians.displayName,
           technician_active: technicians.active,
+          technician_safety_status: technicians.safetyStatus,
           contractor_id: technicians.contractorId,
           contractor_name: contractors.name,
           contractor_status: contractors.status,
+          contractor_safety_status: contractors.safetyStatus,
           contractor_vertical_ids: contractors.verticalIds,
         })
         .from(technicians)
@@ -514,6 +517,25 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
         checkedAt: c.checkedAt ? c.checkedAt.toISOString() : null,
       }));
 
+      const activeQuarantines = await db
+        .select({
+          quarantineType: contractorSafetyQuarantines.quarantineType,
+          restrictedVerticalIds:
+            contractorSafetyQuarantines.restrictedVerticalIds,
+          restrictedIssueTypeIds:
+            contractorSafetyQuarantines.restrictedIssueTypeIds,
+        })
+        .from(contractorSafetyQuarantines)
+        .where(
+          and(
+            eq(
+              contractorSafetyQuarantines.contractorId,
+              candidate.contractor_id,
+            ),
+            eq(contractorSafetyQuarantines.active, true),
+          ),
+        );
+
       const preDispatch = evaluatePreDispatchEligibility({
         serviceRequest: {
           id: requestId,
@@ -531,12 +553,15 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
           name: candidate.contractor_name,
           status: candidate.contractor_status,
           verticalIds: (candidate.contractor_vertical_ids as string[]) ?? [],
+          safetyStatus: candidate.contractor_safety_status,
+          activeQuarantines: activeQuarantines as any,
         },
         technician: {
           id: candidate.technician_id,
           contractorId: candidate.contractor_id,
           displayName: candidate.technician_name,
           active: candidate.technician_active,
+          safetyStatus: candidate.technician_safety_status,
         },
         contractorCredentials: cCreds,
         technicianCredentials: tCreds,
@@ -626,9 +651,11 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
             technician_id: technicians.id,
             technician_name: technicians.displayName,
             technician_active: technicians.active,
+            technician_safety_status: technicians.safetyStatus,
             contractor_id: technicians.contractorId,
             contractor_name: contractors.name,
             contractor_status: contractors.status,
+            contractor_safety_status: contractors.safetyStatus,
             contractor_vertical_ids: contractors.verticalIds,
             rating_bps: contractors.ratingBps,
             completion_rate_bps: contractors.completionRateBps,
@@ -780,7 +807,26 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
               .limit(1)
           : [null];
 
-        // Perform atomic pre-dispatch safety and eligibility evaluation (#57)
+        const activeQuarantines = await tx
+          .select({
+            quarantineType: contractorSafetyQuarantines.quarantineType,
+            restrictedVerticalIds:
+              contractorSafetyQuarantines.restrictedVerticalIds,
+            restrictedIssueTypeIds:
+              contractorSafetyQuarantines.restrictedIssueTypeIds,
+          })
+          .from(contractorSafetyQuarantines)
+          .where(
+            and(
+              eq(
+                contractorSafetyQuarantines.contractorId,
+                candidate.contractor_id,
+              ),
+              eq(contractorSafetyQuarantines.active, true),
+            ),
+          );
+
+        // Perform atomic pre-dispatch safety and eligibility evaluation (#57, #58)
         const preDispatch = evaluatePreDispatchEligibility({
           serviceRequest: {
             id: requestId,
@@ -799,12 +845,15 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
             status: candidate.contractor_status,
             verticalIds:
               (candidate.contractor_vertical_ids as string[]) ?? [],
+            safetyStatus: candidate.contractor_safety_status,
+            activeQuarantines: activeQuarantines as any,
           },
           technician: {
             id: candidate.technician_id,
             contractorId: candidate.contractor_id,
             displayName: candidate.technician_name,
             active: candidate.technician_active,
+            safetyStatus: candidate.technician_safety_status,
           },
           contractorCredentials: cCreds,
           technicianCredentials: tCreds,

@@ -261,6 +261,9 @@ export const contractors = pgTable("contractors", {
   avgResponseMinutes: integer("avg_response_minutes").notNull().default(1440),
   serviceAreas: jsonb("service_areas").notNull().default([]),
   verticalIds: jsonb("vertical_ids").notNull().default([]),
+  safetyStatus: text("safety_status").notNull().default("ACTIVE"),
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  suspensionReason: text("suspension_reason"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -284,6 +287,9 @@ export const technicians = pgTable("technicians", {
   workload: integer("workload").notNull().default(0),
   latitude: numeric("latitude", { precision: 9, scale: 6 }),
   longitude: numeric("longitude", { precision: 9, scale: 6 }),
+  safetyStatus: text("safety_status").notNull().default("ACTIVE"),
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  suspensionReason: text("suspension_reason"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -1213,3 +1219,249 @@ export const paymentMilestonesRelations = relations(
     }),
   }),
 );
+
+// 13. Safety Incidents, Actions, Quarantines & Quality Audits (#58)
+export const safetyIncidents = pgTable("safety_incidents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  incidentNumber: text("incident_number").notNull().unique(),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  serviceRequestId: uuid("service_request_id").references(
+    () => serviceRequests.id,
+    { onDelete: "set null" },
+  ),
+  propertyId: uuid("property_id").references(() => properties.id, {
+    onDelete: "set null",
+  }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  technicianId: uuid("technician_id").references(() => technicians.id, {
+    onDelete: "set null",
+  }),
+  reportedByUserId: uuid("reported_by_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  reporterRole: text("reporter_role").notNull(),
+  severity: text("severity").notNull().default("MODERATE_DEFECT"),
+  status: text("status").notNull().default("REPORTED"),
+  incidentType: text("incident_type").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  reportedAt: timestamp("reported_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  containmentActions: jsonb("containment_actions").notNull().default([]),
+  evidenceLocker: jsonb("evidence_locker").notNull().default([]),
+  insurerNotified: boolean("insurer_notified").notNull().default(false),
+  insurerNotifiedAt: timestamp("insurer_notified_at", { withTimezone: true }),
+  insurerClaimReference: text("insurer_claim_reference"),
+  legalRetentionHold: boolean("legal_retention_hold").notNull().default(false),
+  quarantineScope: jsonb("quarantine_scope").notNull().default({}),
+  triageNotes: text("triage_notes"),
+  triagedByUserId: uuid("triaged_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  triagedAt: timestamp("triaged_at", { withTimezone: true }),
+  independentReviewNotes: text("independent_review_notes"),
+  reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  resolutionSummary: text("resolution_summary"),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const safetyIncidentActions = pgTable("safety_incident_actions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  incidentId: uuid("incident_id")
+    .notNull()
+    .references(() => safetyIncidents.id, { onDelete: "cascade" }),
+  actorUserId: uuid("actor_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  actionType: text("action_type").notNull(),
+  previousStatus: text("previous_status"),
+  newStatus: text("new_status"),
+  actionPayload: jsonb("action_payload").notNull().default({}),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const contractorSafetyQuarantines = pgTable(
+  "contractor_safety_quarantines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    incidentId: uuid("incident_id")
+      .notNull()
+      .references(() => safetyIncidents.id, { onDelete: "restrict" }),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "restrict" }),
+    technicianId: uuid("technician_id").references(() => technicians.id, {
+      onDelete: "set null",
+    }),
+    quarantineType: text("quarantine_type").notNull(),
+    restrictedVerticalIds: jsonb("restricted_vertical_ids")
+      .notNull()
+      .default([]),
+    restrictedIssueTypeIds: jsonb("restricted_issue_type_ids")
+      .notNull()
+      .default([]),
+    active: boolean("active").notNull().default(true),
+    reason: text("reason").notNull(),
+    issuedByUserId: uuid("issued_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    issuedAt: timestamp("issued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    liftedAt: timestamp("lifted_at", { withTimezone: true }),
+    liftedByUserId: uuid("lifted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    liftingNotes: text("lifting_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const qualityAudits = pgTable("quality_audits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  auditNumber: text("audit_number").notNull().unique(),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  technicianId: uuid("technician_id").references(() => technicians.id, {
+    onDelete: "set null",
+  }),
+  incidentId: uuid("incident_id").references(() => safetyIncidents.id, {
+    onDelete: "set null",
+  }),
+  triggerType: text("trigger_type").notNull(),
+  inspectorUserId: uuid("inspector_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  status: text("status").notNull().default("SCHEDULED"),
+  findings: jsonb("findings").notNull().default([]),
+  repeatDefectCount: integer("repeat_defect_count").notNull().default(0),
+  remediationRequired: boolean("remediation_required").notNull().default(false),
+  remediationDeadline: timestamp("remediation_deadline", { withTimezone: true }),
+  remediationCompletedAt: timestamp("remediation_completed_at", {
+    withTimezone: true,
+  }),
+  reportNotes: text("report_notes"),
+  conductedAt: timestamp("conducted_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const safetyIncidentsRelations = relations(
+  safetyIncidents,
+  ({ one, many }) => ({
+    contractor: one(contractors, {
+      fields: [safetyIncidents.contractorId],
+      references: [contractors.id],
+    }),
+    technician: one(technicians, {
+      fields: [safetyIncidents.technicianId],
+      references: [technicians.id],
+    }),
+    job: one(jobs, {
+      fields: [safetyIncidents.jobId],
+      references: [jobs.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [safetyIncidents.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+    property: one(properties, {
+      fields: [safetyIncidents.propertyId],
+      references: [properties.id],
+    }),
+    reportedByUser: one(users, {
+      fields: [safetyIncidents.reportedByUserId],
+      references: [users.id],
+    }),
+    actions: many(safetyIncidentActions),
+    quarantines: many(contractorSafetyQuarantines),
+    audits: many(qualityAudits),
+  }),
+);
+
+export const safetyIncidentActionsRelations = relations(
+  safetyIncidentActions,
+  ({ one }) => ({
+    incident: one(safetyIncidents, {
+      fields: [safetyIncidentActions.incidentId],
+      references: [safetyIncidents.id],
+    }),
+    actorUser: one(users, {
+      fields: [safetyIncidentActions.actorUserId],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const contractorSafetyQuarantinesRelations = relations(
+  contractorSafetyQuarantines,
+  ({ one }) => ({
+    incident: one(safetyIncidents, {
+      fields: [contractorSafetyQuarantines.incidentId],
+      references: [safetyIncidents.id],
+    }),
+    contractor: one(contractors, {
+      fields: [contractorSafetyQuarantines.contractorId],
+      references: [contractors.id],
+    }),
+    technician: one(technicians, {
+      fields: [contractorSafetyQuarantines.technicianId],
+      references: [technicians.id],
+    }),
+    issuedByUser: one(users, {
+      fields: [contractorSafetyQuarantines.issuedByUserId],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const qualityAuditsRelations = relations(qualityAudits, ({ one }) => ({
+  contractor: one(contractors, {
+    fields: [qualityAudits.contractorId],
+    references: [contractors.id],
+  }),
+  technician: one(technicians, {
+    fields: [qualityAudits.technicianId],
+    references: [technicians.id],
+  }),
+  job: one(jobs, {
+    fields: [qualityAudits.jobId],
+    references: [jobs.id],
+  }),
+  incident: one(safetyIncidents, {
+    fields: [qualityAudits.incidentId],
+    references: [safetyIncidents.id],
+  }),
+  inspectorUser: one(users, {
+    fields: [qualityAudits.inspectorUserId],
+    references: [users.id],
+  }),
+}));
+

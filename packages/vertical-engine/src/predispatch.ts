@@ -32,6 +32,14 @@ export interface PreDispatchContractorInput {
   name: string;
   status: string;
   verticalIds: string[];
+  safetyStatus?: string | undefined;
+  activeQuarantines?:
+    | Array<{
+        quarantineType: string;
+        restrictedVerticalIds: string[];
+        restrictedIssueTypeIds: string[];
+      }>
+    | undefined;
 }
 
 export interface PreDispatchTechnicianInput {
@@ -39,6 +47,7 @@ export interface PreDispatchTechnicianInput {
   contractorId: string;
   displayName: string;
   active: boolean;
+  safetyStatus?: string | undefined;
 }
 
 export interface PreDispatchCredentialInput {
@@ -109,6 +118,50 @@ export function evaluatePreDispatchEligibility(
     reasons.push(
       `Contractor is not approved for service vertical '${serviceRequest.verticalSlug}' (${serviceRequest.verticalId}).`,
     );
+  }
+
+  // 1b. Safety Sanctions & Quarantine Governance (#58)
+  if (contractor.safetyStatus === "SUSPENDED") {
+    denyCodes.push("CONTRACTOR_SAFETY_SUSPENDED");
+    reasons.push(
+      `Contractor '${contractor.id}' is under active safety suspension.`,
+    );
+  }
+
+  if (technician.safetyStatus === "SUSPENDED") {
+    denyCodes.push("TECHNICIAN_SAFETY_SUSPENDED");
+    reasons.push(
+      `Technician '${technician.id}' is under active safety suspension.`,
+    );
+  }
+
+  if (contractor.activeQuarantines && contractor.activeQuarantines.length > 0) {
+    for (const q of contractor.activeQuarantines) {
+      if (q.quarantineType === "FULL_CONTRACTOR_SUSPENSION") {
+        if (!denyCodes.includes("CONTRACTOR_SAFETY_SUSPENDED")) {
+          denyCodes.push("CONTRACTOR_SAFETY_SUSPENDED");
+          reasons.push(
+            `Contractor '${contractor.id}' is subject to an active safety quarantine suspension order.`,
+          );
+        }
+      }
+      if (q.quarantineType === "VERTICAL_SCOPE_RESTRICTION") {
+        const verticalBlocked = q.restrictedVerticalIds.includes(
+          serviceRequest.verticalId,
+        );
+        const issueBlocked =
+          Boolean(serviceRequest.issueTypeId) &&
+          q.restrictedIssueTypeIds.includes(serviceRequest.issueTypeId!);
+        if (verticalBlocked || issueBlocked) {
+          if (!denyCodes.includes("CONTRACTOR_QUARANTINED_SCOPE")) {
+            denyCodes.push("CONTRACTOR_QUARANTINED_SCOPE");
+            reasons.push(
+              `Contractor '${contractor.id}' is safety-quarantined for vertical '${serviceRequest.verticalSlug}' or requested variant.`,
+            );
+          }
+        }
+      }
+    }
   }
 
   // 2. Direct Technician Employment & Active Status (Anti-Subcontracting / Tenant Isolation)

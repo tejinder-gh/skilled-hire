@@ -574,6 +574,9 @@ export const preDispatchDenyCodes = [
   "CONTRACTOR_COMPANY_MISMATCH",
   "TECHNICIAN_NOT_ACTIVE",
   "CONTRACTOR_NOT_VERIFIED",
+  "CONTRACTOR_SAFETY_SUSPENDED",
+  "CONTRACTOR_QUARANTINED_SCOPE",
+  "TECHNICIAN_SAFETY_SUSPENDED",
   "WORKER_IDENTITY_UNVERIFIED",
   "INSURANCE_GAP_DETECTED",
 ] as const;
@@ -657,4 +660,221 @@ export interface WorkerIdentityVerificationInput {
   verifiedByUserId: string;
   notes?: string | undefined;
 }
+
+// Safety Incident Response, Suspension, Quality Audits & Remediation (#58)
+export const safetyIncidentSeverities = [
+  "CRITICAL_EMERGENCY",
+  "MAJOR_SAFETY",
+  "MODERATE_DEFECT",
+  "MINOR_HAZARD",
+] as const;
+export type SafetyIncidentSeverity = (typeof safetyIncidentSeverities)[number];
+
+export const safetyIncidentStatuses = [
+  "REPORTED",
+  "TRIAGED",
+  "INVESTIGATING",
+  "QUARANTINED",
+  "REMEDIATING",
+  "RESOLVED",
+  "APPEALED",
+  "CLOSED",
+] as const;
+export type SafetyIncidentStatus = (typeof safetyIncidentStatuses)[number];
+
+export const safetyIncidentTypes = [
+  "ELECTRICAL_HAZARD_SHOCK",
+  "GAS_LEAK_FIRE_RISK",
+  "STRUCTURAL_COLLAPSE_RISK",
+  "WATER_DAMAGE_FLOODING",
+  "CARBON_MONOXIDE",
+  "PROPERTY_DAMAGE_MAJOR",
+  "REGULATORY_CODE_VIOLATION",
+  "UNAUTHORIZED_UNQUALIFIED_WORK",
+] as const;
+export type SafetyIncidentType = (typeof safetyIncidentTypes)[number];
+
+export const safetyActionTypes = [
+  "TRIAGE",
+  "EMERGENCY_ESCALATION",
+  "EVIDENCE_PRESERVED",
+  "CONTRACTOR_SUSPENDED",
+  "TECHNICIAN_SUSPENDED",
+  "SCOPE_RESTRICTED",
+  "INSURER_NOTIFIED",
+  "INDEPENDENT_REVIEW_ASSIGNED",
+  "SPOT_INSPECTION_ORDERED",
+  "CORRECTIVE_ACTION_REQUIRED",
+  "REMEDIATION_SUBMITTED",
+  "REMEDIATION_ACCEPTED",
+  "QUARANTINE_LIFTED",
+  "APPEAL_FILED",
+  "APPEAL_DECIDED",
+  "CLOSED",
+] as const;
+export type SafetyActionType = (typeof safetyActionTypes)[number];
+
+export const quarantineTypes = [
+  "FULL_CONTRACTOR_SUSPENSION",
+  "TECHNICIAN_SUSPENSION",
+  "VERTICAL_SCOPE_RESTRICTION",
+  "PROVISIONAL_AUDIT_SUPERVISION",
+] as const;
+export type QuarantineType = (typeof quarantineTypes)[number];
+
+export const qualityAuditStatuses = [
+  "SCHEDULED",
+  "IN_PROGRESS",
+  "PASSED",
+  "DEFECTS_IDENTIFIED",
+  "FAILED_CRITICAL",
+] as const;
+export type QualityAuditStatus = (typeof qualityAuditStatuses)[number];
+
+export const qualityAuditTriggerTypes = [
+  "INCIDENT_REMEDIATION",
+  "REPEAT_DEFECT_FLAG",
+  "RANDOM_SPOT_CHECK",
+  "HIGH_RISK_TRADE",
+  "CUSTOMER_DISPUTE",
+] as const;
+export type QualityAuditTriggerType = (typeof qualityAuditTriggerTypes)[number];
+
+export const contractorSafetyStatuses = [
+  "ACTIVE",
+  "PROBATION",
+  "RESTRICTED",
+  "SUSPENDED",
+] as const;
+export type ContractorSafetyStatus = (typeof contractorSafetyStatuses)[number];
+
+export interface QuarantineScope {
+  contractorSuspended?: boolean | undefined;
+  technicianSuspended?: boolean | undefined;
+  restrictedVerticalIds?: string[] | undefined;
+  restrictedIssueTypeIds?: string[] | undefined;
+  provisionalAuditRequired?: boolean | undefined;
+}
+
+export interface EvidenceLockerItem {
+  id: string;
+  title: string;
+  fileKey?: string | undefined;
+  url?: string | undefined;
+  artifactType:
+    | "PHOTO"
+    | "VIDEO"
+    | "INSPECTOR_REPORT"
+    | "METER_READING"
+    | "INCIDENT_FORM"
+    | "INSURER_NOTICE";
+  checksumSha256?: string | undefined;
+  uploadedByUserId: string;
+  uploadedAt: string;
+  chainOfCustodyVerified: boolean;
+  notes?: string | undefined;
+}
+
+export interface ContainmentAction {
+  id: string;
+  action: string;
+  executedBy: string;
+  executedAt: string;
+  confirmedSafe: boolean;
+  notes?: string | undefined;
+}
+
+export interface SafetyIncident {
+  id: string;
+  incidentNumber: string;
+  jobId?: string | null | undefined;
+  serviceRequestId?: string | null | undefined;
+  propertyId?: string | null | undefined;
+  contractorId: string;
+  technicianId?: string | null | undefined;
+  reportedByUserId: string;
+  reporterRole: string;
+  severity: SafetyIncidentSeverity;
+  status: SafetyIncidentStatus;
+  incidentType: SafetyIncidentType;
+  title: string;
+  description: string;
+  occurredAt: string;
+  reportedAt: string;
+  containmentActions: ContainmentAction[];
+  evidenceLocker: EvidenceLockerItem[];
+  insurerNotified: boolean;
+  insurerNotifiedAt?: string | null | undefined;
+  insurerClaimReference?: string | null | undefined;
+  legalRetentionHold: boolean;
+  quarantineScope: QuarantineScope;
+  triageNotes?: string | null | undefined;
+  triagedByUserId?: string | null | undefined;
+  triagedAt?: string | null | undefined;
+  independentReviewNotes?: string | null | undefined;
+  reviewedByUserId?: string | null | undefined;
+  reviewedAt?: string | null | undefined;
+  resolutionSummary?: string | null | undefined;
+  resolvedAt?: string | null | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SafetyIncidentAction {
+  id: string;
+  incidentId: string;
+  actorUserId: string;
+  actionType: SafetyActionType;
+  previousStatus?: string | null | undefined;
+  newStatus?: string | null | undefined;
+  actionPayload: Record<string, unknown>;
+  notes?: string | null | undefined;
+  createdAt: string;
+}
+
+export interface ContractorSafetyQuarantine {
+  id: string;
+  incidentId: string;
+  contractorId: string;
+  technicianId?: string | null | undefined;
+  quarantineType: QuarantineType;
+  restrictedVerticalIds: string[];
+  restrictedIssueTypeIds: string[];
+  active: boolean;
+  reason: string;
+  issuedByUserId: string;
+  issuedAt: string;
+  liftedAt?: string | null | undefined;
+  liftedByUserId?: string | null | undefined;
+  liftingNotes?: string | null | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QualityAudit {
+  id: string;
+  auditNumber: string;
+  jobId?: string | null | undefined;
+  contractorId: string;
+  technicianId?: string | null | undefined;
+  incidentId?: string | null | undefined;
+  triggerType: QualityAuditTriggerType;
+  inspectorUserId?: string | null | undefined;
+  status: QualityAuditStatus;
+  findings: Array<{
+    code: string;
+    description: string;
+    severity: string;
+    rectified: boolean;
+  }>;
+  repeatDefectCount: number;
+  remediationRequired: boolean;
+  remediationDeadline?: string | null | undefined;
+  remediationCompletedAt?: string | null | undefined;
+  reportNotes?: string | null | undefined;
+  conductedAt?: string | null | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
 

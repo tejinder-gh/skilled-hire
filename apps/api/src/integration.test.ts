@@ -22,6 +22,10 @@ import {
   credentials,
   contractorCapabilityAssessments,
   dispatchEligibilityChecks,
+  safetyIncidents,
+  safetyIncidentActions,
+  contractorSafetyQuarantines,
+  qualityAudits,
   auditEvents,
   refunds,
   eq,
@@ -2479,6 +2483,617 @@ describeSuite("Skilled Hire lifecycle", () => {
       .from(jobs)
       .where(eq(jobs.id, jobId));
     expect(commencedJob?.status).toBe("WORK_IN_PROGRESS");
+  });
+
+  it("executes end-to-end safety incident response, automated suspension, insurer claims tracking, and remediation audit drill (#58)", async () => {
+    // 1. Identify primary contractor, technician, and trade vertical (Electrical)
+    const [elecVertical] = await db
+      .select({ id: verticals.id, slug: verticals.slug })
+      .from(verticals)
+      .where(eq(verticals.slug, "electrical"))
+      .limit(1);
+    expect(elecVertical).toBeDefined();
+
+    const [elecCat] = await db
+      .select({ id: serviceCategories.id, slug: serviceCategories.slug })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, elecVertical!.id))
+      .limit(1);
+    expect(elecCat).toBeDefined();
+
+    const [elecIssue] = await db
+      .select({ id: issueTypes.id, slug: issueTypes.slug })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, elecCat!.id))
+      .limit(1);
+    expect(elecIssue).toBeDefined();
+
+    const [cont] = await db
+      .select({ id: contractors.id, verticalIds: contractors.verticalIds })
+      .from(contractors)
+      .where(eq(contractors.status, "VERIFIED"))
+      .limit(1);
+    expect(cont).toBeDefined();
+
+    // Ensure contractor is associated with electrical vertical
+    const vIds = (cont!.verticalIds as string[]) ?? [];
+    if (!vIds.includes(elecVertical!.id)) {
+      await db
+        .update(contractors)
+        .set({ verticalIds: [...vIds, elecVertical!.id] })
+        .where(eq(contractors.id, cont!.id));
+    }
+
+    const [tech] = await db
+      .select({ id: technicians.id, userId: technicians.userId })
+      .from(technicians)
+      .where(
+        and(
+          eq(technicians.contractorId, cont!.id),
+          eq(technicians.active, true),
+        ),
+      )
+      .limit(1);
+    expect(tech).toBeDefined();
+
+    // Reset safety status & clean existing safety test data for clean slate
+    await db
+      .update(contractors)
+      .set({ safetyStatus: "ACTIVE", suspendedAt: null, suspensionReason: null })
+      .where(eq(contractors.id, cont!.id));
+
+    await db
+      .update(technicians)
+      .set({ safetyStatus: "ACTIVE", suspendedAt: null, suspensionReason: null })
+      .where(eq(technicians.id, tech!.id));
+
+    await db
+      .delete(contractorSafetyQuarantines)
+      .where(eq(contractorSafetyQuarantines.contractorId, cont!.id));
+
+    await db
+      .delete(qualityAudits)
+      .where(eq(qualityAudits.contractorId, cont!.id));
+
+    await db
+      .delete(safetyIncidents)
+      .where(eq(safetyIncidents.contractorId, cont!.id));
+
+    // Ensure valid credentials on file
+    const futureDate = "2028-12-31";
+    await db
+      .delete(credentials)
+      .where(
+        or(
+          eq(credentials.contractorId, cont!.id),
+          eq(credentials.technicianId, tech!.id),
+        ),
+      );
+
+    await db.insert(credentials).values([
+      {
+        contractorId: cont!.id,
+        code: "ON_ESA_LEC_CONTRACTOR",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "ECRA-ESA-7001122",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: cont!.id,
+        code: "ON_WSIB_CLEARANCE",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "WSIB-ON-991823",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: cont!.id,
+        code: "CGL_INSURANCE_2M",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "POL-CGL-882910",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: cont!.id,
+        code: "COMMERCIAL_AUTO_1M",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "POL-AUTO-99201",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: tech!.id,
+        code: "ON_SKILLED_TRADES_309A",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "COFQ-309A-88339",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: tech!.id,
+        code: "GOVT_PHOTO_ID",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "DL-ON-448822-192",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: tech!.id,
+        code: "BACKGROUND_CHECK_ANNUAL",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "BG-CERT-2026-118",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: tech!.id,
+        code: "ELECTRICAL_LICENSE",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "LIC-ELEC-88291",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+    ]);
+
+    // Ensure approved capability assessment
+    await db
+      .delete(contractorCapabilityAssessments)
+      .where(
+        and(
+          eq(contractorCapabilityAssessments.contractorId, cont!.id),
+          eq(contractorCapabilityAssessments.issueTypeId, elecIssue!.id),
+        ),
+      );
+
+    const [assessorUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .innerJoin(userRoles, eq(userRoles.userId, users.id))
+      .where(eq(userRoles.role, "ADMIN"))
+      .limit(1);
+
+    await db.insert(contractorCapabilityAssessments).values({
+      contractorId: cont!.id,
+      issueTypeId: elecIssue!.id,
+      geography: "ON",
+      status: "APPROVED",
+      complexityTier: "TIER_3_ADVANCED",
+      yearsExperience: 8,
+      maxJobValueCents: 1000000,
+      assessedByUserId: assessorUser?.id ?? tech!.userId,
+      assessedAt: new Date(),
+      validUntil: new Date("2028-12-31T00:00:00Z"),
+      decisionNotes: "Verified technical competency and certifications",
+    });
+
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .limit(1);
+    expect(prop).toBeDefined();
+
+    // 2. Customer creates service request 1 and dispatches job 1
+    const createReq1 = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: prop!.id,
+        verticalId: elecVertical!.id,
+        categoryId: elecCat!.id,
+        issueTypeId: elecIssue!.id,
+        urgency: "STANDARD",
+        description: "Initial 200A electrical service panel upgrade",
+      },
+    });
+    expect(createReq1.statusCode).toBe(201);
+    const req1Id = createReq1.json<{ id: string }>().id;
+
+    for (const to of [
+      "QUALIFICATION_PENDING",
+      "QUALIFIED",
+      "SCHEDULING",
+      "SCHEDULED",
+      "CONTRACTOR_SEARCH",
+    ] as const) {
+      const trans = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${req1Id}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(trans.statusCode).toBe(200);
+    }
+
+    const assignRes1 = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${req1Id}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(assignRes1.statusCode).toBe(200);
+    const job1Id = assignRes1.json<{ id: string }>().id;
+    expect(job1Id).toBeDefined();
+
+    // 3. Safety Incident Intake with Critical Emergency Escalation
+    const reportRes = await app.inject({
+      method: "POST",
+      url: "/v1/safety/incidents",
+      headers: auth("dispatch@example.test"),
+      payload: {
+        jobId: job1Id,
+        contractorId: cont!.id,
+        technicianId: tech!.id,
+        reporterRole: "DISPATCHER",
+        incidentType: "ELECTRICAL_HAZARD_SHOCK",
+        severity: "CRITICAL_EMERGENCY",
+        title: "Arc flash explosion and electrical shock hazard",
+        description:
+          "Severe electrical shock and arcing occurred on main feeder lug during panel replacement. Site isolated by emergency response.",
+        occurredAt: new Date().toISOString(),
+        hazardCategory: "ELECTRICAL",
+        containmentActions: [
+          {
+            action: "Main feed cutoff locked out with OSHA lockout-tagout tag",
+            takenBy: "Operations Safety Inspector",
+            timestamp: new Date().toISOString(),
+          },
+        ],
+        evidenceLocker: [
+          {
+            fileUrl: "https://evidence.example.test/photos/arc-flash-damage.jpg",
+            fileType: "PHOTO",
+            description: "Burn marks across 200A service disconnect and melted insulator",
+            uploadedByUserId: custUser.id,
+            uploadedAt: new Date().toISOString(),
+            sha256Hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          },
+        ],
+        immediateQuarantine: true,
+      },
+    });
+    expect(reportRes.statusCode).toBe(201);
+    const incidentData = reportRes.json<{
+      id: string;
+      incidentNumber: string;
+      status: string;
+      severity: string;
+      legalRetentionHold: boolean;
+    }>();
+    expect(incidentData.id).toBeDefined();
+    expect(incidentData.incidentNumber).toMatch(/^INC-/);
+    expect(incidentData.status).toBe("QUARANTINED");
+    expect(incidentData.severity).toBe("CRITICAL_EMERGENCY");
+    expect(incidentData.legalRetentionHold).toBe(true);
+
+    const incidentId = incidentData.id;
+
+    // 4. Verify Automated Suspension & Quarantine in DB
+    const [suspendedCont] = await db
+      .select({
+        safetyStatus: contractors.safetyStatus,
+        suspendedAt: contractors.suspendedAt,
+      })
+      .from(contractors)
+      .where(eq(contractors.id, cont!.id));
+    expect(suspendedCont?.safetyStatus).toBe("SUSPENDED");
+    expect(suspendedCont?.suspendedAt).not.toBeNull();
+
+    const [suspendedTech] = await db
+      .select({
+        safetyStatus: technicians.safetyStatus,
+        suspendedAt: technicians.suspendedAt,
+      })
+      .from(technicians)
+      .where(eq(technicians.id, tech!.id));
+    expect(suspendedTech?.safetyStatus).toBe("SUSPENDED");
+    expect(suspendedTech?.suspendedAt).not.toBeNull();
+
+    const [activeQuarantine] = await db
+      .select({
+        id: contractorSafetyQuarantines.id,
+        active: contractorSafetyQuarantines.active,
+        quarantineType: contractorSafetyQuarantines.quarantineType,
+      })
+      .from(contractorSafetyQuarantines)
+      .where(
+        and(
+          eq(contractorSafetyQuarantines.incidentId, incidentId),
+          eq(contractorSafetyQuarantines.active, true),
+        ),
+      );
+    expect(activeQuarantine).toBeDefined();
+    expect(activeQuarantine?.quarantineType).toBe("FULL_CONTRACTOR_SUSPENSION");
+    expect(activeQuarantine?.active).toBe(true);
+
+    // 5. Pre-Dispatch Gate Enforcement (Fail Closed on Suspended Contractor)
+    const createReq2 = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: prop!.id,
+        verticalId: elecVertical!.id,
+        categoryId: elecCat!.id,
+        issueTypeId: elecIssue!.id,
+        urgency: "STANDARD",
+        description: "Secondary electrical service inspection",
+      },
+    });
+    expect(createReq2.statusCode).toBe(201);
+    const req2Id = createReq2.json<{ id: string }>().id;
+
+    for (const to of [
+      "QUALIFICATION_PENDING",
+      "QUALIFIED",
+      "SCHEDULING",
+      "SCHEDULED",
+      "CONTRACTOR_SEARCH",
+    ] as const) {
+      const trans = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${req2Id}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(trans.statusCode).toBe(200);
+    }
+
+    // Dry-run eligibility evaluation fails closed
+    const dryRunRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${req2Id}/evaluate-eligibility`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(dryRunRes.statusCode).toBe(200);
+    const dryRunJson = dryRunRes.json<{ eligible: boolean; denyCodes: string[] }>();
+    expect(dryRunJson.eligible).toBe(false);
+    expect(dryRunJson.denyCodes).toContain("CONTRACTOR_SAFETY_SUSPENDED");
+    expect(dryRunJson.denyCodes).toContain("TECHNICIAN_SAFETY_SUSPENDED");
+
+    // Live dispatch assign fails closed with 422 PRE_DISPATCH_INELIGIBLE
+    const blockedAssign = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${req2Id}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(blockedAssign.statusCode).toBe(422);
+    expect(blockedAssign.json<{ code: string }>().code).toBe("PRE_DISPATCH_INELIGIBLE");
+    expect(
+      blockedAssign.json<{ details: { denyCodes: string[] } }>().details.denyCodes,
+    ).toContain("CONTRACTOR_SAFETY_SUSPENDED");
+
+    // 6. Insurer Notification Action with Claim Reference
+    const insurerAction = await app.inject({
+      method: "POST",
+      url: `/v1/safety/incidents/${incidentId}/actions`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        actionType: "INSURER_NOTIFIED",
+        notes: "Aviva Commercial General Liability claims department notified under policy CGL-882910.",
+        payload: {
+          claimReference: "CLM-AVIVA-2026-9921",
+          carrier: "Aviva Canada",
+          estimatedLossCents: 750000,
+        },
+      },
+    });
+    expect(insurerAction.statusCode).toBe(200);
+
+    const [notifiedIncident] = await db
+      .select({
+        insurerNotified: safetyIncidents.insurerNotified,
+        insurerClaimReference: safetyIncidents.insurerClaimReference,
+        insurerNotifiedAt: safetyIncidents.insurerNotifiedAt,
+      })
+      .from(safetyIncidents)
+      .where(eq(safetyIncidents.id, incidentId));
+    expect(notifiedIncident?.insurerNotified).toBe(true);
+    expect(notifiedIncident?.insurerClaimReference).toBe("CLM-AVIVA-2026-9921");
+    expect(notifiedIncident?.insurerNotifiedAt).not.toBeNull();
+
+    // 7. Evidence Locker Preservation & Legal Retention Hold
+    const preserveAction = await app.inject({
+      method: "POST",
+      url: `/v1/safety/incidents/${incidentId}/actions`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        actionType: "EVIDENCE_PRESERVED",
+        notes: "Locking all site photos, contractor logs, and telemetry under statutory retention hold.",
+        payload: { holdReason: "Litigation hold for property damage subrogation" },
+      },
+    });
+    expect(preserveAction.statusCode).toBe(200);
+
+    const [preservedIncident] = await db
+      .select({ legalRetentionHold: safetyIncidents.legalRetentionHold })
+      .from(safetyIncidents)
+      .where(eq(safetyIncidents.id, incidentId));
+    expect(preservedIncident?.legalRetentionHold).toBe(true);
+
+    // 8. Corrective Action Plan (CAP) Submission & Auto-scheduled Audit
+    const remediationRes = await app.inject({
+      method: "POST",
+      url: `/v1/safety/incidents/${incidentId}/remediation`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        resolutionSummary:
+          "Full breaker enclosure replaced with ESA certified assembly; ground fault interrupter calibrated; NFPA 70E safety retraining completed.",
+        correctiveActionsTaken: [
+          "Replaced damaged service entrance busbar with CSA approved Siemens assembly",
+          "Retrained technician on NFPA 70E live voltage PPE requirements",
+          "Installed calibrated GFCI sensor with 5mA instant trip threshold",
+        ],
+        evidenceFiles: [
+          {
+            fileUrl: "https://evidence.example.test/remediation/esa-permit-passed.pdf",
+            fileType: "DOCUMENT",
+            description: "ESA Certificate of Acceptance for service replacement",
+            uploadedByUserId: tech!.userId,
+            uploadedAt: new Date().toISOString(),
+            sha256Hash: "f4b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b999",
+          },
+        ],
+        requestInspection: true,
+      },
+    });
+    expect(remediationRes.statusCode).toBe(200);
+    const remediationJson = remediationRes.json<{
+      incident: { status: string };
+      audit: { id: string; triggerType: string; status: string };
+    }>();
+    expect(remediationJson.incident.status).toBe("REMEDIATING");
+    expect(remediationJson.audit).toBeDefined();
+    expect(remediationJson.audit.triggerType).toBe("INCIDENT_REMEDIATION");
+    expect(remediationJson.audit.status).toBe("SCHEDULED");
+    const auditId = remediationJson.audit.id;
+
+    // 9. Independent Technical Quality Audit Execution
+    const conductRes = await app.inject({
+      method: "POST",
+      url: `/v1/safety/audits/${auditId}/conduct`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        status: "PASSED",
+        findings: [
+          {
+            code: "OESC_ESA_PASS",
+            description: "Ground fault impedance tested at 0.2 ohms; all safety enclosures compliant with Ontario Electrical Safety Code",
+            severity: "MINOR",
+            rectified: true,
+          },
+        ],
+        repeatDefectCount: 0,
+        remediationRequired: false,
+        reportNotes: "Independent technical reinspection passed with full electrical code compliance.",
+      },
+    });
+    expect(conductRes.statusCode).toBe(200);
+    expect(conductRes.json<{ status: string }>().status).toBe("PASSED");
+
+    // 10. Administrative Quarantine Lifting & Status Restoration (RBAC Guarded)
+    const custLift = await app.inject({
+      method: "POST",
+      url: `/v1/safety/incidents/${incidentId}/actions`,
+      headers: auth("customer@example.test"),
+      payload: {
+        actionType: "QUARANTINE_LIFTED",
+        notes: "Attempted customer clearance",
+      },
+    });
+    expect(custLift.statusCode).toBe(403);
+
+    const adminLift = await app.inject({
+      method: "POST",
+      url: `/v1/safety/incidents/${incidentId}/actions`,
+      headers: auth("admin@example.test"),
+      payload: {
+        actionType: "QUARANTINE_LIFTED",
+        notes: "CAP approved and independent technical inspection passed. Lifting quarantine and restoring active status.",
+      },
+    });
+    expect(adminLift.statusCode).toBe(200);
+
+    const [restoredCont] = await db
+      .select({
+        safetyStatus: contractors.safetyStatus,
+        suspendedAt: contractors.suspendedAt,
+      })
+      .from(contractors)
+      .where(eq(contractors.id, cont!.id));
+    expect(restoredCont?.safetyStatus).toBe("ACTIVE");
+    expect(restoredCont?.suspendedAt).toBeNull();
+
+    const [restoredTech] = await db
+      .select({
+        safetyStatus: technicians.safetyStatus,
+        suspendedAt: technicians.suspendedAt,
+      })
+      .from(technicians)
+      .where(eq(technicians.id, tech!.id));
+    expect(restoredTech?.safetyStatus).toBe("ACTIVE");
+    expect(restoredTech?.suspendedAt).toBeNull();
+
+    const [resolvedIncident] = await db
+      .select({ status: safetyIncidents.status })
+      .from(safetyIncidents)
+      .where(eq(safetyIncidents.id, incidentId));
+    expect(resolvedIncident?.status).toBe("RESOLVED");
+
+    // 11. Pre-Dispatch Gate Clearance: Assignment succeeds
+    const retryEval = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${req2Id}/evaluate-eligibility`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(retryEval.statusCode).toBe(200);
+    const retryJson = retryEval.json<{ eligible: boolean; denyCodes: string[] }>();
+    expect(retryJson.eligible).toBe(true);
+    expect(retryJson.denyCodes).toHaveLength(0);
+
+    const retryAssign = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${req2Id}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech!.id },
+    });
+    expect(retryAssign.statusCode).toBe(200);
+    expect(retryAssign.json<{ status: string }>().status).toBe("DISPATCHED");
+
+    // 12. Audit Analytics & Dossier Inspection
+    const dossierRes = await app.inject({
+      method: "GET",
+      url: `/v1/safety/incidents/${incidentId}`,
+      headers: auth("dispatch@example.test"),
+    });
+    expect(dossierRes.statusCode).toBe(200);
+    const dossierJson = dossierRes.json<{
+      incident: { incidentNumber: string; status: string };
+      actions: Array<{ actionType: string }>;
+      quarantines: Array<{ active: boolean }>;
+    }>();
+    expect(dossierJson.incident.incidentNumber).toMatch(/^INC-/);
+    expect(dossierJson.incident.status).toBe("RESOLVED");
+    expect(dossierJson.actions.length).toBeGreaterThanOrEqual(4);
+    expect(dossierJson.quarantines.length).toBeGreaterThanOrEqual(1);
+
+    const auditsListRes = await app.inject({
+      method: "GET",
+      url: `/v1/safety/audits?contractorId=${cont!.id}`,
+      headers: auth("dispatch@example.test"),
+    });
+    expect(auditsListRes.statusCode).toBe(200);
+    const auditsJson = auditsListRes.json<{
+      audits: Array<{ id: string; status: string }>;
+      repeatDefectSummary: {
+        totalAudits: number;
+        repeatDefectThresholdExceeded: boolean;
+      };
+    }>();
+    expect(auditsJson.audits.length).toBeGreaterThanOrEqual(1);
+    expect(auditsJson.repeatDefectSummary.totalAudits).toBeGreaterThanOrEqual(1);
+    expect(auditsJson.repeatDefectSummary.repeatDefectThresholdExceeded).toBe(false);
   });
 });
 
