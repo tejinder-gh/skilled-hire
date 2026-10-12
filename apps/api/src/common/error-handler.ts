@@ -12,8 +12,10 @@ export function errorHandler(
   const code =
     error instanceof z.ZodError
       ? "VALIDATION_ERROR"
-      : errorObj?.code === "REGULATORY_ELIGIBILITY_FAILED"
-        ? "REGULATORY_ELIGIBILITY_FAILED"
+      : errorObj?.code === "REGULATORY_ELIGIBILITY_FAILED" ||
+          errorObj?.code === "PRE_DISPATCH_INELIGIBLE" ||
+          errorObj?.code === "PRE_WORK_CHECK_FAILED"
+        ? errorObj.code
         : message === "FORBIDDEN"
           ? "FORBIDDEN"
           : message === "NOT_FOUND"
