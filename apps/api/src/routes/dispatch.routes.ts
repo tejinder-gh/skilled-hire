@@ -106,7 +106,19 @@ const getCandidatesHandler = async (
     })
     .from(technicians)
     .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
-    .leftJoin(credentials, eq(credentials.technicianId, technicians.id))
+    .leftJoin(
+      credentials,
+      and(
+        or(
+          eq(credentials.technicianId, technicians.id),
+          eq(credentials.contractorId, contractors.id),
+        ),
+        or(
+          eq(credentials.geography, "*"),
+          eq(credentials.geography, service.region),
+        ),
+      ),
+    )
     .where(
       and(
         eq(technicians.active, true),
