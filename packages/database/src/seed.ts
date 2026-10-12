@@ -532,23 +532,80 @@ for (const fixture of [
   const techId = t?.id;
   if (!techId) throw new Error("Missing fixture technician");
 
-  const existingFixtureCred = await db.query.credentials.findFirst({
-    where: and(eq(credentials.technicianId, techId), eq(credentials.code, "HVAC_LICENSE")),
-  });
-  if (!existingFixtureCred) {
+  const fixtureContractorCreds = [
+    { code: "ON_WSIB_CLEARANCE", ref: `WSIB-ON-${companyId.slice(0, 8)}` },
+    { code: "CGL_INSURANCE_2M", ref: `POL-CGL-${companyId.slice(0, 8)}` },
+    { code: "COMMERCIAL_AUTO_1M", ref: `POL-AUTO-${companyId.slice(0, 8)}` },
+  ];
+  for (const { code, ref } of fixtureContractorCreds) {
+    const existing = await db.query.credentials.findFirst({
+      where: and(eq(credentials.contractorId, companyId), eq(credentials.code, code)),
+    });
     const expiry = new Date();
     expiry.setFullYear(expiry.getFullYear() + 1);
-    await db.insert(credentials).values({
-      technicianId: techId,
-      code: "HVAC_LICENSE",
-      geography: "ON",
-      status: "VERIFIED",
-      verificationSource: "REGULATOR_API",
-      regulatorReference: `TSSA-${techId.slice(0, 8)}`,
-      checkedAt: new Date(),
-      verifiedAt: new Date(),
-      expiryDate: expiry.toISOString().split("T")[0]!,
+    if (!existing) {
+      await db.insert(credentials).values({
+        contractorId: companyId,
+        code,
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: ref,
+        checkedAt: new Date(),
+        verifiedAt: new Date(),
+        expiryDate: expiry.toISOString().split("T")[0]!,
+      });
+    } else {
+      await db
+        .update(credentials)
+        .set({
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          regulatorReference: ref,
+          checkedAt: new Date(),
+          verifiedAt: new Date(),
+          expiryDate: expiry.toISOString().split("T")[0]!,
+        })
+        .where(eq(credentials.id, existing.id));
+    }
+  }
+
+  const fixtureTechCreds = [
+    { code: "HVAC_LICENSE", ref: `TSSA-${techId.slice(0, 8)}` },
+    { code: "GOVT_PHOTO_ID", ref: `DL-${techId.slice(0, 8)}` },
+    { code: "BACKGROUND_CHECK_ANNUAL", ref: `BG-${techId.slice(0, 8)}` },
+  ];
+  for (const { code, ref } of fixtureTechCreds) {
+    const existing = await db.query.credentials.findFirst({
+      where: and(eq(credentials.technicianId, techId), eq(credentials.code, code)),
     });
+    const expiry = new Date();
+    expiry.setFullYear(expiry.getFullYear() + 1);
+    if (!existing) {
+      await db.insert(credentials).values({
+        technicianId: techId,
+        code,
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: ref,
+        checkedAt: new Date(),
+        verifiedAt: new Date(),
+        expiryDate: expiry.toISOString().split("T")[0]!,
+      });
+    } else {
+      await db
+        .update(credentials)
+        .set({
+          status: "VERIFIED",
+          verificationSource: "REGULATOR_API",
+          regulatorReference: ref,
+          checkedAt: new Date(),
+          verifiedAt: new Date(),
+          expiryDate: expiry.toISOString().split("T")[0]!,
+        })
+        .where(eq(credentials.id, existing.id));
+    }
   }
 
   const existingFixtureCap = await db.query.contractorCapabilityAssessments.findFirst({
