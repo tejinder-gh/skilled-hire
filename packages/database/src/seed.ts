@@ -5,6 +5,7 @@ import {
   db,
   pool,
   eq,
+  ne,
   and,
   users,
   userRoles,
@@ -18,6 +19,8 @@ import {
   paymentRules,
   tradeRegulatoryPolicies,
   contractorCapabilityAssessments,
+  legalAgreements,
+  agreementSignatures,
 } from "./index.js";
 
 const password = await hashPassword("DemoPassword!2026");
@@ -292,6 +295,85 @@ if (!existingContractor) {
 }
 const contractor = existingContractor?.id;
 if (!contractor) throw new Error("Missing contractor");
+
+// 5a. Seed Independent Contractor Agreement Signature (Ticket #61)
+await db
+  .delete(agreementSignatures)
+  .where(ne(agreementSignatures.agreementVersion, "1.0.0"));
+await db
+  .delete(legalAgreements)
+  .where(ne(legalAgreements.version, "1.0.0"));
+await db
+  .update(legalAgreements)
+  .set({ isActive: true, supersededAt: null })
+  .where(eq(legalAgreements.version, "1.0.0"));
+
+const activeIca = await db.query.legalAgreements.findFirst({
+  where: and(
+    eq(legalAgreements.type, "INDEPENDENT_CONTRACTOR_AGREEMENT"),
+    eq(legalAgreements.jurisdiction, "ON"),
+    eq(legalAgreements.isActive, true),
+  ),
+});
+if (activeIca) {
+  const existingSig = await db.query.agreementSignatures.findFirst({
+    where: and(
+      eq(agreementSignatures.contractorId, contractor),
+      eq(agreementSignatures.agreementId, activeIca.id),
+    ),
+  });
+  if (!existingSig) {
+    await db.insert(agreementSignatures).values({
+      agreementId: activeIca.id,
+      agreementType: activeIca.type,
+      agreementVersion: activeIca.version,
+      jurisdiction: activeIca.jurisdiction,
+      signerUserId: contractorOwner,
+      signerRole: "CONTRACTOR_OWNER",
+      entityType: "CONTRACTOR",
+      contractorId: contractor,
+      signerLegalName: "Bob Smith",
+      signerTitle: "Owner & Licensed Master Tradesperson",
+      ipAddress: "198.51.100.10",
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)",
+      agreementChecksum: activeIca.contentChecksum,
+      metadata: { seed: true },
+    });
+  }
+}
+
+// 5b. Seed Customer Service Terms Signature (Ticket #61)
+const activeCustTerms = await db.query.legalAgreements.findFirst({
+  where: and(
+    eq(legalAgreements.type, "CUSTOMER_SERVICE_TERMS"),
+    eq(legalAgreements.jurisdiction, "ON"),
+    eq(legalAgreements.isActive, true),
+  ),
+});
+if (activeCustTerms) {
+  const existingCustSig = await db.query.agreementSignatures.findFirst({
+    where: and(
+      eq(agreementSignatures.signerUserId, customer),
+      eq(agreementSignatures.agreementId, activeCustTerms.id),
+    ),
+  });
+  if (!existingCustSig) {
+    await db.insert(agreementSignatures).values({
+      agreementId: activeCustTerms.id,
+      agreementType: activeCustTerms.type,
+      agreementVersion: activeCustTerms.version,
+      jurisdiction: activeCustTerms.jurisdiction,
+      signerUserId: customer,
+      signerRole: "CUSTOMER",
+      entityType: "CUSTOMER",
+      signerLegalName: "Alice Customer",
+      ipAddress: "198.51.100.15",
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS)",
+      agreementChecksum: activeCustTerms.contentChecksum,
+      metadata: { seed: true },
+    });
+  }
+}
 
 let existingTechnician = await db.query.technicians.findFirst({
   where: eq(technicians.userId, technicianUser),
@@ -574,6 +656,33 @@ for (const fixture of [
       validUntil: expiry,
       decisionNotes: "Fixture contractor capability verified",
     });
+  }
+
+  if (activeIca) {
+    const existingFixtureSig = await db.query.agreementSignatures.findFirst({
+      where: and(
+        eq(agreementSignatures.contractorId, companyId),
+        eq(agreementSignatures.agreementId, activeIca.id),
+      ),
+    });
+    if (!existingFixtureSig) {
+      await db.insert(agreementSignatures).values({
+        agreementId: activeIca.id,
+        agreementType: activeIca.type,
+        agreementVersion: activeIca.version,
+        jurisdiction: activeIca.jurisdiction,
+        signerUserId: owner,
+        signerRole: "CONTRACTOR_OWNER",
+        entityType: "CONTRACTOR",
+        contractorId: companyId,
+        signerLegalName: `${fixture.company} Owner`,
+        signerTitle: "President",
+        ipAddress: "198.51.100.20",
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)",
+        agreementChecksum: activeIca.contentChecksum,
+        metadata: { seed: true },
+      });
+    }
   }
 }
 

@@ -27,6 +27,9 @@ import {
   dispatchEligibilityChecks,
   contractorSafetyQuarantines,
   jobRiskAssessments,
+  legalAgreements,
+  agreementSignatures,
+  isNull,
 } from "@marketplace/database";
 import {
   evaluateRegulatoryEligibility,
@@ -1031,6 +1034,56 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
               riskAssessmentId: riskAssessment.id,
               unfulfilledControls: unfulfilledControls.map((c) => c.control),
               totalMandated: mandatoryControls.length,
+            };
+            throw err;
+          }
+        }
+
+        // Check legal agreement compliance: Contractor must have executed active ICA
+        const [activeIca] = await tx
+          .select({
+            id: legalAgreements.id,
+            version: legalAgreements.version,
+            contentChecksum: legalAgreements.contentChecksum,
+          })
+          .from(legalAgreements)
+          .where(
+            and(
+              eq(legalAgreements.type, "INDEPENDENT_CONTRACTOR_AGREEMENT"),
+              eq(legalAgreements.jurisdiction, service.region),
+              eq(legalAgreements.isActive, true),
+            ),
+          )
+          .limit(1);
+
+        if (activeIca) {
+          const [icaSignature] = await tx
+            .select({ id: agreementSignatures.id })
+            .from(agreementSignatures)
+            .where(
+              and(
+                eq(agreementSignatures.agreementId, activeIca.id),
+                eq(agreementSignatures.contractorId, candidate.contractor_id),
+                eq(
+                  agreementSignatures.agreementChecksum,
+                  activeIca.contentChecksum,
+                ),
+                isNull(agreementSignatures.revokedAt),
+              ),
+            )
+            .limit(1);
+
+          if (!icaSignature) {
+            const err = new Error(
+              `Pre-dispatch legal check failed: Contractor (${candidate.contractor_name}) has not executed active Independent Contractor Agreement (v${activeIca.version})`,
+            );
+            (err as any).statusCode = 422;
+            (err as any).code = "CONTRACTOR_AGREEMENT_REQUIRED";
+            (err as any).details = {
+              contractorId: candidate.contractor_id,
+              requiredAgreementId: activeIca.id,
+              requiredVersion: activeIca.version,
+              jurisdiction: service.region,
             };
             throw err;
           }

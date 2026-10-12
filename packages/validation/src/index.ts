@@ -510,6 +510,45 @@ export const createRiskPolicySchema = z.object({
   calibrationNotes: z.string().max(2000).optional(),
 });
 
+// Legal Agreements, Provider Indemnity & Signed Agreements (#61)
+export const createLegalAgreementSchema = z.object({
+  type: z.enum([
+    "INDEPENDENT_CONTRACTOR_AGREEMENT",
+    "CUSTOMER_SERVICE_TERMS",
+    "PLATFORM_TERMS_OF_SERVICE",
+    "PRIVACY_POLICY",
+  ]),
+  version: z.string().min(1).max(20),
+  jurisdiction: z.string().min(1).max(10).default("ON"),
+  title: z.string().min(3).max(255),
+  summary: z.string().min(10).max(2000),
+  contentMarkdown: z.string().min(20),
+  legalCounselRef: z.string().max(100).optional(),
+  keyTerms: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const signAgreementSchema = z.object({
+  agreementId: uuid,
+  entityType: z.enum(["CONTRACTOR", "CUSTOMER", "TECHNICIAN"]),
+  contractorId: uuid.optional(),
+  signerLegalName: z.string().min(2).max(150),
+  signerTitle: z.string().min(2).max(100).optional(),
+  agreementChecksum: z.string().min(64).max(64),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const queryAgreementStatusSchema = z.object({
+  type: z.enum([
+    "INDEPENDENT_CONTRACTOR_AGREEMENT",
+    "CUSTOMER_SERVICE_TERMS",
+    "PLATFORM_TERMS_OF_SERVICE",
+    "PRIVACY_POLICY",
+  ]),
+  jurisdiction: z.string().default("ON"),
+  contractorId: uuid.optional(),
+  userId: uuid.optional(),
+});
+
 
 
 

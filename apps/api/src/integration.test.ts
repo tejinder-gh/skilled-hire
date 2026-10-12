@@ -32,6 +32,8 @@ import {
   jobRiskAssessments,
   auditEvents,
   refunds,
+  legalAgreements,
+  agreementSignatures,
   eq,
   ne,
   and,
@@ -96,9 +98,108 @@ describeSuite("Skilled Hire lifecycle", () => {
       .update(jobs)
       .set({ status: "CLOSED" })
       .where(sql`${jobs.status} NOT IN ('COMPLETED', 'CANCELLED', 'CLOSED')`);
+
+    // Reset leftover agreements and signatures from previously interrupted test runs
+    await db
+      .delete(agreementSignatures)
+      .where(ne(agreementSignatures.agreementVersion, "1.0.0"));
+    await db
+      .delete(legalAgreements)
+      .where(ne(legalAgreements.version, "1.0.0"));
+    await db
+      .update(legalAgreements)
+      .set({ isActive: true, supersededAt: null })
+      .where(eq(legalAgreements.version, "1.0.0"));
+
+    // Self-heal canonical HVAC credentials if stripped by subsequent tests in previous runs
+    const [hvacCont] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(eq(contractors.name, "ABC Heating & Cooling"))
+      .limit(1);
+    const [hvacTech] = await db
+      .select({ id: technicians.id })
+      .from(technicians)
+      .where(eq(technicians.displayName, "John S."))
+      .limit(1);
+
+    if (hvacCont && hvacTech) {
+      const hvacCreds = [
+        { contractorId: hvacCont.id, code: "ON_TSSA_CONTRACTOR_REG" },
+        { contractorId: hvacCont.id, code: "ON_WSIB_CLEARANCE" },
+        { contractorId: hvacCont.id, code: "CGL_INSURANCE_2M" },
+        { contractorId: hvacCont.id, code: "COMMERCIAL_AUTO_1M" },
+      ];
+      for (const cred of hvacCreds) {
+        const [existing] = await db
+          .select({ id: credentials.id })
+          .from(credentials)
+          .where(
+            and(
+              eq(credentials.contractorId, cred.contractorId),
+              eq(credentials.code, cred.code),
+            ),
+          )
+          .limit(1);
+        if (!existing) {
+          await db.insert(credentials).values({
+            contractorId: cred.contractorId,
+            code: cred.code,
+            geography: "ON",
+            status: "VERIFIED",
+            verificationSource: "REGULATOR_API",
+            expiryDate: "2028-12-31",
+            checkedAt: new Date(),
+          });
+        }
+      }
+
+      const techCreds = [
+        { technicianId: hvacTech.id, code: "HVAC_LICENSE" },
+        { technicianId: hvacTech.id, code: "ON_TSSA_GAS_G2" },
+        { technicianId: hvacTech.id, code: "ON_SKILLED_TRADES_313A" },
+        { technicianId: hvacTech.id, code: "CA_ODS_REFRIGERANT" },
+        { technicianId: hvacTech.id, code: "ON_MOL_HEIGHTS" },
+        { technicianId: hvacTech.id, code: "GOVT_PHOTO_ID" },
+        { technicianId: hvacTech.id, code: "BACKGROUND_CHECK_ANNUAL" },
+      ];
+      for (const cred of techCreds) {
+        const [existing] = await db
+          .select({ id: credentials.id })
+          .from(credentials)
+          .where(
+            and(
+              eq(credentials.technicianId, cred.technicianId),
+              eq(credentials.code, cred.code),
+            ),
+          )
+          .limit(1);
+        if (!existing) {
+          await db.insert(credentials).values({
+            technicianId: cred.technicianId,
+            code: cred.code,
+            geography: "ON",
+            status: "VERIFIED",
+            verificationSource: "REGULATOR_API",
+            expiryDate: "2028-12-31",
+            checkedAt: new Date(),
+          });
+        }
+      }
+    }
   });
 
   afterAll(async () => {
+    await db
+      .delete(agreementSignatures)
+      .where(ne(agreementSignatures.agreementVersion, "1.0.0"));
+    await db
+      .delete(legalAgreements)
+      .where(ne(legalAgreements.version, "1.0.0"));
+    await db
+      .update(legalAgreements)
+      .set({ isActive: true, supersededAt: null })
+      .where(eq(legalAgreements.version, "1.0.0"));
     await app.close();
     await pool.end();
   });
@@ -2159,6 +2260,7 @@ describeSuite("Skilled Hire lifecycle", () => {
       .from(contractors)
       .innerJoin(technicians, eq(technicians.contractorId, contractors.id))
       .where(and(eq(contractors.status, "VERIFIED"), eq(technicians.active, true)))
+      .orderBy(contractors.createdAt)
       .limit(1);
     expect(cont).toBeDefined();
 
@@ -2180,6 +2282,7 @@ describeSuite("Skilled Hire lifecycle", () => {
           eq(technicians.active, true),
         ),
       )
+      .orderBy(technicians.createdAt)
       .limit(1);
     expect(tech).toBeDefined();
 
@@ -2543,6 +2646,7 @@ describeSuite("Skilled Hire lifecycle", () => {
           eq(technicians.active, true),
         ),
       )
+      .orderBy(contractors.createdAt)
       .limit(1);
     expect(cont).toBeDefined();
 
@@ -2564,6 +2668,7 @@ describeSuite("Skilled Hire lifecycle", () => {
           eq(technicians.active, true),
         ),
       )
+      .orderBy(technicians.createdAt)
       .limit(1);
     expect(tech).toBeDefined();
 
@@ -4047,5 +4152,483 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(missingInputJson.assessment.riskTier).toBe("CRITICAL");
     expect(missingInputJson.assessment.requiresManualApproval).toBe(true);
   });
+
+  it("enforces marketplace role disclosure, provider indemnity covenants, tamper-evident e-signatures, and pre-dispatch agreement gates (#61)", async () => {
+    // Reset test-created versions/signatures to guarantee idempotency across multiple test runs
+    await db
+      .delete(agreementSignatures)
+      .where(ne(agreementSignatures.agreementVersion, "1.0.0"));
+    await db
+      .delete(legalAgreements)
+      .where(ne(legalAgreements.version, "1.0.0"));
+    await db
+      .update(legalAgreements)
+      .set({ isActive: true, supersededAt: null })
+      .where(eq(legalAgreements.version, "1.0.0"));
+
+    // 1. Discover Active Canonical Agreements for Ontario (GET /v1/legal/agreements/active)
+    const activeAgreementsRes = await app.inject({
+      method: "GET",
+      url: "/v1/legal/agreements/active?jurisdiction=ON",
+    });
+    expect(activeAgreementsRes.statusCode).toBe(200);
+    const activeAgreementsJson = activeAgreementsRes.json<{
+      agreements: Array<{
+        id: string;
+        type: string;
+        version: string;
+        jurisdiction: string;
+        title: string;
+        summary: string;
+        contentChecksum: string;
+        legalCounselRef: string;
+        isActive: boolean;
+        keyTerms: Record<string, unknown>;
+      }>;
+      jurisdiction: string;
+    }>();
+
+    expect(activeAgreementsJson.jurisdiction).toBe("ON");
+    expect(activeAgreementsJson.agreements.length).toBeGreaterThanOrEqual(2);
+
+    const initialIca = activeAgreementsJson.agreements.find(
+      (a) => a.type === "INDEPENDENT_CONTRACTOR_AGREEMENT",
+    );
+    const initialCst = activeAgreementsJson.agreements.find(
+      (a) => a.type === "CUSTOMER_SERVICE_TERMS",
+    );
+
+    expect(initialIca).toBeDefined();
+    expect(initialIca?.version).toBe("1.0.0");
+    expect(initialIca?.legalCounselRef).toBe("ON-LEGAL-2026-ICA-771");
+    expect(initialIca?.isActive).toBe(true);
+    expect(initialIca?.keyTerms?.indemnityScope).toBe(
+      "FULL_TRADE_DEFENSE_AND_INDEMNITY",
+    );
+    expect(initialIca?.keyTerms?.permitResponsibility).toBe(
+      "CONTRACTOR_EXCLUSIVE",
+    );
+
+    expect(initialCst).toBeDefined();
+    expect(initialCst?.version).toBe("1.0.0");
+    expect(initialCst?.legalCounselRef).toBe("ON-LEGAL-2026-CST-882");
+    expect(initialCst?.isActive).toBe(true);
+    expect(initialCst?.keyTerms?.consumerProtectionActCompliant).toBe(true);
+    expect(initialCst?.keyTerms?.intermediaryModel).toBe(
+      "DIRECT_CONTRACTOR_PRIVITY",
+    );
+
+    // 2. Query Agreement by ID (GET /v1/legal/agreements/:id)
+    const getIcaRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/agreements/${initialIca!.id}`,
+    });
+    expect(getIcaRes.statusCode).toBe(200);
+    const getIcaJson = getIcaRes.json<{
+      agreement: {
+        id: string;
+        contentMarkdown: string;
+        contentChecksum: string;
+      };
+    }>();
+    expect(getIcaJson.agreement.contentMarkdown).toContain(
+      "MASTER INDEPENDENT CONTRACTOR AGREEMENT",
+    );
+    expect(getIcaJson.agreement.contentChecksum).toBe(
+      initialIca!.contentChecksum,
+    );
+
+    // 3. Prepare Service Request for Dispatch
+    const [elecVertical] = await db
+      .select({ id: verticals.id })
+      .from(verticals)
+      .where(eq(verticals.slug, "electrical"))
+      .limit(1);
+    const [elecCat] = await db
+      .select({ id: serviceCategories.id })
+      .from(serviceCategories)
+      .where(
+        and(
+          eq(serviceCategories.verticalId, elecVertical!.id),
+          eq(serviceCategories.slug, "panel-service"),
+        ),
+      )
+      .limit(1);
+    const [elecIssue] = await db
+      .select({ id: issueTypes.id })
+      .from(issueTypes)
+      .where(
+        and(
+          eq(issueTypes.categoryId, elecCat!.id),
+          eq(issueTypes.slug, "panel-upgrade-200a"),
+        ),
+      )
+      .limit(1);
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, custUser.id))
+      .limit(1);
+
+    const [contractorRow] = await db
+      .select()
+      .from(contractors)
+      .orderBy(asc(contractors.createdAt))
+      .limit(1);
+    const [techRow] = await db
+      .select()
+      .from(technicians)
+      .where(eq(technicians.contractorId, contractorRow!.id))
+      .orderBy(asc(technicians.createdAt))
+      .limit(1);
+
+    const createReqRes = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: prop!.id,
+        verticalId: elecVertical!.id,
+        categoryId: elecCat!.id,
+        issueTypeId: elecIssue!.id,
+        urgency: "STANDARD",
+        description:
+          "200A main service panel installation and whole-home distribution",
+        attachmentKeys: [],
+      },
+    });
+    expect(createReqRes.statusCode).toBe(201);
+    const requestId = createReqRes.json<{ id: string }>().id;
+
+    for (const to of [
+      "QUALIFICATION_PENDING",
+      "QUALIFIED",
+      "SCHEDULING",
+      "SCHEDULED",
+      "CONTRACTOR_SEARCH",
+    ] as const) {
+      const transRes = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${requestId}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(transRes.statusCode).toBe(200);
+    }
+
+    // 4. Admin publishes a NEW ICA Version (v1.1.0) with updated statutory covenants
+    const newIcaMarkdown =
+      "# Ontario Independent Trade Contractor & Platform Indemnity Agreement (v1.1.0)\n\n" +
+      "## Section 1: Tripartite Relationship\n" +
+      "SkilledHire acts solely as a two-sided technology platform intermediary. Direct privity of contract " +
+      "for all trade and building services is formed exclusively between the Registered Contractor and Customer.\n\n" +
+      "## Section 2: Statutory Permits & Worker Qualification Warranty\n" +
+      "Contractor covenants and warrants that only properly licensed technicians under Ontario Skilled Trades Ontario " +
+      "shall perform restricted trade activities, and Contractor shall pull all necessary ESA/TSSA/municipal permits.\n\n" +
+      "## Section 3: Comprehensive Provider Indemnity\n" +
+      "Contractor shall defend, indemnify, and hold harmless SkilledHire from any third-party claims arising from workmanship, " +
+      "except solely where caused by the gross negligence of the Platform.";
+
+    const createAgreementRes = await app.inject({
+      method: "POST",
+      url: "/v1/legal/agreements",
+      headers: auth("admin@example.test"),
+      payload: {
+        type: "INDEPENDENT_CONTRACTOR_AGREEMENT",
+        version: "1.1.0",
+        jurisdiction: "ON",
+        title: "Ontario Independent Trade Contractor Master Agreement (v1.1.0)",
+        summary:
+          "Updated 2026 annual statutory indemnity and worker qualification schedule",
+        contentMarkdown: newIcaMarkdown,
+        legalCounselRef: "ON-LEGAL-2026-ICA-912",
+        keyTerms: {
+          intermediaryRole: "TECHNOLOGY_PLATFORM",
+          indemnityScope: "MUTUAL_EXCEPT_GROSS_NEGLIGENCE",
+          permitPullingParty: "CONTRACTOR",
+          workmanshipWarrantyMonths: 12,
+        },
+      },
+    });
+    expect(createAgreementRes.statusCode).toBe(201);
+    const newIca = createAgreementRes.json<{
+      agreement: {
+        id: string;
+        version: string;
+        contentChecksum: string;
+        isActive: boolean;
+      };
+    }>().agreement;
+    expect(newIca.version).toBe("1.1.0");
+    expect(newIca.isActive).toBe(true);
+
+    // Verify previous v1.0.0 was atomically superseded
+    const [supersededIca] = await db
+      .select()
+      .from(legalAgreements)
+      .where(eq(legalAgreements.id, initialIca!.id));
+    expect(supersededIca?.isActive).toBe(false);
+    expect(supersededIca?.supersededAt).toBeDefined();
+
+    // 5. DISPATCH GATE: Assignment FAILS CLOSED because contractor has NOT signed v1.1.0
+    const blockedDispatchRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${requestId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: techRow!.id },
+    });
+    expect(blockedDispatchRes.statusCode).toBe(422);
+    const blockedDispatchJson = blockedDispatchRes.json<{
+      code: string;
+      message: string;
+      details: {
+        contractorId: string;
+        requiredAgreementId: string;
+        requiredVersion: string;
+        jurisdiction: string;
+      };
+    }>();
+    expect(blockedDispatchJson.code).toBe("CONTRACTOR_AGREEMENT_REQUIRED");
+    expect(blockedDispatchJson.details.requiredVersion).toBe("1.1.0");
+    expect(blockedDispatchJson.details.requiredAgreementId).toBe(newIca.id);
+    expect(blockedDispatchJson.details.contractorId).toBe(contractorRow!.id);
+
+    // 6. Signature Status Check: Shows unsigned for current active version
+    const statusRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/signatures/status?type=INDEPENDENT_CONTRACTOR_AGREEMENT&contractorId=${contractorRow!.id}&jurisdiction=ON`,
+    });
+    expect(statusRes.statusCode).toBe(200);
+    const statusJson = statusRes.json<{
+      signed: boolean;
+      activeVersion: string;
+      agreementId: string;
+    }>();
+    expect(statusJson.signed).toBe(false);
+    expect(statusJson.activeVersion).toBe("1.1.0");
+
+    // 7. Security / Tamper Protections:
+    // 7a. Mismatched Checksum is rejected
+    const badChecksumRes = await app.inject({
+      method: "POST",
+      url: "/v1/legal/signatures",
+      headers: auth("owner@example.test"),
+      payload: {
+        agreementId: newIca.id,
+        entityType: "CONTRACTOR",
+        contractorId: contractorRow!.id,
+        signerLegalName: "Jordan Owner",
+        agreementChecksum:
+          "0000000000000000000000000000000000000000000000000000000000000000",
+      },
+    });
+    expect(badChecksumRes.statusCode).toBe(422);
+    expect(badChecksumRes.json<{ code: string }>().code).toBe(
+      "AGREEMENT_CHECKSUM_MISMATCH",
+    );
+
+    // 7b. Unauthorized caller (customer trying to sign on behalf of contractor entity) is rejected
+    const unauthorizedSigRes = await app.inject({
+      method: "POST",
+      url: "/v1/legal/signatures",
+      headers: auth("customer@example.test"),
+      payload: {
+        agreementId: newIca.id,
+        entityType: "CONTRACTOR",
+        contractorId: contractorRow!.id,
+        signerLegalName: "Imposter Signer",
+        agreementChecksum: newIca.contentChecksum,
+      },
+    });
+    expect(unauthorizedSigRes.statusCode).toBe(403);
+    expect(unauthorizedSigRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 8. Legitimate Contractor Owner E-Signature Execution (POST /v1/legal/signatures)
+    const signRes = await app.inject({
+      method: "POST",
+      url: "/v1/legal/signatures",
+      headers: auth("owner@example.test"),
+      payload: {
+        agreementId: newIca.id,
+        entityType: "CONTRACTOR",
+        contractorId: contractorRow!.id,
+        signerLegalName: "Jordan Owner, Licensed Master HVAC Tradesperson",
+        signerTitle: "President & Principal Contractor",
+        agreementChecksum: newIca.contentChecksum,
+        metadata: {
+          clientIpConsent: true,
+          signerRoleConfirmation: "AUTHORIZED_CORPORATE_SIGNING_OFFICER",
+        },
+      },
+    });
+    expect(signRes.statusCode).toBe(201);
+    const signatureRecord = signRes.json<{
+      signature: {
+        id: string;
+        agreementId: string;
+        agreementVersion: string;
+        signerLegalName: string;
+        signerTitle: string;
+        ipAddress: string;
+        userAgent: string;
+        agreementChecksum: string;
+        signedAt: string;
+      };
+    }>().signature;
+
+    expect(signatureRecord.id).toBeDefined();
+    expect(signatureRecord.agreementVersion).toBe("1.1.0");
+    expect(signatureRecord.signerLegalName).toBe(
+      "Jordan Owner, Licensed Master HVAC Tradesperson",
+    );
+    expect(signatureRecord.signerTitle).toBe(
+      "President & Principal Contractor",
+    );
+    expect(signatureRecord.agreementChecksum).toBe(newIca.contentChecksum);
+    expect(signatureRecord.ipAddress).toBeDefined();
+    expect(signatureRecord.userAgent).toBeDefined();
+
+    // Verify signature status is now signed
+    const postSignStatusRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/signatures/status?type=INDEPENDENT_CONTRACTOR_AGREEMENT&contractorId=${contractorRow!.id}&jurisdiction=ON`,
+    });
+    expect(postSignStatusRes.statusCode).toBe(200);
+    expect(postSignStatusRes.json<{ signed: boolean }>().signed).toBe(true);
+
+    // 9. DISPATCH GATE SUCCEEDS: With valid active ICA signed, dispatch is allowed
+    const assignSuccessRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${requestId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: techRow!.id },
+    });
+    expect(assignSuccessRes.statusCode).toBe(201);
+    const assignedJobId = assignSuccessRes.json<{ jobId: string }>().jobId;
+    expect(assignedJobId).toBeDefined();
+
+    // 10. E-Signature Evidence Certificate Generation (GET /v1/legal/signatures/:id/certificate)
+    // 10a. Tenant Isolation: Customer cannot view contractor's signature certificate
+    const tenantIsolationRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/signatures/${signatureRecord.id}/certificate`,
+      headers: auth("customer@example.test"),
+    });
+    expect(tenantIsolationRes.statusCode).toBe(403);
+    expect(tenantIsolationRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 10b. Contractor owner retrieves their own evidence certificate
+    const ownerCertRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/signatures/${signatureRecord.id}/certificate`,
+      headers: auth("owner@example.test"),
+    });
+    expect(ownerCertRes.statusCode).toBe(200);
+    const ownerCert = ownerCertRes.json<{
+      certificate: {
+        certificateId: string;
+        signatureId: string;
+        agreement: {
+          id: string;
+          version: string;
+          legalCounselRef: string;
+        };
+        signer: {
+          legalName: string;
+          title: string;
+        };
+        evidence: {
+          signedAt: string;
+          tamperCheckPassed: boolean;
+        };
+        disclosures: {
+          governingLaw: string;
+        };
+      };
+    }>().certificate;
+
+    expect(ownerCert.evidence.tamperCheckPassed).toBe(true);
+    expect(ownerCert.signer.legalName).toBe(
+      "Jordan Owner, Licensed Master HVAC Tradesperson",
+    );
+    expect(ownerCert.signer.title).toBe("President & Principal Contractor");
+    expect(ownerCert.agreement.legalCounselRef).toBe("ON-LEGAL-2026-ICA-912");
+    expect(ownerCert.disclosures.governingLaw).toBe("ONTARIO_CANADA");
+
+    // 10c. Ops / Admin can retrieve certificate for legal / court audit
+    const opsCertRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/signatures/${signatureRecord.id}/certificate`,
+      headers: auth("admin@example.test"),
+    });
+    expect(opsCertRes.statusCode).toBe(200);
+    expect(
+      opsCertRes.json<{
+        certificate: { evidence: { tamperCheckPassed: boolean } };
+      }>().certificate.evidence.tamperCheckPassed,
+    ).toBe(true);
+
+    // 11. Customer Signs Customer Service Terms
+    const custSignRes = await app.inject({
+      method: "POST",
+      url: "/v1/legal/signatures",
+      headers: auth("customer@example.test"),
+      payload: {
+        agreementId: initialCst!.id,
+        entityType: "CUSTOMER",
+        signerLegalName: "Avery Homeowner",
+        agreementChecksum: initialCst!.contentChecksum,
+        metadata: { checkoutConsent: true },
+      },
+    });
+    expect(custSignRes.statusCode).toBe(201);
+    const custSignature = custSignRes.json<{ signature: { id: string } }>()
+      .signature;
+
+    // Customer can view their own certificate
+    const custCertRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/signatures/${custSignature.id}/certificate`,
+      headers: auth("customer@example.test"),
+    });
+    expect(custCertRes.statusCode).toBe(200);
+    expect(
+      custCertRes.json<{
+        certificate: { signer: { legalName: string } };
+      }>().certificate.signer.legalName,
+    ).toBe("Avery Homeowner");
+
+    // 12. Legal Ops Audit Trail (GET /v1/legal/audit)
+    // Non-ops caller is forbidden
+    const nonOpsAuditRes = await app.inject({
+      method: "GET",
+      url: "/v1/legal/audit",
+      headers: auth("customer@example.test"),
+    });
+    expect(nonOpsAuditRes.statusCode).toBe(403);
+
+    // Ops caller retrieves signatures with filtering
+    const opsAuditRes = await app.inject({
+      method: "GET",
+      url: `/v1/legal/audit?contractorId=${contractorRow!.id}`,
+      headers: auth("admin@example.test"),
+    });
+    expect(opsAuditRes.statusCode).toBe(200);
+    const opsAuditJson = opsAuditRes.json<{
+      signatures: Array<{
+        id: string;
+        contractorId: string;
+        agreementVersion: string;
+      }>;
+      count: number;
+    }>();
+    expect(opsAuditJson.count).toBeGreaterThanOrEqual(1);
+    expect(
+      opsAuditJson.signatures.some(
+        (s) => s.agreementVersion === "1.1.0" && s.id === signatureRecord.id,
+      ),
+    ).toBe(true);
+  });
 });
+
 

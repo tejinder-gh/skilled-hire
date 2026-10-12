@@ -1141,5 +1141,7 @@ export interface RiskEvaluationResult {
   decisionLog: RiskDecisionLog;
 }
 
+export * from "./legal.js";
+
 
 

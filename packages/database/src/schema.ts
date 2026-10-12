@@ -1718,4 +1718,85 @@ export const jobRiskAssessmentsRelations = relations(
   }),
 );
 
+export const legalAgreements = pgTable("legal_agreements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  type: text("type").notNull(),
+  version: text("version").notNull(),
+  jurisdiction: text("jurisdiction").notNull().default("ON"),
+  title: text("title").notNull(),
+  summary: text("summary").notNull(),
+  contentMarkdown: text("content_markdown").notNull(),
+  contentChecksum: text("content_checksum").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  effectiveDate: timestamp("effective_date", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
+  legalCounselRef: text("legal_counsel_ref"),
+  keyTerms: jsonb("key_terms").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const agreementSignatures = pgTable("agreement_signatures", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agreementId: uuid("agreement_id")
+    .notNull()
+    .references(() => legalAgreements.id),
+  agreementType: text("agreement_type").notNull(),
+  agreementVersion: text("agreement_version").notNull(),
+  jurisdiction: text("jurisdiction").notNull().default("ON"),
+  signerUserId: uuid("signer_user_id")
+    .notNull()
+    .references(() => users.id),
+  signerRole: text("signer_role").notNull(),
+  entityType: text("entity_type").notNull(),
+  contractorId: uuid("contractor_id").references(() => contractors.id),
+  signerLegalName: text("signer_legal_name").notNull(),
+  signerTitle: text("signer_title"),
+  ipAddress: text("ip_address").notNull(),
+  userAgent: text("user_agent").notNull(),
+  agreementChecksum: text("agreement_checksum").notNull(),
+  signedAt: timestamp("signed_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const legalAgreementsRelations = relations(
+  legalAgreements,
+  ({ many }) => ({
+    signatures: many(agreementSignatures),
+  }),
+);
+
+export const agreementSignaturesRelations = relations(
+  agreementSignatures,
+  ({ one }) => ({
+    agreement: one(legalAgreements, {
+      fields: [agreementSignatures.agreementId],
+      references: [legalAgreements.id],
+    }),
+    signerUser: one(users, {
+      fields: [agreementSignatures.signerUserId],
+      references: [users.id],
+    }),
+    contractor: one(contractors, {
+      fields: [agreementSignatures.contractorId],
+      references: [contractors.id],
+    }),
+  }),
+);
+
 
