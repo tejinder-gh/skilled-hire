@@ -353,11 +353,6 @@ export const serviceRequests = pgTable("service_requests", {
   status: requestStatusEnum("status").notNull().default("DRAFT"),
   description: text("description").notNull(),
   equipment: jsonb("equipment").notNull().default({}),
-  permitId: uuid("permit_id"),
-  certificateOfAcceptanceNumber: text("certificate_of_acceptance_number"),
-  regulatorySignOffStatus: text("regulatory_sign_off_status")
-    .notNull()
-    .default("NOT_APPLICABLE"),
   preferredStartsAt: timestamp("preferred_starts_at", { withTimezone: true }),
   preferredEndsAt: timestamp("preferred_ends_at", { withTimezone: true }),
   attachmentKeys: jsonb("attachment_keys").notNull().default([]),
