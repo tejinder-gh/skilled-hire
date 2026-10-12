@@ -10,6 +10,7 @@ import type {
 import {
   db,
   eq,
+  ne,
   and,
   desc,
   jobs,
@@ -92,29 +93,43 @@ export const riskRoutes: FastifyPluginAsync = async (app) => {
 
       const body = parse(createRiskPolicySchema, request.body);
 
-      // Deactivate previous policies if this one is active
-      await db
-        .update(riskPolicies)
-        .set({ isActive: false })
-        .where(eq(riskPolicies.isActive, true));
+      // Create new policy and switch active flag atomically in a transaction
+      const policy = await db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(riskPolicies)
+          .values({
+            version: body.version,
+            name: body.name,
+            isActive: true,
+            dimensionsConfig: body.dimensionsConfig,
+            hazardFlagRules: body.hazardFlagRules,
+            tierThresholds: body.tierThresholds,
+            mandatoryControlsConfig: body.mandatoryControlsConfig,
+            calibrationNotes: body.calibrationNotes ?? null,
+            provenanceAudit: {
+              createdByUser: currentActor.id,
+              timestamp: new Date().toISOString(),
+            },
+          })
+          .returning();
 
-      const [policy] = await db
-        .insert(riskPolicies)
-        .values({
-          version: body.version,
-          name: body.name,
-          isActive: true,
-          dimensionsConfig: body.dimensionsConfig,
-          hazardFlagRules: body.hazardFlagRules,
-          tierThresholds: body.tierThresholds,
-          mandatoryControlsConfig: body.mandatoryControlsConfig,
-          calibrationNotes: body.calibrationNotes ?? null,
-          provenanceAudit: {
-            createdByUser: currentActor.id,
-            timestamp: new Date().toISOString(),
-          },
-        })
-        .returning();
+        if (!inserted) {
+          throw new Error("POLICY_CREATION_FAILED");
+        }
+
+        // Deactivate previous active policies
+        await tx
+          .update(riskPolicies)
+          .set({ isActive: false })
+          .where(
+            and(
+              eq(riskPolicies.isActive, true),
+              ne(riskPolicies.id, inserted.id),
+            ),
+          );
+
+        return inserted;
+      });
 
       if (!policy) {
         return reply.status(500).send({

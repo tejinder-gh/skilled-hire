@@ -3155,6 +3155,7 @@ describeSuite("Skilled Hire lifecycle", () => {
       .from(contractors)
       .innerJoin(technicians, eq(technicians.contractorId, contractors.id))
       .where(and(eq(contractors.status, "VERIFIED"), eq(technicians.active, true)))
+      .orderBy(contractors.createdAt)
       .limit(1);
     expect(cont).toBeDefined();
 
@@ -3167,6 +3168,7 @@ describeSuite("Skilled Hire lifecycle", () => {
           eq(technicians.active, true),
         ),
       )
+      .orderBy(technicians.createdAt)
       .limit(1);
     expect(tech).toBeDefined();
 
