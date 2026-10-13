@@ -606,12 +606,21 @@ export const complianceRoutes: FastifyPluginAsync = async (app) => {
         Array.isArray(contractor.vertical_ids) &&
         contractor.vertical_ids.length > 0
       ) {
-        const [vRow] = await db
-          .select({ slug: verticals.slug })
-          .from(verticals)
-          .where(eq(verticals.id, contractor.vertical_ids[0] as string))
-          .limit(1);
-        if (vRow?.slug) verticalSlug = vRow.slug;
+        const firstVal = String(contractor.vertical_ids[0]);
+        const isUuid =
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            firstVal,
+          );
+        if (isUuid) {
+          const [vRow] = await db
+            .select({ slug: verticals.slug })
+            .from(verticals)
+            .where(eq(verticals.id, firstVal))
+            .limit(1);
+          if (vRow?.slug) verticalSlug = vRow.slug;
+        } else {
+          verticalSlug = firstVal;
+        }
       }
       const entityLevel = query?.entityLevel;
       const applicable = filterComplianceStandards(

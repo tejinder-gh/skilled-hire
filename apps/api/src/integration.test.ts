@@ -918,6 +918,7 @@ describeSuite("Skilled Hire lifecycle", () => {
     const [contractorRecord] = await db
       .select({ id: contractors.id })
       .from(contractors)
+      .orderBy(contractors.createdAt)
       .limit(1);
     const contractorId = contractorRecord?.id;
     if (!contractorId) throw new Error("Missing contractor in database");
@@ -6789,7 +6790,224 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(resolvedJson.status).toBe("RESOLVED");
     expect(resolvedJson.resolutionNotes).toContain("Marcus");
   });
+
+  it("20. Provider multi-service onboarding, prospect state separation, territory validation, and supply CRM review (#41, #6)", async () => {
+    // 1. Create Prospect Draft: POST /v1/providers/onboarding/draft
+    const draftRes = await app.inject({
+      method: "POST",
+      url: "/v1/providers/onboarding/draft",
+      payload: {
+        prospectEmail: "apex.hvac.owner@example.test",
+        businessName: "Apex Heating & Plumbing Group Inc.",
+        phone: "416-555-0144",
+        postalCodes: ["m5v 1a1", "M4Y 2B2"],
+        selectedVerticals: ["hvac", "plumbing"],
+        draftStep: 2,
+      },
+    });
+    expect(draftRes.statusCode).toBe(201);
+    const draftJson = draftRes.json<{
+      applicationId: string;
+      saveToken: string;
+      status: string;
+      draftStep: number;
+    }>();
+    expect(draftJson.status).toBe("PROSPECT");
+    expect(draftJson.draftStep).toBe(2);
+    expect(draftJson.saveToken).toMatch(/^tok_/);
+    expect(draftJson.applicationId).toMatch(/^APP-/);
+
+    const { saveToken, applicationId } = draftJson;
+
+    // 2. Resume Draft: GET /v1/providers/onboarding/draft/:saveToken
+    const resumeRes = await app.inject({
+      method: "GET",
+      url: `/v1/providers/onboarding/draft/${saveToken}`,
+    });
+    expect(resumeRes.statusCode).toBe(200);
+    const resumeJson = resumeRes.json<{
+      id: string;
+      status: string;
+      businessName: string;
+      postalCodes: string[];
+    }>();
+    expect(resumeJson.id).toBe(applicationId);
+    expect(resumeJson.status).toBe("PROSPECT");
+    expect(resumeJson.businessName).toBe("Apex Heating & Plumbing Group Inc.");
+    expect(resumeJson.postalCodes).toEqual(["M5V", "M4Y"]);
+
+    // 3. Submit Application: POST /v1/providers/onboarding/submit
+    const testBizNumber = `BN-${Date.now()}`;
+    const submitRes = await app.inject({
+      method: "POST",
+      url: "/v1/providers/onboarding/submit",
+      payload: {
+        saveToken,
+        businessNumber: testBizNumber,
+        businessType: "CORPORATION",
+        postalCodes: ["M5V", "M4Y"],
+        selectedVerticals: ["hvac", "plumbing"],
+        serviceRatesProposal: [
+          { verticalSlug: "hvac", hourlyRateCents: 12500, diagnosticFeeCents: 9900 },
+          { verticalSlug: "plumbing", hourlyRateCents: 11500, diagnosticFeeCents: 8500 },
+        ],
+        weeklyCapacity: 25,
+        technicians: [
+          {
+            fullName: "Liam Vance",
+            email: `liam.vance.${Date.now()}@apex.test`,
+            phone: "416-555-0188",
+            tradeLicenseCode: "313A",
+            licenseNumber: "TSSA-G1-889922",
+            licenseExpiry: "2027-11-30",
+            isEmergencyAvailable: true,
+          },
+        ],
+        consentAccepted: true,
+      },
+    });
+    expect(submitRes.statusCode).toBe(200);
+    const submitJson = submitRes.json<{
+      applicationId: string;
+      status: string;
+      technicianCount: number;
+      territoriesCount: number;
+    }>();
+    expect(submitJson.status).toBe("SUBMITTED");
+    expect(submitJson.technicianCount).toBe(1);
+    expect(submitJson.territoriesCount).toBe(2);
+
+    // 4. Duplicate Business Identity Check: Re-submitting with identical BN should fail (409)
+    const secondDraftRes = await app.inject({
+      method: "POST",
+      url: "/v1/providers/onboarding/draft",
+      payload: {
+        prospectEmail: "impostor@example.test",
+        businessName: "Impostor LLC",
+        phone: "416-555-0199",
+      },
+    });
+    const secondSaveToken = secondDraftRes.json<{ saveToken: string }>().saveToken;
+
+    const dupSubmitRes = await app.inject({
+      method: "POST",
+      url: "/v1/providers/onboarding/submit",
+      payload: {
+        saveToken: secondSaveToken,
+        businessNumber: testBizNumber,
+        businessType: "CORPORATION",
+        postalCodes: ["M5V"],
+        selectedVerticals: ["hvac"],
+        serviceRatesProposal: [
+          { verticalSlug: "hvac", hourlyRateCents: 12000, diagnosticFeeCents: 9000 },
+        ],
+        weeklyCapacity: 10,
+        technicians: [
+          {
+            fullName: "Fake Tech",
+            email: "fake@apex.test",
+            phone: "416-555-0199",
+            tradeLicenseCode: "313A",
+            licenseNumber: "TSSA-000000",
+            licenseExpiry: "2027-11-30",
+          },
+        ],
+        consentAccepted: true,
+      },
+    });
+    expect(dupSubmitRes.statusCode).toBe(409);
+    expect(dupSubmitRes.json<{ code: string }>().code).toBe("DUPLICATE_BUSINESS_IDENTITY");
+
+    // 5. CRM Operations Queue: GET /v1/providers/onboarding/crm/applications
+    const crmListRes = await app.inject({
+      method: "GET",
+      url: "/v1/providers/onboarding/crm/applications?status=SUBMITTED",
+      headers: auth("admin@example.test"),
+    });
+    expect(crmListRes.statusCode).toBe(200);
+    const crmList = crmListRes.json<Array<{ id: string; status: string; businessName: string }>>();
+    expect(crmList.some((a) => a.id === applicationId)).toBe(true);
+
+    // 6. Application Dossier: GET /v1/providers/onboarding/crm/applications/:id
+    const dossierRes = await app.inject({
+      method: "GET",
+      url: `/v1/providers/onboarding/crm/applications/${applicationId}`,
+      headers: auth("admin@example.test"),
+    });
+    expect(dossierRes.statusCode).toBe(200);
+    const dossierJson = dossierRes.json<{
+      application: {
+        id: string;
+        businessName: string;
+        technicians: Array<{ fullName: string; tradeLicenseCode: string }>;
+        approvals: Array<{ verticalSlug: string; territoryCode: string; status: string }>;
+      };
+      readiness: {
+        readinessScoreBps: number;
+        isReadyForReview: boolean;
+        missingItems: string[];
+      };
+    }>();
+    expect(dossierJson.application.businessName).toBe("Apex Heating & Plumbing Group Inc.");
+    expect(dossierJson.application.technicians).toHaveLength(1);
+    expect(dossierJson.application.technicians[0]!.fullName).toBe("Liam Vance");
+    expect(dossierJson.readiness.isReadyForReview).toBe(true);
+    expect(dossierJson.readiness.readinessScoreBps).toBe(10000);
+
+    // 7. Operations Review & Auto-Provisioning: POST /v1/providers/onboarding/crm/applications/:id/review
+    const reviewRes = await app.inject({
+      method: "POST",
+      url: `/v1/providers/onboarding/crm/applications/${applicationId}/review`,
+      headers: auth("admin@example.test"),
+      payload: {
+        decision: "APPROVED",
+        reviewNotes: "Ontario TSSA Gas Technician 1 and 313A Refrigeration credentials fully validated against Skilled Trades Ontario registry.",
+        serviceGeographyDecisions: [
+          { verticalSlug: "hvac", territoryCode: "M5V", status: "APPROVED" },
+          { verticalSlug: "hvac", territoryCode: "M4Y", status: "APPROVED" },
+          { verticalSlug: "plumbing", territoryCode: "M5V", status: "APPROVED" },
+          { verticalSlug: "plumbing", territoryCode: "M4Y", status: "APPROVED" },
+        ],
+        convertAndProvision: true,
+      },
+    });
+    expect(reviewRes.statusCode).toBe(200);
+    const reviewJson = reviewRes.json<{
+      applicationId: string;
+      status: string;
+      convertedContractorId: string;
+    }>();
+    expect(reviewJson.status).toBe("APPROVED");
+    expect(reviewJson.convertedContractorId).toBeDefined();
+
+    // Verify converted contractor in database
+    const [dbContractor] = await db
+      .select()
+      .from(contractors)
+      .where(eq(contractors.id, reviewJson.convertedContractorId))
+      .limit(1);
+    expect(dbContractor).toBeDefined();
+    expect(dbContractor!.name).toBe("Apex Heating & Plumbing Group Inc.");
+    expect(dbContractor!.status).toBe("VERIFIED");
+
+    // Verify technician and credentials provisioned
+    const dbTechs = await db
+      .select()
+      .from(technicians)
+      .where(eq(technicians.contractorId, reviewJson.convertedContractorId));
+    expect(dbTechs).toHaveLength(1);
+    expect(dbTechs[0]!.displayName).toBe("Liam Vance");
+
+    const dbCreds = await db
+      .select()
+      .from(credentials)
+      .where(eq(credentials.technicianId, dbTechs[0]!.id));
+    expect(dbCreds).toHaveLength(1);
+    expect(dbCreds[0]!.code).toBe("313A");
+    expect(dbCreds[0]!.status).toBe("VERIFIED");
+  });
 });
+
 
 
 

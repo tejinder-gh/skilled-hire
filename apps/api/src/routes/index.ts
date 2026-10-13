@@ -23,6 +23,7 @@ import { passportRoutes } from "./passport.routes.js";
 import { warrantyRoutes } from "./warranty.routes.js";
 import { surveysRewardsRoutes } from "./surveys-rewards.routes.js";
 import { analyticsRoutes } from "./analytics.routes.js";
+import { providerOnboardingRoutes } from "./provider-onboarding.routes.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(authRoutes);
@@ -41,6 +42,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(warrantyRoutes);
   await app.register(surveysRewardsRoutes);
   await app.register(analyticsRoutes);
+  await app.register(providerOnboardingRoutes);
   await app.register(propertiesRoutes);
 
   await app.register(requestRoutes);
