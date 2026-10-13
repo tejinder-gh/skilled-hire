@@ -4282,6 +4282,204 @@ describeSuite("Skilled Hire lifecycle", () => {
       .orderBy(asc(technicians.createdAt))
       .limit(1);
 
+    expect(contractorRow).toBeDefined();
+    expect(techRow).toBeDefined();
+
+    // Ensure contractor is associated with electrical vertical, has clean safety status, valid credentials, and approved capability
+    const vIds = (contractorRow!.verticalIds as string[]) ?? [];
+    await db
+      .update(contractors)
+      .set({
+        verticalIds: vIds.includes(elecVertical!.id)
+          ? vIds
+          : [...vIds, elecVertical!.id],
+        status: "VERIFIED",
+        safetyStatus: "ACTIVE",
+        suspendedAt: null,
+        suspensionReason: null,
+      })
+      .where(eq(contractors.id, contractorRow!.id));
+
+    await db
+      .update(technicians)
+      .set({
+        active: true,
+        safetyStatus: "ACTIVE",
+        suspendedAt: null,
+        suspensionReason: null,
+      })
+      .where(eq(technicians.id, techRow!.id));
+
+    await db
+      .delete(contractorSafetyQuarantines)
+      .where(
+        or(
+          eq(contractorSafetyQuarantines.contractorId, contractorRow!.id),
+          eq(contractorSafetyQuarantines.technicianId, techRow!.id),
+        ),
+      );
+
+    const futureDate = "2028-12-31";
+    await db
+      .delete(credentials)
+      .where(
+        and(
+          eq(credentials.contractorId, contractorRow!.id),
+          inArray(credentials.code, [
+            "ON_ESA_LEC_CONTRACTOR",
+            "COMMERCIAL_GENERAL_LIABILITY",
+            "ON_WSIB_CLEARANCE",
+            "CGL_INSURANCE_2M",
+            "COMMERCIAL_AUTO_1M",
+          ]),
+        ),
+      );
+
+    await db.insert(credentials).values([
+      {
+        contractorId: contractorRow!.id,
+        code: "ON_ESA_LEC_CONTRACTOR",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "ECRA-ESA-7001122",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: contractorRow!.id,
+        code: "COMMERCIAL_GENERAL_LIABILITY",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "CGL-POL-2026-99",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: contractorRow!.id,
+        code: "ON_WSIB_CLEARANCE",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "WSIB-ON-991823",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: contractorRow!.id,
+        code: "CGL_INSURANCE_2M",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "POL-CGL-882910",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        contractorId: contractorRow!.id,
+        code: "COMMERCIAL_AUTO_1M",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "POL-AUTO-99201",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+    ]);
+
+    await db
+      .delete(credentials)
+      .where(
+        and(
+          eq(credentials.technicianId, techRow!.id),
+          inArray(credentials.code, [
+            "ON_SKILLED_TRADES_309A",
+            "CRIMINAL_BACKGROUND_CHECK",
+            "ELECTRICAL_LICENSE",
+            "GOVT_PHOTO_ID",
+            "BACKGROUND_CHECK_ANNUAL",
+          ]),
+        ),
+      );
+
+    await db.insert(credentials).values([
+      {
+        technicianId: techRow!.id,
+        code: "ON_SKILLED_TRADES_309A",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "309A-LIC-88291",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: techRow!.id,
+        code: "CRIMINAL_BACKGROUND_CHECK",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "BG-CERT-2026-118",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: techRow!.id,
+        code: "ELECTRICAL_LICENSE",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "LIC-ELEC-88291",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: techRow!.id,
+        code: "GOVT_PHOTO_ID",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "DL-ON-448822-192",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+      {
+        technicianId: techRow!.id,
+        code: "BACKGROUND_CHECK_ANNUAL",
+        geography: "ON",
+        status: "VERIFIED",
+        verificationSource: "REGULATOR_API",
+        regulatorReference: "CERT-ANNUAL-BG-9912",
+        expiryDate: futureDate,
+        checkedAt: new Date(),
+      },
+    ]);
+
+    await db
+      .delete(contractorCapabilityAssessments)
+      .where(
+        and(
+          eq(contractorCapabilityAssessments.contractorId, contractorRow!.id),
+          eq(contractorCapabilityAssessments.issueTypeId, elecIssue!.id),
+        ),
+      );
+
+    await db.insert(contractorCapabilityAssessments).values({
+      contractorId: contractorRow!.id,
+      issueTypeId: elecIssue!.id,
+      geography: "ON",
+      status: "APPROVED",
+      complexityTier: "TIER_3_ADVANCED",
+      yearsExperience: 8,
+      maxJobValueCents: 10000000,
+      assessedByUserId: custUser.id,
+      assessedAt: new Date(),
+      validUntil: new Date("2028-12-31T00:00:00Z"),
+      decisionNotes:
+        "Verified technical competency and certifications for legal gate testing",
+    });
+
     const createReqRes = await app.inject({
       method: "POST",
       url: "/v1/service-requests",
