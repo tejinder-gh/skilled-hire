@@ -909,6 +909,34 @@ export const surveyWebhookPayloadSchema = z.object({
   externalSubmissionId: z.string().min(1).max(100).optional(),
 });
 
+// Marketplace Analytics & Supply Coverage Dashboard (#54)
+export const marketplaceAnalyticsQuerySchema = z.object({
+  timeWindow: z.enum(["24H", "7D", "30D", "90D", "ALL"]).default("30D"),
+  verticalSlug: z.string().optional(),
+  neighbourhood: z.string().optional(),
+});
+
+export const updateOperationalAlertSchema = z.object({
+  status: z.enum(["ACTIVE", "ACKNOWLEDGED", "RESOLVED", "DISMISSED"]),
+  resolutionNotes: z.string().max(2000).optional(),
+});
+
+export const createOperationalAlertSchema = z.object({
+  alertType: z.enum([
+    "SUPPLY_DEFICIT",
+    "SLA_BREACH",
+    "WARRANTY_SPIKE",
+    "FRAUD_SIGNAL",
+    "FAIRNESS_SKEW",
+  ]),
+  severity: z.enum(["INFO", "WARNING", "CRITICAL"]),
+  title: z.string().min(3).max(200),
+  description: z.string().min(5).max(2000),
+  verticalSlug: z.string().optional(),
+  neighbourhood: z.string().optional(),
+  metricsPayload: z.record(z.unknown()).optional(),
+});
+
 
 
 

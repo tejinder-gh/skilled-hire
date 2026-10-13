@@ -180,6 +180,9 @@ importers:
 
   apps/operations-web:
     dependencies:
+      '@marketplace/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@marketplace/ui':
         specifier: workspace:*
         version: link:../../packages/ui

@@ -6631,6 +6631,164 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(analyticsJson.conversionRatePercentage).toBeGreaterThan(0);
     expect(analyticsJson.totalCreditsIssuedCents).toBeGreaterThan(0);
   });
+
+  it("19. Marketplace analytics, supply-by-neighbourhood coverage, and operational alerts (#54)", async () => {
+    // 1. Authorization checks: unauthenticated request is denied
+    const unauthRes = await app.inject({
+      method: "GET",
+      url: "/v1/analytics/marketplace",
+    });
+    expect(unauthRes.statusCode).toBe(401);
+
+    // 2. Authorization checks: customer cannot access admin marketplace analytics
+    const custRes = await app.inject({
+      method: "GET",
+      url: "/v1/analytics/marketplace",
+      headers: auth("customer@example.test"),
+    });
+    expect(custRes.statusCode).toBe(403);
+
+    // 3. Admin / Operations access: GET /v1/analytics/marketplace
+    const adminRes = await app.inject({
+      method: "GET",
+      url: "/v1/analytics/marketplace?timeWindow=30D",
+      headers: auth("admin@example.test"),
+    });
+    expect(adminRes.statusCode).toBe(200);
+    const analytics = adminRes.json<{
+      funnel: {
+        requestsCreated: number;
+        dispatchedCount: number;
+        completedCount: number;
+        bookingConversionBps: number;
+      };
+      dispatchAndSla: {
+        totalOffersSent: number;
+        acceptanceRateBps: number;
+        slaComplianceRateBps: number;
+      };
+      fairness: {
+        totalActiveContractors: number;
+        giniCoefficient: number;
+      };
+      financial: {
+        grossMerchandiseValueCents: number;
+        averageTakeRateBps: number;
+      };
+      qualityAndTrust: {
+        completedJobsCount: number;
+        averageCustomerRating: number;
+      };
+      supplyCoverage: Array<{
+        neighbourhood: string;
+        registeredProviders: number;
+        verifiedProviders: number;
+        coverageStatus: string;
+      }>;
+      operationalAlerts: Array<{
+        id: string;
+        alertType: string;
+        severity: string;
+        title: string;
+      }>;
+    }>();
+
+    expect(analytics.funnel).toBeDefined();
+    expect(analytics.funnel.requestsCreated).toBeGreaterThanOrEqual(1);
+    expect(analytics.dispatchAndSla).toBeDefined();
+    expect(analytics.fairness).toBeDefined();
+    expect(analytics.fairness.giniCoefficient).toBeGreaterThanOrEqual(0);
+    expect(analytics.financial).toBeDefined();
+    expect(analytics.financial.averageTakeRateBps).toBe(1500); // 15% platform take
+    expect(analytics.supplyCoverage.length).toBeGreaterThanOrEqual(5);
+
+    // 4. Supply Coverage Endpoint: GET /v1/analytics/supply-coverage
+    const coverageRes = await app.inject({
+      method: "GET",
+      url: "/v1/analytics/supply-coverage",
+      headers: auth("dispatch@example.test"),
+    });
+    expect(coverageRes.statusCode).toBe(200);
+    const coverageJson = coverageRes.json<{
+      region: string;
+      neighbourhoods: Array<{
+        neighbourhood: string;
+        coverageStatus: string;
+        capacitySaturationBps: number;
+      }>;
+    }>();
+    expect(coverageJson.region).toBe("ON");
+    expect(coverageJson.neighbourhoods.length).toBeGreaterThanOrEqual(5);
+    expect(
+      coverageJson.neighbourhoods.some(
+        (n) => n.neighbourhood === "Toronto Downtown",
+      ),
+    ).toBe(true);
+
+    // 5. Create Operational Alert: POST /v1/analytics/alerts
+    const createAlertRes = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/alerts",
+      headers: auth("admin@example.test"),
+      payload: {
+        alertType: "SUPPLY_DEFICIT",
+        severity: "WARNING",
+        title: "Capacity Saturation Warning · North York",
+        description:
+          "High volume of service calls in North York approaching 90% provider capacity saturation.",
+        verticalSlug: "hvac",
+        neighbourhood: "North York",
+        metricsPayload: { saturationBps: 8800 },
+      },
+    });
+    expect(createAlertRes.statusCode).toBe(201);
+    const createdAlert = createAlertRes.json<{
+      id: string;
+      status: string;
+      title: string;
+    }>();
+    expect(createdAlert.id).toMatch(/^ALT-/);
+    expect(createdAlert.status).toBe("ACTIVE");
+
+    // 6. List Operational Alerts: GET /v1/analytics/alerts
+    const listAlertsRes = await app.inject({
+      method: "GET",
+      url: "/v1/analytics/alerts",
+      headers: auth("admin@example.test"),
+    });
+    expect(listAlertsRes.statusCode).toBe(200);
+    const alertsList = listAlertsRes.json<Array<{ id: string; status: string }>>();
+    expect(alertsList.some((a) => a.id === createdAlert.id)).toBe(true);
+
+    // 7. Update Alert Status: PATCH /v1/analytics/alerts/:id (ACKNOWLEDGED -> RESOLVED)
+    const ackRes = await app.inject({
+      method: "PATCH",
+      url: `/v1/analytics/alerts/${createdAlert.id}`,
+      headers: auth("admin@example.test"),
+      payload: {
+        status: "ACKNOWLEDGED",
+      },
+    });
+    expect(ackRes.statusCode).toBe(200);
+    expect(ackRes.json<{ status: string }>().status).toBe("ACKNOWLEDGED");
+
+    const resolveRes = await app.inject({
+      method: "PATCH",
+      url: `/v1/analytics/alerts/${createdAlert.id}`,
+      headers: auth("admin@example.test"),
+      payload: {
+        status: "RESOLVED",
+        resolutionNotes: "Dispatched standby on-call technician Marcus to relieve capacity.",
+      },
+    });
+    expect(resolveRes.statusCode).toBe(200);
+    const resolvedJson = resolveRes.json<{
+      status: string;
+      resolutionNotes: string;
+    }>();
+    expect(resolvedJson.status).toBe("RESOLVED");
+    expect(resolvedJson.resolutionNotes).toContain("Marcus");
+  });
 });
 
 

@@ -1148,6 +1148,7 @@ export * from "./job-completion.js";
 export * from "./property-passport.js";
 export * from "./warranty.js";
 export * from "./surveys-rewards.js";
+export * from "./marketplace-analytics.js";
 
 
 
