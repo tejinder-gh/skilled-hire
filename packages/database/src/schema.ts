@@ -413,6 +413,9 @@ export const jobs = pgTable("jobs", {
   assignedAt: timestamp("assigned_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  scheduledStartsAt: timestamp("scheduled_starts_at", { withTimezone: true }),
+  scheduledEndsAt: timestamp("scheduled_ends_at", { withTimezone: true }),
+  travelBufferMinutes: integer("travel_buffer_minutes").default(30),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -2952,6 +2955,190 @@ export const providerTechnicianRostersRelations = relations(
       references: [providerOnboardingApplications.id],
     }),
   }),
+);
+
+// ---------------------------------------------------------------------------
+// 27. Technician Scheduling, Dispatch Overlap Protection & Offers
+// ---------------------------------------------------------------------------
+
+export const technicianSchedules = pgTable(
+  "technician_schedules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    technicianId: uuid("technician_id")
+      .notNull()
+      .references(() => technicians.id, { onDelete: "cascade" }),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "cascade" }),
+    dayOfWeek: integer("day_of_week").notNull(),
+    startTime: varchar("start_time", { length: 5 }).notNull(),
+    endTime: varchar("end_time", { length: 5 }).notNull(),
+    timezone: varchar("timezone", { length: 64 })
+      .notNull()
+      .default("America/Toronto"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("uq_tech_schedule").on(
+      table.technicianId,
+      table.dayOfWeek,
+      table.startTime,
+    ),
+  ],
+);
+
+export const technicianScheduleExceptions = pgTable(
+  "technician_schedule_exceptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    technicianId: uuid("technician_id")
+      .notNull()
+      .references(() => technicians.id, { onDelete: "cascade" }),
+    exceptionType: varchar("exception_type", { length: 32 })
+      .notNull()
+      .default("TIME_OFF"),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    startTime: varchar("start_time", { length: 5 }),
+    endTime: varchar("end_time", { length: 5 }),
+    allDay: boolean("all_day").notNull().default(true),
+    reason: text("reason"),
+    approvedByUserId: uuid("approved_by_user_id").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const technicianServiceRegions = pgTable(
+  "technician_service_regions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    technicianId: uuid("technician_id")
+      .notNull()
+      .references(() => technicians.id, { onDelete: "cascade" }),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "cascade" }),
+    postalFsa: varchar("postal_fsa", { length: 8 }).notNull(),
+    maxTravelRadiusKm: integer("max_travel_radius_km").notNull().default(25),
+    travelBufferMinutes: integer("travel_buffer_minutes").notNull().default(30),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("uq_tech_region").on(table.technicianId, table.postalFsa),
+  ],
+);
+
+export const dispatchSlotHolds = pgTable(
+  "dispatch_slot_holds",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    serviceRequestId: uuid("service_request_id")
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: "cascade" }),
+    technicianId: uuid("technician_id")
+      .notNull()
+      .references(() => technicians.id, { onDelete: "cascade" }),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "cascade" }),
+    slotStartsAt: timestamp("slot_starts_at", { withTimezone: true }).notNull(),
+    slotEndsAt: timestamp("slot_ends_at", { withTimezone: true }).notNull(),
+    travelBufferMinutes: integer("travel_buffer_minutes").notNull().default(30),
+    bufferedStartsAt: timestamp("buffered_starts_at", { withTimezone: true }).notNull(),
+    bufferedEndsAt: timestamp("buffered_ends_at", { withTimezone: true }).notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("HELD"),
+    holdExpiresAt: timestamp("hold_expires_at", { withTimezone: true }).notNull(),
+    heldByUserId: uuid("held_by_user_id").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const dispatchOffers = pgTable(
+  "dispatch_offers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    serviceRequestId: uuid("service_request_id")
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: "cascade" }),
+    technicianId: uuid("technician_id")
+      .notNull()
+      .references(() => technicians.id, { onDelete: "cascade" }),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "cascade" }),
+    slotHoldId: uuid("slot_hold_id").references(() => dispatchSlotHolds.id, {
+      onDelete: "set null",
+    }),
+    candidateRank: integer("candidate_rank").notNull().default(1),
+    candidateScore: integer("candidate_score").notNull().default(100),
+    status: varchar("status", { length: 32 }).notNull().default("OFFERED"),
+    offeredAt: timestamp("offered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+    declineReason: varchar("decline_reason", { length: 64 }),
+    declineNotes: text("decline_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const dispatchFallbackQueue = pgTable(
+  "dispatch_fallback_queue",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    serviceRequestId: uuid("service_request_id")
+      .notNull()
+      .unique()
+      .references(() => serviceRequests.id, { onDelete: "cascade" }),
+    failedOfferCount: integer("failed_offer_count").notNull().default(0),
+    reason: varchar("reason", { length: 64 })
+      .notNull()
+      .default("ALL_OFFERS_EXHAUSTED"),
+    status: varchar("status", { length: 32 })
+      .notNull()
+      .default("PENDING_TRIAGE"),
+    assignedTechnicianId: uuid("assigned_technician_id").references(
+      () => technicians.id,
+    ),
+    triagedByUserId: uuid("triaged_by_user_id").references(() => users.id),
+    triagedAt: timestamp("triaged_at", { withTimezone: true }),
+    resolutionNotes: text("resolution_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
 );
 
 

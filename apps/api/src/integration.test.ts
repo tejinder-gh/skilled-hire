@@ -49,6 +49,11 @@ import {
   customerRewardCredits,
   supportTickets,
   serviceRequests,
+  technicianSchedules,
+  technicianServiceRegions,
+  dispatchSlotHolds,
+  dispatchOffers,
+  dispatchFallbackQueue,
   eq,
   ne,
   and,
@@ -7006,7 +7011,273 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(dbCreds[0]!.code).toBe("313A");
     expect(dbCreds[0]!.status).toBe("VERIFIED");
   });
+
+  it("21. Real technician scheduling, dispatch conflict control, atomic slot holds, and fallback queue operations (#7)", async () => {
+    // 1. Setup certified technician and verified contractor in Ontario
+    const [hvacVertical] = await db
+      .select()
+      .from(verticals)
+      .where(eq(verticals.slug, "hvac"))
+      .limit(1);
+    expect(hvacVertical).toBeDefined();
+
+    const [testTech] = await db
+      .select()
+      .from(technicians)
+      .where(eq(technicians.displayName, "John S."))
+      .limit(1);
+    expect(testTech).toBeDefined();
+
+    const [testContractor] = await db
+      .select()
+      .from(contractors)
+      .where(eq(contractors.id, testTech!.contractorId))
+      .limit(1);
+    expect(testContractor).toBeDefined();
+
+    // Clean up any test state from prior runs
+    await db.delete(dispatchOffers).where(eq(dispatchOffers.technicianId, testTech!.id));
+    await db.delete(dispatchSlotHolds).where(eq(dispatchSlotHolds.technicianId, testTech!.id));
+    await db.delete(technicianServiceRegions).where(eq(technicianServiceRegions.technicianId, testTech!.id));
+    await db.delete(technicianSchedules).where(eq(technicianSchedules.technicianId, testTech!.id));
+
+    // 2. Set weekly working hours: Monday-Friday 08:00 - 18:00
+    const setScheduleRes = await app.inject({
+      method: "PUT",
+      url: `/v1/dispatch/technicians/${testTech!.id}/schedules`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        schedules: [
+          { dayOfWeek: 1, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true },
+          { dayOfWeek: 2, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true },
+          { dayOfWeek: 3, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true },
+          { dayOfWeek: 4, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true },
+          { dayOfWeek: 5, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true },
+        ],
+      },
+    });
+    expect(setScheduleRes.statusCode).toBe(200);
+    const scheduleJson = setScheduleRes.json<{ schedules: Array<{ dayOfWeek: number }> }>();
+    expect(scheduleJson.schedules).toHaveLength(5);
+
+    // 3. Configure service region FSA: M5V
+    const setRegionRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/technicians/${testTech!.id}/service-regions`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        postalFsa: "M5V",
+        maxTravelRadiusKm: 25,
+        travelBufferMinutes: 30,
+      },
+    });
+    expect(setRegionRes.statusCode).toBe(201);
+    const regionJson = setRegionRes.json<{ postalFsa: string }>();
+    expect(regionJson.postalFsa).toBe("M5V");
+
+    // 4. Inspect Calendar view: GET /v1/dispatch/technicians/:id/calendar
+    const calRes = await app.inject({
+      method: "GET",
+      url: `/v1/dispatch/technicians/${testTech!.id}/calendar`,
+      headers: auth("dispatch@example.test"),
+    });
+    expect(calRes.statusCode).toBe(200);
+    const calJson = calRes.json<{
+      technicianId: string;
+      weeklySchedule: unknown[];
+      serviceRegions: unknown[];
+    }>();
+    expect(calJson.technicianId).toBe(testTech!.id);
+    expect(calJson.weeklySchedule).toHaveLength(5);
+    expect(calJson.serviceRegions).toHaveLength(1);
+
+    // 5. Create a service request for slot hold testing
+    const [prop] = await db.select().from(properties).limit(1);
+    const [cat] = await db
+      .select()
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, hvacVertical!.id))
+      .limit(1);
+    const [issue] = await db
+      .select()
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, cat!.id))
+      .limit(1);
+
+    const [reqA] = await db
+      .insert(serviceRequests)
+      .values({
+        customerId: prop!.customerId,
+        propertyId: prop!.id,
+        verticalId: hvacVertical!.id,
+        categoryId: cat!.id,
+        issueTypeId: issue!.id,
+        urgency: "STANDARD",
+        status: "SCHEDULING",
+        description: "HVAC furnace diagnostics and heat exchanger inspection",
+      })
+      .returning();
+
+    // 6. Atomic Slot Hold acquisition: 10:00 - 12:00 UTC
+    const slotStartsAt = "2026-10-15T10:00:00.000Z";
+    const slotEndsAt = "2026-10-15T12:00:00.000Z";
+
+    const holdRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/hold",
+      headers: auth("dispatch@example.test"),
+      payload: {
+        serviceRequestId: reqA!.id,
+        technicianId: testTech!.id,
+        slotStartsAt,
+        slotEndsAt,
+        travelBufferMinutes: 30,
+      },
+    });
+    expect(holdRes.statusCode).toBe(201);
+    const holdJson = holdRes.json<{ id: string; status: string; bufferedStartsAt: string }>();
+    expect(holdJson.status).toBe("HELD");
+    expect(holdJson.id).toBeDefined();
+
+    const holdAId = holdJson.id;
+
+    // 7. Overlap Collision Check: Attempt concurrent hold on overlapping time
+    // Slot 11:00 - 13:00 collides with existing hold (10:00 - 12:00 + 30 min buffer)
+    const [reqB] = await db
+      .insert(serviceRequests)
+      .values({
+        customerId: prop!.customerId,
+        propertyId: prop!.id,
+        verticalId: hvacVertical!.id,
+        categoryId: cat!.id,
+        issueTypeId: issue!.id,
+        urgency: "STANDARD",
+        status: "SCHEDULING",
+        description: "Heat pump refrigerant check",
+      })
+      .returning();
+
+    const collidingHoldRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/hold",
+      headers: auth("dispatch@example.test"),
+      payload: {
+        serviceRequestId: reqB!.id,
+        technicianId: testTech!.id,
+        slotStartsAt: "2026-10-15T11:00:00.000Z",
+        slotEndsAt: "2026-10-15T13:00:00.000Z",
+        travelBufferMinutes: 30,
+      },
+    });
+    expect(collidingHoldRes.statusCode).toBe(409);
+    const collidingJson = collidingHoldRes.json<{ code: string; details: { conflictType: string } }>();
+    expect(collidingJson.code).toBe("SLOT_CONFLICT");
+    expect(collidingJson.details.conflictType).toBe("HOLD_OVERLAP");
+
+    // 8. Release hold A: POST /v1/dispatch/slots/:holdId/release
+    const releaseRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/slots/${holdAId}/release`,
+      headers: auth("dispatch@example.test"),
+    });
+    expect(releaseRes.statusCode).toBe(200);
+
+    // 9. Generate Dispatch Offers for Service Request: POST /v1/dispatch/:requestId/offers/generate
+    const genOffersRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${reqA!.id}/offers/generate`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        slotStartsAt: "2026-10-15T14:00:00.000Z",
+        slotEndsAt: "2026-10-15T16:00:00.000Z",
+        maxOffers: 1,
+        offerTtlMinutes: 15,
+      },
+    });
+    expect(genOffersRes.statusCode).toBe(201);
+    const genJson = genOffersRes.json<{
+      offer: { id: string; status: string; technicianId: string };
+      slotHold: { id: string; status: string };
+    }>();
+    expect(genJson.offer.status).toBe("OFFERED");
+    expect(genJson.slotHold.status).toBe("HELD");
+
+    const offerId = genJson.offer.id;
+
+    // 10. Check list of offers for request: GET /v1/dispatch/:requestId/offers
+    const listOffersRes = await app.inject({
+      method: "GET",
+      url: `/v1/dispatch/${reqA!.id}/offers`,
+      headers: auth("dispatch@example.test"),
+    });
+    expect(listOffersRes.statusCode).toBe(200);
+    const listJson = listOffersRes.json<{ offers: Array<{ id: string; status: string }> }>();
+    expect(listJson.offers.length).toBeGreaterThanOrEqual(1);
+    expect(listJson.offers.some((o) => o.id === offerId)).toBe(true);
+
+    // 11. Decline offer with reason and verify auto-enrollment into Fallback Queue
+    const declineRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/offers/${offerId}/respond`,
+      headers: auth("owner@example.test"),
+      payload: {
+        action: "DECLINE",
+        declineReason: "CREW_OVERLOAD",
+        declineNotes: "Journeyperson committed on high-priority hospital chiller repair",
+      },
+    });
+    expect(declineRes.statusCode).toBe(200);
+    const declineJson = declineRes.json<{ status: string }>();
+    expect(declineJson.status).toBe("DECLINED");
+
+    // 12. Inspect Operations Fallback Queue: GET /v1/dispatch/fallback-queue
+    const fallbackRes = await app.inject({
+      method: "GET",
+      url: "/v1/dispatch/fallback-queue",
+      headers: auth("dispatch@example.test"),
+    });
+    expect(fallbackRes.statusCode).toBe(200);
+    const fallbackJson = fallbackRes.json<{
+      queue: Array<{ serviceRequestId: string; reason: string; status: string }>;
+    }>();
+    const queuedItem = fallbackJson.queue.find((q) => q.serviceRequestId === reqA!.id);
+    expect(queuedItem).toBeDefined();
+    expect(queuedItem!.status).toBe("PENDING_TRIAGE");
+    expect(queuedItem!.reason).toBe("DECLINED_BY_ALL");
+
+    // 13. Operations Fallback Queue Triage: Manual Assignment Rescue
+    const triageRes = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/fallback-queue/${reqA!.id}/triage`,
+      headers: auth("dispatch@example.test"),
+      payload: {
+        action: "MANUAL_ASSIGN",
+        technicianId: testTech!.id,
+        overrideReason: "Direct Operations manual dispatch with technician overtime consent",
+        resolutionNotes: "Confirmed verbal agreement with contractor owner",
+      },
+    });
+    expect(triageRes.statusCode).toBe(200);
+    const triageJson = triageRes.json<{ status: string; assignedTechnicianId: string }>();
+    expect(triageJson.status).toBe("MANUALLY_ASSIGNED");
+    expect(triageJson.assignedTechnicianId).toBe(testTech!.id);
+
+    // Verify service request and job are now ASSIGNED
+    const [dbReq] = await db
+      .select({ status: serviceRequests.status })
+      .from(serviceRequests)
+      .where(eq(serviceRequests.id, reqA!.id));
+    expect(dbReq?.status).toBe("ASSIGNED");
+
+    const [dbJob] = await db
+      .select({ status: jobs.status, technicianId: jobs.technicianId })
+      .from(jobs)
+      .where(eq(jobs.serviceRequestId, reqA!.id));
+    expect(dbJob?.status).toBe("ASSIGNED");
+    expect(dbJob?.technicianId).toBe(testTech!.id);
+  });
 });
+
 
 
 
