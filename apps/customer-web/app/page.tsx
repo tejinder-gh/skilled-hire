@@ -1,42 +1,57 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AlternativeSlot,
   SlotAvailabilityResponse,
 } from "@marketplace/contracts";
 import {
+  Badge,
   Button,
+  Callout,
   Card,
   Divider,
+  EmptyState,
   Field,
   Grid,
   Metric,
+  Modal,
+  NpsScale,
+  ProgressBar,
+  SearchBar,
+  SegmentedControl,
   Shell,
+  StarRating,
   Status,
   Stepper,
 } from "@marketplace/ui";
 import { CANONICAL_TRADE_CATALOG } from "@marketplace/vertical-engine";
 
-const requestSteps = [
-  "Describe the issue",
-  "Choose a time",
-  "Confirm request",
+const bookingSteps = [
+  "Select Service",
+  "Describe Issue",
+  "Choose Time",
+  "Confirm Booking",
 ] as const;
-const timeline = [
-  "Request received",
-  "Appointment confirmed",
-  "Technician assigned",
-  "Assessment & quote",
-  "Work & invoice",
+
+const liveJobSteps = [
+  "Request Submitted",
+  "Technician Assigned",
+  "En Route (ETA)",
+  "On-Site Diagnostic",
+  "Work Completed",
 ] as const;
 
 type DomainOption = {
   slug: string;
   label: string;
   icon: string;
+  family: string;
   category: string;
   defaultIssue: string;
+  basePriceCents: number;
+  requiresPermit: boolean;
+  permitAuthority?: string | undefined;
 };
 
 const domainIcons: Record<string, string> = {
@@ -70,8 +85,12 @@ const DOMAINS: DomainOption[] = CANONICAL_TRADE_CATALOG.map((v) => {
     slug: v.slug,
     label: v.name,
     icon: domainIcons[v.slug] ?? "🔨",
+    family: v.family,
     category: firstCat?.slug ?? "general",
-    defaultIssue: firstVariant?.name ?? "General Diagnostic",
+    defaultIssue: firstVariant?.name ?? "General Diagnostic Assessment",
+    basePriceCents: firstVariant?.basePriceCents ?? 12900,
+    requiresPermit: firstVariant?.requiresPermit ?? false,
+    permitAuthority: v.permitAuthority ?? undefined,
   };
 });
 
@@ -82,1271 +101,1246 @@ type SlotOption = {
   time: string;
   peak: boolean;
 };
+
 const AVAILABLE_SLOTS: SlotOption[] = [
   {
-    id: "today-13-15-surge",
-    label: "Today · 1:00–3:00 PM (High Demand / Peak)",
+    id: "today-13-15",
+    label: "Today · 1:00–3:00 PM (Verified Open Capacity)",
     day: "Today",
     time: "1:00 PM – 3:00 PM",
-    peak: true,
+    peak: false,
   },
   {
-    id: "today-16-18-busy",
-    label: "Today · 4:00–6:00 PM (Capacity Saturated)",
+    id: "today-16-18",
+    label: "Today · 4:00–6:00 PM (Standard Arrival Window)",
     day: "Today",
     time: "4:00 PM – 6:00 PM",
-    peak: true,
+    peak: false,
   },
   {
     id: "tomorrow-09-11",
-    label: "Tomorrow · 9:00–11:00 AM (Confirmed Open)",
+    label: "Tomorrow · 9:00–11:00 AM (Recommended Morning)",
     day: "Tomorrow",
     time: "9:00 AM – 11:00 AM",
     peak: false,
   },
   {
     id: "tomorrow-14-16",
-    label: "Tomorrow · 2:00–4:00 PM (Confirmed Open)",
+    label: "Tomorrow · 2:00–4:00 PM (Afternoon Window)",
     day: "Tomorrow",
     time: "2:00 PM – 4:00 PM",
-    peak: false,
-  },
-  {
-    id: "friday-10-12",
-    label: "Friday · 10:00 AM–12:00 PM (Off-Peak Open)",
-    day: "Friday",
-    time: "10:00 AM – 12:00 PM",
     peak: false,
   },
 ];
 
 export default function CustomerHome() {
-  const [mode, setMode] = useState<
-    "home" | "request" | "busier-than-usual" | "submitted"
-  >("home");
-  const [step, setStep] = useState(0);
+  const [activeTab, setActiveTab] = useState<
+    "book" | "tracking" | "completion" | "warranty" | "survey"
+  >("book");
+
+  // --- SERVICE DIRECTORY & SEARCH ---
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFamily, setSelectedFamily] = useState<string>("ALL");
   const [selectedDomain, setSelectedDomain] = useState<string>("hvac");
-  const [selectedSlot, setSelectedSlot] = useState<string>("today-13-15-surge");
+  const [bookingStep, setBookingStep] = useState(0);
+
+  // --- BOOKING FORM & ESTIMATE ---
+  const [selectedSlot, setSelectedSlot] = useState<string>("today-13-15");
   const [description, setDescription] = useState(
-    "AC unit fan is running continuously but room temperature is not dropping.",
+    "Central AC compressor humming loudly, but condenser fan not turning and indoor air is warm.",
   );
   const [urgency, setUrgency] = useState<"STANDARD" | "EMERGENCY">("STANDARD");
-  const [photo, setPhoto] = useState("");
-  const [isStandbyQueue, setIsStandbyQueue] = useState<boolean>(false);
-  const [smsAlerts, setSmsAlerts] = useState<boolean>(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [submissionError, setSubmissionError] = useState<string | null>(null);
-  const [liveRequestId, setLiveRequestId] = useState<string | null>(null);
+  const [includeInsurance, setIncludeInsurance] = useState(true);
+  const [bookingConfirmed, setBookingConfirmed] = useState(false);
 
-  // Live availability data from backend API
-  const [availabilityData, setAvailabilityData] =
-    useState<SlotAvailabilityResponse | null>(null);
-  const [checkingAvailability, setCheckingAvailability] =
-    useState<boolean>(false);
+  // --- LIVE JOB TRACKING STATE ---
+  const [liveJobStep, setLiveJobStep] = useState(2); // 2 = En Route
+  const [etaMinutes, setEtaMinutes] = useState(18);
 
-  // Query slot availability on vertical or slot change
-  useEffect(() => {
-    async function queryAvailability() {
-      setCheckingAvailability(true);
-      try {
-        const res = await fetch(
-          `http://localhost:4000/v1/dispatch/slot-availability?vertical=${selectedDomain}&slot=${selectedSlot}`,
-        );
-        if (res.ok) {
-          const data: SlotAvailabilityResponse = await res.json();
-          setAvailabilityData(data);
-          return;
-        }
-      } catch {
-        // Fallback for offline mode
-      } finally {
-        setCheckingAvailability(false);
-      }
+  // --- COMPLETION REPORT STATE ---
+  const [completionApproved, setCompletionApproved] = useState(false);
+  const [disputeModalOpen, setDisputeModalOpen] = useState(false);
+  const [disputeReason, setDisputeReason] = useState("");
 
-      // Offline deterministic fallback
-      const isBusy =
-        selectedDomain !== "hvac" ||
-        selectedSlot.includes("surge") ||
-        selectedSlot.includes("busy");
-      setAvailabilityData({
-        verticalSlug: selectedDomain,
-        verticalName:
-          DOMAINS.find((d) => d.slug === selectedDomain)?.label ??
-          selectedDomain.toUpperCase(),
-        region: "ON",
-        queriedSlot: selectedSlot,
-        available: !isBusy,
-        status: isBusy ? "BUSIER_THAN_USUAL" : "AVAILABLE",
-        headline: isBusy
-          ? `We're experiencing higher than usual demand for ${DOMAINS.find((d) => d.slug === selectedDomain)?.label} in Greater Toronto Area`
-          : `Verified ${DOMAINS.find((d) => d.slug === selectedDomain)?.label} technicians ready for dispatch`,
-        reason: isBusy
-          ? `All licensed and verified specialists in this trade are currently committed on active calls in this time window.`
-          : `Certified trade professionals have open capacity in this requested appointment window.`,
-        metrics: {
-          activeCertifiedTechnicians: selectedDomain === "hvac" ? 3 : 0,
-          dispatchedCount: 3,
-          capacitySaturationBps: isBusy ? 10000 : 3300,
-          estimatedWaitMinutes: isBusy ? 120 : 0,
-        },
-        alternativeSlots: [
-          {
-            id: "tomorrow-09-11",
-            label: "Tomorrow · 9:00–11:00 AM",
-            day: "Tomorrow",
-            time: "9:00 AM – 11:00 AM",
-            guaranteed: true,
-            demandLevel: "NORMAL",
-            badge: "Recommended · 100% Guaranteed Arrival",
-          },
-          {
-            id: "tomorrow-14-16",
-            label: "Tomorrow · 2:00–4:00 PM",
-            day: "Tomorrow",
-            time: "2:00 PM – 4:00 PM",
-            guaranteed: true,
-            demandLevel: "NORMAL",
-            badge: "Standard Service Window",
-          },
-          {
-            id: "friday-10-12",
-            label: "Friday · 10:00 AM–12:00 PM",
-            day: "Friday",
-            time: "10:00 AM – 12:00 PM",
-            guaranteed: true,
-            demandLevel: "LOW",
-            badge: "Off-Peak Window · Best Availability",
-          },
-        ],
-        emergencyOption: {
-          available: true,
-          title: "Request Emergency Priority Dispatch",
-          badge: "⚡ Guaranteed 45-min on-call arrival",
-          description:
-            "Routes directly to on-call certified journeypersons reserved strictly for emergency response.",
-          calloutFeeCents: 14900,
-          slaMinutes: 45,
-        },
-        standbyWaitlist: {
-          available: true,
-          title: "Join Priority Standby Waitlist",
-          badge: "⏱️ Automated dispatch on early finish",
-          description:
-            "Keep your desired time slot. If an existing job finishes early or an appointment reschedules, you are automatically assigned first in line.",
-          queuePosition: 2,
-          estimatedNoticeMinutes: 30,
-        },
-      });
-    }
-    queryAvailability();
-  }, [selectedDomain, selectedSlot]);
+  // --- WARRANTY & PASSPORT STATE ---
+  const [claimDrawerOpen, setClaimDrawerOpen] = useState(false);
+  const [claimDesc, setClaimDesc] = useState("");
+  const [claimSeverity, setClaimSeverity] = useState<"LOW" | "MODERATE" | "HIGH">("MODERATE");
+  const [activeClaimSubmitted, setActiveClaimSubmitted] = useState(false);
+
+  // --- POST-JOB SURVEY & REWARD STATE ---
+  const [starRating, setStarRating] = useState(5);
+  const [npsScore, setNpsScore] = useState<number | null>(9);
+  const [aspectRatings, setAspectRatings] = useState({
+    punctuality: true,
+    cleanliness: true,
+    communication: true,
+    quality: true,
+  });
+  const [surveyNotes, setSurveyNotes] = useState(
+    "Technician Marcus arrived in 20 minutes, identified the faulty run capacitor immediately, and replaced it cleanly. Excellent service!",
+  );
+  const [surveySubmitted, setSurveySubmitted] = useState(false);
+  const [creditBalanceCents, setCreditBalanceCents] = useState(3000); // $30 CAD reward
+
+  // Service Filtering
+  const filteredDomains = useMemo(() => {
+    return DOMAINS.filter((d) => {
+      const matchesSearch =
+        d.label.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        d.defaultIssue.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        d.slug.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesFamily =
+        selectedFamily === "ALL" || d.family === selectedFamily;
+      return matchesSearch && matchesFamily;
+    });
+  }, [searchQuery, selectedFamily]);
 
   const activeDomainObj =
     DOMAINS.find((d) => d.slug === selectedDomain) ?? DOMAINS[0]!;
-  const activeSlotObj =
-    AVAILABLE_SLOTS.find((s) => s.id === selectedSlot) ?? AVAILABLE_SLOTS[0]!;
-  const isCurrentlyBusy = availabilityData?.status === "BUSIER_THAN_USUAL";
 
-  async function handleSubmitRequest() {
-    if (submitting) return;
-    setSubmitting(true);
-    setSubmissionError(null);
-    setLiveRequestId(null);
-    try {
-      if (process.env.NODE_ENV !== "development")
-        throw new Error(
-          "Booking requires a verified customer session. Please try again later.",
-        );
-      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: "customer@example.test",
-          password: "DemoPassword!2026",
-        }),
-      });
-      if (!loginRes.ok) throw new Error("Unable to authenticate.");
-      {
-        const { accessToken } = await loginRes.json();
-        const [intakeRes, propRes] = await Promise.all([
-          fetch(
-            `http://localhost:4000/v1/verticals/${selectedDomain}/intake`,
-          ).catch(() =>
-            fetch("http://localhost:4000/v1/verticals/hvac/intake"),
-          ),
-          fetch("http://localhost:4000/v1/properties", {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          }),
-        ]);
-        if (!intakeRes.ok || !propRes.ok)
-          throw new Error("Could not load service details.");
-        {
-          const { vertical, categories, issues } = await intakeRes.json();
-          const properties = await propRes.json();
-          const property = properties[0];
-          const category = categories[0];
-          const issue = issues[0];
+  // Dynamic estimate calculations
+  const diagnosticFeeCents = activeDomainObj.basePriceCents;
+  const estimatedLaborCents = 9500;
+  const estimatedPartsCents = 5500;
+  const platformFeeCents = 1800;
+  const insuranceFeeCents = includeInsurance ? 1900 : 0;
+  const totalEstimateCents =
+    diagnosticFeeCents +
+    estimatedLaborCents +
+    estimatedPartsCents +
+    platformFeeCents +
+    insuranceFeeCents;
 
-          if (!property || !vertical || !category || !issue)
-            throw new Error("Missing property or service details.");
-          {
-            const reqRes = await fetch(
-              "http://localhost:4000/v1/service-requests",
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  Authorization: `Bearer ${accessToken}`,
-                },
-                body: JSON.stringify({
-                  propertyId: property.id,
-                  verticalId: vertical.id,
-                  categoryId: category.id,
-                  issueTypeId: issue.id,
-                  urgency,
-                  description:
-                    description.trim() +
-                    (isStandbyQueue
-                      ? " [CUSTOMER ON PRIORITY STANDBY WAITLIST]"
-                      : ""),
-                  attachmentKeys: photo ? [photo] : [],
-                }),
-              },
-            );
-            if (!reqRes.ok)
-              throw new Error("Request was not accepted. Please retry.");
+  const handleConfirmBooking = () => {
+    setBookingConfirmed(true);
+    setBookingStep(3);
+    setActiveTab("tracking");
+  };
+
+  const handleSurveySubmit = () => {
+    setSurveySubmitted(true);
+    setCreditBalanceCents(3000);
+  };
+
+  return (
+    <Shell
+      title="Homeowner Service & Protection Hub"
+      subtitle="Apple-inspired home care journey: instant trade search, transparent upfront estimates, live technician arrival tracking, structured sign-offs, 365-day workmanship warranty, and Digital Property Passport."
+      eyebrow="SKILLED HIRE · ONTARIO LICENSED SERVICES"
+    >
+      {/* Primary Apple-style Navigation */}
+      <div style={{ marginBottom: 24, overflowX: "auto" }}>
+        <SegmentedControl
+          ariaLabel="Homeowner navigation"
+          value={activeTab}
+          onChange={(tab) => setActiveTab(tab)}
+          options={[
             {
-              const created = await reqRes.json();
-              if (!created.id)
-                throw new Error("Server did not confirm a request ID.");
-              setLiveRequestId(created.id);
-              setMode("submitted");
-            }
-          }
-        }
-      }
-    } catch (error) {
-      setSubmissionError(
-        error instanceof Error
-          ? error.message
-          : "Request failed. Please retry.",
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }
+              value: "book",
+              label: "Book a Service",
+              icon: "🔍",
+              badge: bookingConfirmed ? "Active" : undefined,
+            },
+            {
+              value: "tracking",
+              label: "Live Job Tracking",
+              icon: "🚗",
+              badge: `${etaMinutes}m ETA`,
+            },
+            {
+              value: "completion",
+              label: "Completion & Sign-off",
+              icon: "📝",
+              badge: completionApproved ? "Signed" : "Pending",
+            },
+            {
+              value: "warranty",
+              label: "Warranty & Passport",
+              icon: "🛡️",
+              badge: "365-Day",
+            },
+            {
+              value: "survey",
+              label: "Survey & $30 Reward",
+              icon: "🎁",
+              badge: `$${(creditBalanceCents / 100).toFixed(0)}`,
+            },
+          ]}
+        />
+      </div>
 
-  // --- VIEW: BUSIER THAN USUAL DEDICATED EXPERIENCE ---
-  if (mode === "busier-than-usual") {
-    return (
-      <Shell
-        title="We’re Busier Than Usual in Greater Toronto Area"
-        subtitle="All certified trade specialists in this domain are currently committed on active dispatches. Skilled Hire enforces strict 100% regulatory verification—we never use unvetted filler contractors to mask capacity shortages."
-        eyebrow="CAPACITY CONSTRAINED · VERIFIED TRADE NETWORK"
-      >
-        {/* Trade Domain Interactive Selector */}
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            marginBottom: 20,
-            flexWrap: "wrap",
-            alignItems: "center",
-          }}
-        >
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#52606d" }}>
-            Queried Trade Domain:
-          </span>
-          {DOMAINS.map((domain) => (
-            <Button
-              key={domain.slug}
-              variant={selectedDomain === domain.slug ? "primary" : "secondary"}
-              onClick={() => setSelectedDomain(domain.slug)}
-            >
-              {domain.icon} {domain.label}
-            </Button>
-          ))}
-        </div>
+      {/* -------------------------------------------------------------
+          TAB 1: BOOK A SERVICE & TRANSPARENT ESTIMATE
+         ------------------------------------------------------------- */}
+      {activeTab === "book" && (
+        <div>
+          {/* Stepper Header */}
+          <div style={{ marginBottom: 20 }}>
+            <Stepper steps={bookingSteps} current={bookingStep} />
+          </div>
 
-        {/* Hero Surge Advisory Card */}
-        <Card tone="amber">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "flex-start",
-              gap: 16,
-              flexWrap: "wrap",
-            }}
-          >
-            <div>
+          {bookingStep === 0 && (
+            <Card tone="white" padding="lg">
+              <h2 style={{ fontSize: 24, margin: "0 0 6px" }}>
+                Find a Licensed Ontario Trade Specialist
+              </h2>
+              <p style={{ margin: "0 0 20px", color: "#475569", fontSize: 14 }}>
+                100% verified tradespeople. All appointments backed by the Skilled Hire
+                Workmanship Guarantee and statutory regulatory compliance (TSSA, ESA, Skilled
+                Trades Ontario).
+              </p>
+
+              {/* Search Bar */}
+              <div style={{ marginBottom: 18 }}>
+                <SearchBar
+                  value={searchQuery}
+                  onChange={setSearchQuery}
+                  placeholder="Search by trade (e.g. AC repair, electrical panel, plumbing, heat pump)..."
+                />
+              </div>
+
+              {/* Family Filters */}
               <div
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  marginBottom: 8,
+                  gap: 8,
+                  marginBottom: 20,
+                  flexWrap: "wrap",
                 }}
               >
-                <Status tone="amber">
-                  ⚡ High Demand Surge · Verified Capacity Constrained
-                </Status>
-                <span
-                  style={{ fontSize: 13, fontWeight: 700, color: "#52606d" }}
-                >
-                  Greater Toronto Area · Ontario
-                </span>
-              </div>
-              <h2
-                style={{
-                  margin: "4px 0 8px",
-                  fontSize: 26,
-                  letterSpacing: "-0.01em",
-                }}
-              >
-                {availabilityData?.headline ??
-                  `Higher than usual demand for ${activeDomainObj.label}`}
-              </h2>
-              <p
-                style={{
-                  margin: 0,
-                  color: "#52606d",
-                  fontSize: 15,
-                  maxWidth: 760,
-                  lineHeight: 1.5,
-                }}
-              >
-                {availabilityData?.reason ??
-                  `All licensed and verified specialists in this trade are currently committed on active dispatches.`}{" "}
-                Because all Skilled Hire providers hold active TSSA, Skilled
-                Trades Ontario, and statutory insurance compliance, we
-                prioritize safety and workmanship over overbooked scheduling.
-              </p>
-            </div>
-            <div style={{ textAlign: "right", minWidth: 150 }}>
-              <span style={{ fontSize: 32, fontWeight: 900, color: "#9a6700" }}>
-                100%
-              </span>
-              <p
-                style={{
-                  margin: "2px 0 0",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: "#52606d",
-                }}
-              >
-                Capacity Saturated
-              </p>
-            </div>
-          </div>
-
-          <Divider />
-
-          {/* Operational Transparency Metrics */}
-          <Grid columns="repeat(auto-fit, minmax(200px, 1fr))">
-            <div>
-              <Metric
-                label="Active Dispatched Providers"
-                value={`${availabilityData?.metrics?.activeCertifiedTechnicians ?? 3} / ${availabilityData?.metrics?.activeCertifiedTechnicians ?? 3} Active`}
-                detail="100% of licensed field pros dispatched"
-              />
-            </div>
-            <div>
-              <Metric
-                label="Requested Time Window"
-                value={activeSlotObj.time}
-                detail={`${activeSlotObj.day} · Peak volume window`}
-              />
-            </div>
-            <div>
-              <Metric
-                label="Emergency Surge SLA"
-                value="45 min"
-                detail="Reserved on-call journeypersons"
-              />
-            </div>
-            <div>
-              <Metric
-                label="Standby Early Dispatch"
-                value="84%"
-                detail="Assigned early within 45 minutes"
-              />
-            </div>
-          </Grid>
-        </Card>
-
-        {/* Three Actionable Conversion Paths */}
-        <h3 style={{ margin: "24px 0 12px", fontSize: 18 }}>
-          Select your preferred resolution path:
-        </h3>
-        <Grid columns="repeat(auto-fit, minmax(320px, 1fr))">
-          {/* Path 1: Next Available Confirmed Slot */}
-          <Card tone="green">
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                marginBottom: 12,
-              }}
-            >
-              <Status tone="green">Option 1 · Guaranteed Arrival</Status>
-              <span style={{ fontSize: 20 }}>📅</span>
-            </div>
-            <h3 style={{ margin: "0 0 6px", fontSize: 18 }}>
-              Choose Next Confirmed Slot
-            </h3>
-            <p
-              style={{
-                margin: "0 0 16px",
-                fontSize: 13,
-                color: "#52606d",
-                lineHeight: 1.5,
-              }}
-            >
-              Lock in the next confirmed service window with 100% arrival
-              guarantee and no surge premium.
-            </p>
-
-            <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-              {(availabilityData?.alternativeSlots ?? []).map(
-                (alt: AlternativeSlot) => (
-                  <div
-                    key={alt.id}
-                    onClick={() => setSelectedSlot(alt.id)}
+                {[
+                  { id: "ALL", label: "All 21 Trades" },
+                  { id: "MECHANICAL", label: "Mechanical & HVAC" },
+                  { id: "STRUCTURAL", label: "Structural & Framing" },
+                  { id: "BUILDING_ENVELOPE", label: "Roofing & Windows" },
+                  { id: "RENOVATION", label: "Renovation" },
+                  { id: "PROPERTY_MAINTENANCE", label: "Maintenance" },
+                ].map((fam) => (
+                  <button
+                    key={fam.id}
+                    type="button"
+                    onClick={() => setSelectedFamily(fam.id)}
                     style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border:
-                        selectedSlot === alt.id
-                          ? "2px solid #087f5b"
-                          : "1px solid #d9e2ec",
-                      background: selectedSlot === alt.id ? "#ecfdf5" : "#fff",
+                      padding: "6px 14px",
+                      borderRadius: 9999,
+                      border: "none",
+                      background: selectedFamily === fam.id ? "#1d4ed8" : "#f1f5f9",
+                      color: selectedFamily === fam.id ? "#fff" : "#475569",
+                      fontSize: 13,
+                      fontWeight: 700,
                       cursor: "pointer",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      transition: "all 0.15s ease",
+                      transition: "all 0.14s ease",
                     }}
                   >
-                    <div>
-                      <span
-                        style={{
-                          fontWeight: 800,
-                          fontSize: 13,
-                          color: "#172033",
-                        }}
-                      >
-                        {alt.label}
-                      </span>
-                      <p
-                        style={{
-                          margin: "2px 0 0",
-                          fontSize: 11,
-                          color: "#087f5b",
-                          fontWeight: 700,
-                        }}
-                      >
-                        {alt.badge}
-                      </p>
-                    </div>
-                    <span
+                    {fam.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Services Grid */}
+              <Grid columns="repeat(auto-fill, minmax(260px, 1fr))">
+                {filteredDomains.map((dom) => {
+                  const isSelected = selectedDomain === dom.slug;
+                  return (
+                    <div
+                      key={dom.slug}
+                      onClick={() => {
+                        setSelectedDomain(dom.slug);
+                        setBookingStep(1);
+                      }}
                       style={{
-                        fontSize: 13,
-                        fontWeight: 800,
-                        color: selectedSlot === alt.id ? "#087f5b" : "#64748b",
+                        border: `1.5px solid ${isSelected ? "#1d4ed8" : "#e2e8f0"}`,
+                        borderRadius: 18,
+                        padding: 18,
+                        background: isSelected ? "#eff6ff" : "#fff",
+                        cursor: "pointer",
+                        boxShadow: "0 2px 8px rgba(15, 23, 42, 0.04)",
+                        transition:
+                          "transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.16s ease",
                       }}
                     >
-                      {selectedSlot === alt.id ? "✓ Selected" : "Select"}
-                    </span>
-                  </div>
-                ),
-              )}
-            </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 10,
+                        }}
+                      >
+                        <span style={{ fontSize: 28 }}>{dom.icon}</span>
+                        {dom.requiresPermit && (
+                          <Badge tone="amber">
+                            {dom.permitAuthority ? `${dom.permitAuthority} Permit` : "Permit Req."}
+                          </Badge>
+                        )}
+                      </div>
+                      <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 800 }}>
+                        {dom.label}
+                      </h3>
+                      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#64748b" }}>
+                        {dom.defaultIssue}
+                      </p>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          paddingTop: 10,
+                          borderTop: "1px solid #f1f5f9",
+                        }}
+                      >
+                        <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                          Diagnostic from:
+                        </span>
+                        <strong style={{ fontSize: 14, color: "#1d4ed8" }}>
+                          ${(dom.basePriceCents / 100).toFixed(0)} CAD
+                        </strong>
+                      </div>
+                    </div>
+                  );
+                })}
+              </Grid>
+            </Card>
+          )}
 
-            <Button
-              onClick={() => {
-                setIsStandbyQueue(false);
-                setMode("request");
-                setStep(2);
-              }}
-            >
-              Book Selected Slot &amp; Continue →
-            </Button>
-          </Card>
-
-          {/* Path 2: On-Call Emergency Surge Dispatch */}
-          <Card tone="blue">
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                marginBottom: 12,
-              }}
-            >
-              <Status tone="blue">Option 2 · Urgent Safety</Status>
-              <span style={{ fontSize: 20 }}>🚨</span>
-            </div>
-            <h3 style={{ margin: "0 0 6px", fontSize: 18 }}>
-              On-Call Emergency Dispatch
-            </h3>
-            <p
-              style={{
-                margin: "0 0 16px",
-                fontSize: 13,
-                color: "#52606d",
-                lineHeight: 1.5,
-              }}
-            >
-              Experiencing an active hazard, severe water leak, or no heat in
-              freezing temperatures? Routes immediately to our reserved on-call
-              emergency crew.
-            </p>
-
-            <div
-              style={{
-                background: "#fff",
-                padding: "12px 14px",
-                borderRadius: 10,
-                border: "1px solid #bfdbfe",
-                marginBottom: 16,
-              }}
-            >
+          {bookingStep === 1 && (
+            <Card tone="white" padding="lg">
               <div
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
-                  marginBottom: 6,
+                  alignItems: "center",
+                  marginBottom: 16,
+                  flexWrap: "wrap",
+                  gap: 12,
                 }}
               >
-                <span
-                  style={{ fontSize: 13, fontWeight: 700, color: "#1e3a8a" }}
-                >
-                  Response SLA:
-                </span>
-                <span
-                  style={{ fontSize: 13, fontWeight: 850, color: "#1d4ed8" }}
-                >
-                  Guaranteed 45 minutes
-                </span>
+                <div>
+                  <Badge tone="blue">Selected Trade</Badge>
+                  <h2 style={{ fontSize: 24, margin: "6px 0 2px" }}>
+                    {activeDomainObj.icon} {activeDomainObj.label} Diagnostic Request
+                  </h2>
+                </div>
+                <Button variant="secondary" size="sm" onClick={() => setBookingStep(0)}>
+                  Change Trade
+                </Button>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span
-                  style={{ fontSize: 13, fontWeight: 700, color: "#1e3a8a" }}
-                >
-                  Emergency Callout Fee:
-                </span>
-                <span
-                  style={{ fontSize: 13, fontWeight: 850, color: "#1d4ed8" }}
-                >
-                  $149 CAD
-                </span>
+
+              <div style={{ display: "grid", gap: 16 }}>
+                <Field
+                  label="Describe the issue you are experiencing"
+                  multiline
+                  value={description}
+                  onChange={setDescription}
+                  placeholder="What are the symptoms? When did it start? Any error codes on thermostat/equipment?"
+                />
+
+                <div style={{ display: "grid", gap: 8 }}>
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                    Service Urgency
+                  </label>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <Button
+                      variant={urgency === "STANDARD" ? "primary" : "secondary"}
+                      onClick={() => setUrgency("STANDARD")}
+                    >
+                      Standard Appointment (Scheduled)
+                    </Button>
+                    <Button
+                      variant={urgency === "EMERGENCY" ? "danger" : "secondary"}
+                      onClick={() => setUrgency("EMERGENCY")}
+                    >
+                      ⚡ Emergency Priority (Guaranteed 45-min on-call)
+                    </Button>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
+                  <Button variant="primary" size="lg" onClick={() => setBookingStep(2)}>
+                    Continue to Slot Selection →
+                  </Button>
+                </div>
               </div>
+            </Card>
+          )}
+
+          {bookingStep === 2 && (
+            <div style={{ display: "grid", gap: 20 }}>
+              {/* Appointment Slot Selector */}
+              <Card tone="white" padding="lg">
+                <h2 style={{ fontSize: 22, margin: "0 0 6px" }}>
+                  Select Arrival Window · Toronto (Greater Area)
+                </h2>
+                <p style={{ margin: "0 0 16px", color: "#475569", fontSize: 14 }}>
+                  All slots are backed by confirmed journeyperson availability. No overbooking.
+                </p>
+
+                <div style={{ display: "grid", gap: 10 }}>
+                  {AVAILABLE_SLOTS.map((slot) => {
+                    const isSelected = selectedSlot === slot.id;
+                    return (
+                      <div
+                        key={slot.id}
+                        onClick={() => setSelectedSlot(slot.id)}
+                        style={{
+                          border: `1.5px solid ${isSelected ? "#1d4ed8" : "#e2e8f0"}`,
+                          borderRadius: 14,
+                          padding: 16,
+                          background: isSelected ? "#eff6ff" : "#fff",
+                          cursor: "pointer",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          transition: "all 0.14s ease",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <span style={{ fontSize: 20 }}>🗓️</span>
+                          <div>
+                            <strong style={{ fontSize: 15, color: "#0f172a" }}>
+                              {slot.label}
+                            </strong>
+                            <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>
+                              {slot.day} · 2-Hour Arrival Window
+                            </p>
+                          </div>
+                        </div>
+                        <Status tone={isSelected ? "blue" : "neutral"}>
+                          {isSelected ? "Selected Window" : "Available"}
+                        </Status>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+
+              {/* Transparent Rate Card & Job Estimate Breakdown */}
+              <Card tone="blue" padding="lg">
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 16,
+                    flexWrap: "wrap",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <Status tone="blue">Transparent Estimate Breakdown</Status>
+                    <h3 style={{ margin: "6px 0 2px", fontSize: 20, fontWeight: 800 }}>
+                      No Hidden Surcharges · Skilled Hire Guarantee
+                    </h3>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>
+                      Estimated Total Range
+                    </span>
+                    <p style={{ margin: 0, fontSize: 28, fontWeight: 900, color: "#1d4ed8" }}>
+                      ${(totalEstimateCents / 100).toFixed(2)}{" "}
+                      <span style={{ fontSize: 14 }}>CAD</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background: "#fff",
+                    borderRadius: 16,
+                    padding: 16,
+                    border: "1px solid #bfdbfe",
+                    display: "grid",
+                    gap: 10,
+                    fontSize: 14,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>On-Site Diagnostic Assessment Fee (Credited towards repair)</span>
+                    <strong>${(diagnosticFeeCents / 100).toFixed(2)} CAD</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Estimated Journeyperson Labor (Standard Diagnostic)</span>
+                    <strong>${(estimatedLaborCents / 100).toFixed(2)} CAD</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Estimated Standard Replacement Parts (e.g. OEM Capacitor)</span>
+                    <strong>${(estimatedPartsCents / 100).toFixed(2)} CAD</strong>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Platform Service & Regulatory Verification Fee</span>
+                    <strong>${(platformFeeCents / 100).toFixed(2)} CAD</strong>
+                  </div>
+
+                  <Divider />
+
+                  {/* Customer Protection Insurance Toggle */}
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                    }}
+                  >
+                    <div>
+                      <strong style={{ color: "#0f172a" }}>
+                        🛡️ Optional Customer Protection Insurance (+$19.00 CAD)
+                      </strong>
+                      <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>
+                        Underwritten protection up to $10,000 for incidental property damage or
+                        secondary system failures.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={includeInsurance}
+                      onChange={(e) => setIncludeInsurance(e.target.checked)}
+                      style={{ width: 20, height: 20, cursor: "pointer" }}
+                    />
+                  </div>
+                </div>
+
+                <Callout tone="info" title="Truthful Pricing Notice">
+                  Diagnostic fee applies upon technician arrival. Final labor and parts estimate
+                  is presented for your 1-click in-app approval before any physical repairs begin.
+                </Callout>
+
+                <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+                  <Button variant="primary" size="lg" onClick={handleConfirmBooking}>
+                    ✓ Confirm Booking & Dispatch Technician
+                  </Button>
+                  <Button variant="secondary" size="lg" onClick={() => setBookingStep(1)}>
+                    Back
+                  </Button>
+                </div>
+              </Card>
             </div>
+          )}
+        </div>
+      )}
 
-            <Button
-              variant="primary"
-              onClick={() => {
-                setUrgency("EMERGENCY");
-                setIsStandbyQueue(false);
-                setMode("request");
-                setStep(2);
-              }}
-            >
-              Request Emergency Dispatch ⚡
-            </Button>
-          </Card>
-
-          {/* Path 3: Priority Standby Queue */}
-          <Card>
+      {/* -------------------------------------------------------------
+          TAB 2: LIVE JOB TRACKING & ASSIGNMENT STATES
+         ------------------------------------------------------------- */}
+      {activeTab === "tracking" && (
+        <div>
+          <Card tone="white" padding="lg">
             <div
               style={{
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "flex-start",
-                marginBottom: 12,
+                flexWrap: "wrap",
+                gap: 16,
+                marginBottom: 20,
               }}
             >
-              <Status tone="amber">Option 3 · Keep Desired Window</Status>
-              <span style={{ fontSize: 20 }}>⏱️</span>
-            </div>
-            <h3 style={{ margin: "0 0 6px", fontSize: 18 }}>
-              Join Priority Standby Queue
-            </h3>
-            <p
-              style={{
-                margin: "0 0 16px",
-                fontSize: 13,
-                color: "#52606d",
-                lineHeight: 1.5,
-              }}
-            >
-              Keep your desired appointment time. If a preceding job completes
-              ahead of schedule or another homeowner reschedules, you are
-              assigned first.
-            </p>
-
-            <div
-              style={{
-                background: "#fffbeb",
-                padding: "12px 14px",
-                borderRadius: 10,
-                border: "1px solid #fde68a",
-                marginBottom: 16,
-              }}
-            >
-              <p
-                style={{
-                  margin: 0,
-                  fontSize: 13,
-                  fontWeight: 800,
-                  color: "#92400e",
-                }}
-              >
-                Queue Position: #2 in Greater Toronto Area
-              </p>
-              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#78350f" }}>
-                Average standby notification time: 32 minutes.
-              </p>
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  marginTop: 10,
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: "#78350f",
-                  cursor: "pointer",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={smsAlerts}
-                  onChange={(e) => setSmsAlerts(e.target.checked)}
-                />
-                Send instant SMS alert when technician is en route
-              </label>
+              <div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Status tone="blue">Technician En Route</Status>
+                  <Badge tone="neutral">Booking #REQ-2026-9921</Badge>
+                  <Badge tone="green">TSSA & ESA Verified</Badge>
+                </div>
+                <h2 style={{ fontSize: 26, margin: "8px 0 4px" }}>
+                  Lennox AC Diagnostic & Repair
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  123 King Street W · Unit 1402 · Toronto, ON
+                </p>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>
+                  Estimated Arrival
+                </span>
+                <p style={{ margin: 0, fontSize: 32, fontWeight: 900, color: "#1d4ed8" }}>
+                  {etaMinutes} min <span style={{ fontSize: 14 }}>ETA</span>
+                </p>
+              </div>
             </div>
 
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setIsStandbyQueue(true);
-                setMode("request");
-                setStep(2);
-              }}
-            >
-              Lock In Priority Standby Placement ⏱️
-            </Button>
-          </Card>
-        </Grid>
+            <div style={{ margin: "24px 0" }}>
+              <Stepper steps={liveJobSteps} current={liveJobStep} />
+            </div>
 
-        {/* Footer Navigation */}
-        <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setMode("request");
-              setStep(1);
-            }}
-          >
-            ← Back to Request Time Selection
-          </Button>
-          <Button variant="quiet" onClick={() => setMode("home")}>
-            Return to Customer Portal Home
-          </Button>
-        </div>
-      </Shell>
-    );
-  }
-
-  // --- VIEW: SERVICE REQUEST WIZARD ---
-  if (mode === "request") {
-    return (
-      <Shell
-        title="Tell us what’s happening"
-        subtitle="We’ll use this information to match the right verified professional and keep your quote transparent."
-        eyebrow="NEW SERVICE REQUEST"
-      >
-        <Grid columns="minmax(0, 1.4fr) minmax(240px, .6fr)">
-          <Card>
-            <Stepper steps={requestSteps} current={step} />
             <Divider />
 
-            {/* Step 0: Describe Issue & Select Domain */}
-            {step === 0 && (
-              <div style={{ display: "grid", gap: 16 }}>
-                <div>
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      flexWrap: "wrap",
-                      marginBottom: 12,
-                    }}
-                  >
-                    {DOMAINS.map((domain) => (
-                      <button
-                        key={domain.slug}
-                        type="button"
-                        onClick={() => {
-                          setSelectedDomain(domain.slug);
-                          setDescription(domain.defaultIssue);
-                        }}
-                        style={{
-                          padding: "6px 12px",
-                          borderRadius: 8,
-                          border:
-                            selectedDomain === domain.slug
-                              ? "2px solid #1d4ed8"
-                              : "1px solid #d9e2ec",
-                          background:
-                            selectedDomain === domain.slug ? "#eff6ff" : "#fff",
-                          fontWeight: 750,
-                          fontSize: 13,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {domain.icon} {domain.label}
-                      </button>
-                    ))}
-                  </div>
-                  <h2 style={{ marginBottom: 6 }}>
-                    {activeDomainObj.label} Service Request
-                  </h2>
-                  <p style={{ color: "#52606d", marginTop: 0 }}>
-                    My Home · 123 King Street W, Toronto
-                  </p>
-                </div>
-
-                <Field
-                  label="What are you noticing?"
-                  value={description}
-                  onChange={setDescription}
-                  placeholder="For example: the system runs, but the air stays warm…"
-                  multiline
-                />
-                <Field
-                  label="Photo or video (optional)"
-                  value={photo}
-                  onChange={setPhoto}
-                  placeholder="Paste a secure upload reference"
-                />
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <Button
-                    variant={urgency === "STANDARD" ? "primary" : "secondary"}
-                    onClick={() => setUrgency("STANDARD")}
-                  >
-                    Standard service
-                  </Button>
-                  <Button
-                    variant={urgency === "EMERGENCY" ? "primary" : "secondary"}
-                    onClick={() => setUrgency("EMERGENCY")}
-                  >
-                    Emergency service
-                  </Button>
-                </div>
-
-                <Button
-                  onClick={() => setStep(1)}
-                  disabled={description.trim().length < 5}
+            {/* Assigned Technician Profile Card */}
+            <div
+              style={{
+                background: "#f8fafc",
+                borderRadius: 18,
+                padding: 20,
+                border: "1px solid #e2e8f0",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 16,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <div
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: "50%",
+                    background: "#dbeafe",
+                    display: "grid",
+                    placeItems: "center",
+                    fontSize: 24,
+                    color: "#1d4ed8",
+                    fontWeight: 800,
+                  }}
                 >
-                  Continue
-                </Button>
-              </div>
-            )}
-
-            {/* Step 1: Choose Appointment Time & Capacity Check */}
-            {step === 1 && (
-              <div style={{ display: "grid", gap: 16 }}>
+                  MS
+                </div>
                 <div>
+                  <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>
+                    Marcus Sterling
+                  </h3>
                   <div
                     style={{
                       display: "flex",
                       alignItems: "center",
                       gap: 8,
-                      marginBottom: 6,
+                      margin: "4px 0 2px",
                     }}
                   >
-                    <Status tone="blue">{activeDomainObj.label}</Status>
-                    <span
-                      style={{
-                        fontSize: 13,
-                        color: "#52606d",
-                        fontWeight: 700,
-                      }}
-                    >
-                      Toronto Service Area
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#059669" }}>
+                      ★ 4.9 (124 jobs)
+                    </span>
+                    <span style={{ fontSize: 12, color: "#94a3b8" }}>·</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#475569" }}>
+                      Lead HVAC Journeyperson
                     </span>
                   </div>
-                  <h2 style={{ margin: 0 }}>Choose a convenient time</h2>
-                  <p
-                    style={{
-                      color: "#52606d",
-                      margin: "4px 0 0",
-                      fontSize: 14,
-                    }}
-                  >
-                    Real-time schedule check evaluates licensed technician
-                    availability in your jurisdiction.
+                  <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                    Verified Credentials: TSSA Gas G2 (#984210) · Skilled Trades 313A (#44912)
                   </p>
                 </div>
+              </div>
 
-                <label
-                  style={{
-                    display: "grid",
-                    gap: 6,
-                    color: "#52606d",
-                    fontSize: 13,
-                    fontWeight: 700,
+              <div style={{ display: "flex", gap: 10 }}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => alert("Connecting secure encrypted phone bridge to technician Marcus...")}
+                >
+                  📞 Call Technician
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    setLiveJobStep(4);
+                    setActiveTab("completion");
                   }}
                 >
-                  Preferred appointment window
-                  <select
-                    value={selectedSlot}
-                    onChange={(e) => setSelectedSlot(e.target.value)}
-                    style={{
-                      padding: 12,
-                      borderRadius: 9,
-                      border: "1px solid #d9e2ec",
-                      font: "inherit",
-                      background: "#fff",
-                    }}
-                  >
-                    {AVAILABLE_SLOTS.map((slot) => (
-                      <option key={slot.id} value={slot.id}>
-                        {slot.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {/* Capacity Status Card */}
-                {checkingAvailability ? (
-                  <Card tone="white">
-                    <p style={{ margin: 0, fontSize: 13, color: "#52606d" }}>
-                      ⏳ Checking certified technician capacity in Toronto…
-                    </p>
-                  </Card>
-                ) : isCurrentlyBusy ? (
-                  <Card tone="amber">
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 12,
-                        alignItems: "flex-start",
-                      }}
-                    >
-                      <span style={{ fontSize: 22 }}>⚡</span>
-                      <div>
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            marginBottom: 4,
-                          }}
-                        >
-                          <Status tone="amber">● Busier Than Usual</Status>
-                          <span
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 750,
-                              color: "#92400e",
-                            }}
-                          >
-                            High Demand in this Time Slot
-                          </span>
-                        </div>
-                        <h4 style={{ margin: "2px 0 6px", fontSize: 16 }}>
-                          All verified {activeDomainObj.label} technicians are
-                          booked for {activeSlotObj.day} {activeSlotObj.time}.
-                        </h4>
-                        <p
-                          style={{
-                            margin: 0,
-                            color: "#78350f",
-                            fontSize: 13,
-                            lineHeight: 1.5,
-                          }}
-                        >
-                          Skilled Hire never dispatches unvetted contractors.
-                          Choose next confirmed openings, on-call emergency
-                          response, or lock in priority standby.
-                        </p>
-                        <div style={{ marginTop: 12 }}>
-                          <Button
-                            variant="primary"
-                            onClick={() => setMode("busier-than-usual")}
-                          >
-                            View Busier Than Usual Options &amp; Alternatives →
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                ) : (
-                  <Card tone="green">
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 10 }}
-                    >
-                      <Status tone="green">● Confirmed Openings</Status>
-                      <span
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 750,
-                          color: "#087f5b",
-                        }}
-                      >
-                        Verified {activeDomainObj.label} technicians have open
-                        capacity for {activeSlotObj.label}.
-                      </span>
-                    </div>
-                  </Card>
-                )}
-
-                <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-                  <Button variant="secondary" onClick={() => setStep(0)}>
-                    Back
-                  </Button>
-                  {isCurrentlyBusy ? (
-                    <Button onClick={() => setMode("busier-than-usual")}>
-                      Continue to Capacity Options
-                    </Button>
-                  ) : (
-                    <Button onClick={() => setStep(2)}>Continue</Button>
-                  )}
-                </div>
+                  Fast-Forward to Completion →
+                </Button>
               </div>
-            )}
-
-            {/* Step 2: Confirm Request */}
-            {step === 2 && (
-              <div style={{ display: "grid", gap: 16 }}>
-                <Status tone="green">Ready to send</Status>
-                <h2 style={{ margin: 0 }}>Review your request</h2>
-                <p style={{ margin: 0, color: "#52606d", lineHeight: 1.5 }}>
-                  <strong>
-                    {urgency === "EMERGENCY" ? "Emergency" : "Standard"} service
-                  </strong>{" "}
-                  for {activeDomainObj.label} ({description}) at My Home.
-                </p>
-
-                <div
-                  style={{
-                    background: "#f8fafc",
-                    padding: 16,
-                    borderRadius: 12,
-                    border: "1px solid #e2e8f0",
-                    display: "grid",
-                    gap: 8,
-                  }}
-                >
-                  <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 700,
-                        color: "#64748b",
-                      }}
-                    >
-                      Trade Domain:
-                    </span>
-                    <span style={{ fontSize: 13, fontWeight: 800 }}>
-                      {activeDomainObj.icon} {activeDomainObj.label}
-                    </span>
-                  </div>
-                  <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 700,
-                        color: "#64748b",
-                      }}
-                    >
-                      Appointment Slot:
-                    </span>
-                    <span style={{ fontSize: 13, fontWeight: 800 }}>
-                      {activeSlotObj.label}
-                    </span>
-                  </div>
-                  <div
-                    style={{ display: "flex", justifyContent: "space-between" }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 700,
-                        color: "#64748b",
-                      }}
-                    >
-                      Dispatch Tier:
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 800,
-                        color:
-                          urgency === "EMERGENCY"
-                            ? "#dc2626"
-                            : isStandbyQueue
-                              ? "#d97706"
-                              : "#16a34a",
-                      }}
-                    >
-                      {urgency === "EMERGENCY"
-                        ? "⚡ Emergency Surge Dispatch (45-min SLA)"
-                        : isStandbyQueue
-                          ? "⏱️ Priority Standby Queue (#2 in line)"
-                          : "✓ Confirmed Guaranteed Window"}
-                    </span>
-                  </div>
-                </div>
-
-                {submissionError && (
-                  <p role="alert" style={{ color: "#b42318" }}>
-                    {submissionError}
-                  </p>
-                )}
-                <div style={{ display: "flex", gap: 10 }}>
-                  <Button
-                    variant="secondary"
-                    onClick={() => setStep(1)}
-                    disabled={submitting}
-                  >
-                    Back
-                  </Button>
-                  <Button onClick={handleSubmitRequest} disabled={submitting}>
-                    {submitting
-                      ? "Transmitting to Dispatch..."
-                      : "Submit service request"}
-                  </Button>
-                </div>
-              </div>
-            )}
-          </Card>
-
-          <Card tone="blue">
-            <h3 style={{ marginTop: 0 }}>What happens next</h3>
-            <Stepper
-              steps={[
-                "Operations reviews your request",
-                "Eligible professionals are ranked",
-                "You receive appointment updates",
-              ]}
-              current={step}
-            />
-            <Divider />
-            <div style={{ fontSize: 12, color: "#52606d", lineHeight: 1.5 }}>
-              🛡️ <strong>Skilled Hire Guarantee</strong>: Only 100% verified,
-              statutory-compliant contractors are matched to your property.
             </div>
           </Card>
-        </Grid>
-      </Shell>
-    );
-  }
+        </div>
+      )}
 
-  // --- VIEW: SUBMITTED SUCCESS ---
-  if (mode === "submitted" && liveRequestId) {
-    return (
-      <Shell
-        title="Your request is in motion"
-        subtitle="We’ll keep the next step clear and notify you when a verified professional is assigned."
-      >
-        <Card tone="green">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: 8,
-            }}
-          >
-            <Status tone="green">Request received</Status>
-            <span style={{ fontSize: 13, fontWeight: 800, color: "#0b69a3" }}>
-              {`Request #${liveRequestId.slice(0, 8).toUpperCase()}`}
-            </span>
-          </div>
-          <h2>
-            {activeDomainObj.label} — {description.slice(0, 50)}...
-          </h2>
-          <p style={{ color: "#52606d" }}>
-            {urgency === "EMERGENCY" ? "Emergency" : "Standard"} service ·{" "}
-            {activeSlotObj.label} · My Home · Toronto
-          </p>
-          {isStandbyQueue && (
+      {/* -------------------------------------------------------------
+          TAB 3: STRUCTURED JOB COMPLETION & SIGN-OFF
+         ------------------------------------------------------------- */}
+      {activeTab === "completion" && (
+        <div>
+          <Card tone="white" padding="lg">
             <div
               style={{
-                background: "#fef3c7",
-                padding: "8px 12px",
-                borderRadius: 8,
-                marginBottom: 14,
-                color: "#92400e",
-                fontSize: 13,
-                fontWeight: 750,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+                marginBottom: 16,
               }}
             >
-              Standby consideration requested; queue position is not confirmed.
-            </div>
-          )}
-          <Button onClick={() => setMode("home")}>Back to home</Button>
-        </Card>
-        <Card>
-          <h2 style={{ marginTop: 0 }}>Service timeline</h2>
-          <Stepper steps={timeline} current={0} />
-        </Card>
-      </Shell>
-    );
-  }
-
-  // --- VIEW: HOME SCREEN ---
-  return (
-    <Shell
-      title="Skilled trade services, without the hassle."
-      subtitle="One clear request. A verified, licensed professional. Transparent pricing. Powered by skilledhire.ca."
-      eyebrow="SKILLED HIRE · CUSTOMER PORTAL"
-    >
-      {/* High Demand Advisory Banner */}
-      <div style={{ marginBottom: 16 }}>
-        <Card tone="amber">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 14,
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 24 }}>⚡</span>
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <Status tone="amber">● High Demand Advisory</Status>
-                  <span
-                    style={{ fontSize: 13, fontWeight: 750, color: "#52606d" }}
+                <Status tone={completionApproved ? "green" : "amber"}>
+                  {completionApproved
+                    ? "✓ Completion Accepted & Approved"
+                    : "Review & Sign-Off Pending"}
+                </Status>
+                <h2 style={{ fontSize: 24, margin: "6px 0 2px" }}>
+                  Technician Work Completion Report
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  Submitted by Marcus Sterling (TSSA #984210) · Today at 11:15 AM
+                </p>
+              </div>
+              <Badge tone="blue">Job #JOB-2026-4412</Badge>
+            </div>
+
+            <div style={{ display: "grid", gap: 16 }}>
+              <Callout tone="info" title="Diagnostic Findings & Work Performed">
+                &ldquo;Diagnosed failed dual-run capacitor causing condenser hard start. Replaced
+                with new OEM Lennox 45/5 uF capacitor. Verified amp draw (2.8A fan / 14.1A compressor).
+                Tested cooling delta T across evaporator coil: 18.5°F drop achieved. Condensate drain
+                cleared.&rdquo;
+              </Callout>
+
+              {/* Before / After Evidence */}
+              <div>
+                <h3 style={{ margin: "0 0 10px", fontSize: 16, fontWeight: 800 }}>
+                  Field Photographic Evidence
+                </h3>
+                <Grid columns="repeat(auto-fit, minmax(240px, 1fr))">
+                  <div
+                    style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 14,
+                      padding: 14,
+                      background: "#fffbeb",
+                    }}
                   >
-                    Greater Toronto Area
-                  </span>
+                    <Badge tone="amber">BEFORE WORK</Badge>
+                    <div
+                      style={{
+                        height: 110,
+                        borderRadius: 10,
+                        background: "#e2e8f0",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: 28,
+                        margin: "10px 0 6px",
+                      }}
+                    >
+                      📷
+                    </div>
+                    <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>
+                      Burned spade terminal & bulging run capacitor
+                    </p>
+                  </div>
+                  <div
+                    style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 14,
+                      padding: 14,
+                      background: "#ecfdf5",
+                    }}
+                  >
+                    <Badge tone="green">AFTER WORK</Badge>
+                    <div
+                      style={{
+                        height: 110,
+                        borderRadius: 10,
+                        background: "#e2e8f0",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: 28,
+                        margin: "10px 0 6px",
+                      }}
+                    >
+                      📷
+                    </div>
+                    <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>
+                      OEM capacitor installed, wiring insulated & secured
+                    </p>
+                  </div>
+                </Grid>
+              </div>
+
+              {/* Parts Installed */}
+              <div style={{ background: "#f8fafc", borderRadius: 14, padding: 16 }}>
+                <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 800 }}>
+                  Installed Equipment & Parts (Logged to Passport)
+                </h3>
+                <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+                  • Lennox Dual-Run Capacitor 45/5 uF 440V (Serial: `CAP-99412-OEM`)
+                  <br />
+                  • Associated Asset: Lennox Central AC Unit (Serial: `SN-8821940-2026`)
+                </p>
+              </div>
+
+              {completionApproved ? (
+                <Callout tone="success" title="Customer Acceptance Signed">
+                  You approved this completion report. 365-Day Workmanship Warranty certificate
+                  has been issued, and maintenance records have been written to your Property
+                  Service Passport.
+                </Callout>
+              ) : (
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8 }}>
+                  <Button
+                    variant="success"
+                    size="lg"
+                    onClick={() => {
+                      setCompletionApproved(true);
+                      setActiveTab("warranty");
+                    }}
+                  >
+                    ✓ Accept & Sign-off Work Completion
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="lg"
+                    onClick={() => setDisputeModalOpen(true)}
+                  >
+                    Report Discrepancy / Open Dispute
+                  </Button>
                 </div>
-                <p
-                  style={{
-                    margin: "4px 0 0",
-                    fontSize: 14,
-                    fontWeight: 700,
-                    color: "#172033",
+              )}
+            </div>
+          </Card>
+
+          {/* Dispute Modal */}
+          <Modal
+            isOpen={disputeModalOpen}
+            onClose={() => setDisputeModalOpen(false)}
+            title="Report Workmanship Discrepancy"
+          >
+            <div style={{ display: "grid", gap: 14 }}>
+              <p style={{ margin: 0, fontSize: 14, color: "#475569" }}>
+                If the work was incomplete or does not match the technician attestation, submit
+                your feedback. Platform operations will review and hold the payout.
+              </p>
+              <Field
+                label="Explain the discrepancy"
+                multiline
+                value={disputeReason}
+                onChange={setDisputeReason}
+                placeholder="Describe what is missing or unsatisfactory..."
+              />
+              <div style={{ display: "flex", gap: 10 }}>
+                <Button
+                  variant="danger"
+                  disabled={!disputeReason.trim()}
+                  onClick={() => {
+                    alert("Discrepancy reported. Support ticket created.");
+                    setDisputeModalOpen(false);
                   }}
                 >
-                  Trade capacity is currently busier than usual for peak
-                  afternoon windows.
+                  Submit Discrepancy Notice
+                </Button>
+                <Button variant="secondary" onClick={() => setDisputeModalOpen(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 4: 365-DAY WORKMANSHIP WARRANTY & PROPERTY PASSPORT
+         ------------------------------------------------------------- */}
+      {activeTab === "warranty" && (
+        <div style={{ display: "grid", gap: 24 }}>
+          {/* Apple Wallet-style 365-Day Warranty Pass */}
+          <div
+            style={{
+              background: "linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)",
+              color: "#fff",
+              borderRadius: 24,
+              padding: "clamp(24px, 4vw, 36px)",
+              boxShadow: "0 16px 40px rgba(15, 23, 42, 0.25)",
+              border: "1px solid rgba(255, 255, 255, 0.12)",
+              position: "relative",
+              overflow: "hidden",
+            }}
+          >
+            {/* Subtle Metallic Accent */}
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                width: 200,
+                height: 200,
+                background: "radial-gradient(circle, rgba(29, 78, 216, 0.25) 0%, transparent 70%)",
+                pointerEvents: "none",
+              }}
+            />
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                flexWrap: "wrap",
+                gap: 16,
+                marginBottom: 28,
+              }}
+            >
+              <div>
+                <span
+                  style={{
+                    fontSize: 11,
+                    letterSpacing: "0.1em",
+                    fontWeight: 800,
+                    textTransform: "uppercase",
+                    color: "#60a5fa",
+                  }}
+                >
+                  SKILLED HIRE PLATFORM GUARANTEE
+                </span>
+                <h2 style={{ fontSize: 26, margin: "6px 0 0", color: "#fff", fontWeight: 800 }}>
+                  365-Day Workmanship Warranty Pass
+                </h2>
+              </div>
+              <div
+                style={{
+                  background: "rgba(5, 150, 105, 0.2)",
+                  border: "1px solid #10b981",
+                  color: "#34d399",
+                  padding: "6px 14px",
+                  borderRadius: 9999,
+                  fontSize: 12,
+                  fontWeight: 800,
+                }}
+              >
+                ✓ ACTIVE COVERAGE
+              </div>
+            </div>
+
+            <Grid columns="repeat(auto-fit, minmax(180px, 1fr))">
+              <div>
+                <p style={{ margin: 0, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+                  Certificate / Policy #
+                </p>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800 }}>
+                  WAR-2026-9F8A1
+                </p>
+              </div>
+              <div>
+                <p style={{ margin: 0, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+                  Covered Equipment
+                </p>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800 }}>
+                  Lennox AC (SN-8821940)
+                </p>
+              </div>
+              <div>
+                <p style={{ margin: 0, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+                  Coverage Expiry
+                </p>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800, color: "#60a5fa" }}>
+                  October 12, 2027
+                </p>
+              </div>
+              <div>
+                <p style={{ margin: 0, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+                  Statutory Provider
+                </p>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800 }}>
+                  Marcus S. (TSSA G2)
+                </p>
+              </div>
+            </Grid>
+
+            <div style={{ marginTop: 28, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <Button
+                variant="primary"
+                onClick={() => setClaimDrawerOpen(true)}
+              >
+                🛡️ File a Warranty Claim
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => alert("Digital Apple Wallet pass link dispatched to your device.")}
+              >
+                Add to Apple Wallet
+              </Button>
+            </div>
+          </div>
+
+          {/* Property Service Passport */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <Status tone="blue">Digital Home Service Ledger</Status>
+                <h3 style={{ margin: "6px 0 2px", fontSize: 22, fontWeight: 800 }}>
+                  Property Service Passport
+                </h3>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  123 King Street W · Toronto, ON · Verified Asset History
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => alert("Secure passport read-only link generated: https://skilledhire.ca/passport/123-king-st-w")}
+              >
+                🔗 Share / Export Passport
+              </Button>
+            </div>
+
+            {/* Equipment Inventory Cards */}
+            <h4 style={{ margin: "16px 0 10px", fontSize: 15, fontWeight: 800 }}>
+              Registered Home Equipment Inventory
+            </h4>
+
+            <Grid columns="repeat(auto-fit, minmax(280px, 1fr))">
+              <div
+                style={{
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 16,
+                  padding: 16,
+                  background: "#f8fafc",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <Badge tone="green">Healthy · Active Warranty</Badge>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>Installed 2026</span>
+                </div>
+                <h4 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                  Lennox High-Efficiency Central AC
+                </h4>
+                <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>
+                  Model: XC21-036-230 · Serial: SN-8821940-2026
+                </p>
+                <div style={{ marginTop: 10, fontSize: 12, color: "#059669", fontWeight: 700 }}>
+                  ✓ Last Serviced: Today (Capacitor replacement)
+                </div>
+              </div>
+
+              <div
+                style={{
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 16,
+                  padding: 16,
+                  background: "#f8fafc",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <Badge tone="neutral">Standard Status</Badge>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>Installed 2024</span>
+                </div>
+                <h4 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                  Rinnai Tankless Water Heater
+                </h4>
+                <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>
+                  Model: RU199iN · Serial: SN-4410291
+                </p>
+                <div style={{ marginTop: 10, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                  Scheduled Descale: March 2027
+                </div>
+              </div>
+
+              <div
+                style={{
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 16,
+                  padding: 16,
+                  background: "#f8fafc",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <Badge tone="blue">ESA Certified</Badge>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>Installed 2025</span>
+                </div>
+                <h4 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                  Siemens 200A Electrical Service Panel
+                </h4>
+                <p style={{ margin: "4px 0 0", fontSize: 12, color: "#64748b" }}>
+                  Permit #ESA-2026-9912 · Certificate of Acceptance on File
+                </p>
+                <div style={{ marginTop: 10, fontSize: 12, color: "#1d4ed8", fontWeight: 700 }}>
+                  ✓ Passed Electrical Safety Authority Inspection
+                </div>
+              </div>
+            </Grid>
+          </Card>
+
+          {/* Warranty Claim Modal */}
+          <Modal
+            isOpen={claimDrawerOpen}
+            onClose={() => setClaimDrawerOpen(false)}
+            title="File a 365-Day Workmanship Warranty Claim"
+          >
+            <div style={{ display: "grid", gap: 14 }}>
+              <p style={{ margin: 0, fontSize: 14, color: "#475569" }}>
+                Under your Skilled Hire Workmanship Guarantee (Policy WAR-2026-9F8A1), any defect in
+                materials or labor is covered at 100% platform expense.
+              </p>
+              <Field
+                label="Describe the issue with the completed repair"
+                multiline
+                value={claimDesc}
+                onChange={setClaimDesc}
+                placeholder="e.g. Condensate pipe is leaking, or strange sound from capacitor..."
+              />
+              <div style={{ display: "grid", gap: 6 }}>
+                <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                  Severity Level
+                </label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {(["LOW", "MODERATE", "HIGH"] as const).map((sev) => (
+                    <Button
+                      key={sev}
+                      variant={claimSeverity === sev ? "primary" : "secondary"}
+                      size="sm"
+                      onClick={() => setClaimSeverity(sev)}
+                    >
+                      {sev} Priority
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              {activeClaimSubmitted ? (
+                <Callout tone="success" title="Warranty Claim Triaged">
+                  Claim submitted. Contractor right-to-cure window activated (48-hour response).
+                  Zero charge guaranteed.
+                </Callout>
+              ) : (
+                <Button
+                  variant="primary"
+                  disabled={!claimDesc.trim()}
+                  onClick={() => {
+                    setActiveClaimSubmitted(true);
+                    setTimeout(() => setClaimDrawerOpen(false), 2000);
+                  }}
+                >
+                  Submit Warranty Claim
+                </Button>
+              )}
+            </div>
+          </Modal>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 5: POST-JOB SURVEY & FTC-COMPLIANT $30 REWARD
+         ------------------------------------------------------------- */}
+      {activeTab === "survey" && (
+        <div style={{ display: "grid", gap: 20 }}>
+          {/* Unconditional Reward Credit Banner */}
+          <Card tone="green" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 16,
+              }}
+            >
+              <div>
+                <Status tone="green">Un-Gated 10% Next-Booking Credit</Status>
+                <h2 style={{ fontSize: 24, margin: "6px 0 2px" }}>
+                  Your Feedback Reward: $30.00 CAD
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  In compliance with FTC and Competition Bureau Canada rules, this credit is awarded
+                  unconditionally for your honest review, regardless of whether your rating is 1 or
+                  5 stars.
+                </p>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#065f46" }}>
+                  Customer Wallet Balance
+                </span>
+                <p style={{ margin: 0, fontSize: 32, fontWeight: 900, color: "#059669" }}>
+                  ${(creditBalanceCents / 100).toFixed(2)}{" "}
+                  <span style={{ fontSize: 14 }}>CAD</span>
                 </p>
               </div>
             </div>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setSelectedDomain("hvac");
-                setSelectedSlot("today-13-15-surge");
-                setMode("busier-than-usual");
-              }}
-            >
-              View Busier Than Usual Page &amp; Standby Options →
-            </Button>
-          </div>
-        </Card>
-      </div>
+          </Card>
 
-      <Grid columns="minmax(0, 1.4fr) minmax(260px, .6fr)">
-        <Card tone="blue">
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 8,
-            }}
-          >
-            <Status tone="blue">Verified Trades Available</Status>
-            <span style={{ fontSize: 12, color: "#52606d", fontWeight: 700 }}>
-              TSSA &amp; Skilled Trades Ontario
-            </span>
-          </div>
-          <h2>What can we help with?</h2>
-          <p style={{ color: "#52606d" }}>
-            Start with a few details. Choose HVAC, Plumbing, Electrical, or
-            Roofing. Photos and equipment details help match the right verified
-            specialist faster.
-          </p>
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              flexWrap: "wrap",
-              marginTop: 12,
-            }}
-          >
-            <Button
-              onClick={() => {
-                setMode("request");
-                setStep(0);
-              }}
-            >
-              Start a service request
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setSelectedDomain("plumbing");
-                setSelectedSlot("today-13-15-surge");
-                setMode("busier-than-usual");
-              }}
-            >
-              Test Busier Than Usual (Plumbing)
-            </Button>
-          </div>
-        </Card>
+          {/* Survey Card */}
+          <Card tone="white" padding="lg">
+            <h3 style={{ margin: "0 0 16px", fontSize: 20, fontWeight: 800 }}>
+              Rate Your Service Experience with Marcus Sterling
+            </h3>
 
-        <Card>
-          <h3 style={{ marginTop: 0 }}>My home</h3>
-          <p style={{ margin: "6px 0", fontWeight: 800 }}>123 King Street W</p>
-          <p style={{ margin: 0, color: "#52606d" }}>
-            Toronto, ON · 1 HVAC system
-          </p>
-          <Divider />
-          <Button variant="quiet">View service history →</Button>
-        </Card>
-      </Grid>
+            <div style={{ display: "grid", gap: 20 }}>
+              {/* Star Rating */}
+              <div>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+                  Overall Star Rating
+                </label>
+                <StarRating value={starRating} onChange={setStarRating} size={32} />
+              </div>
 
-      <Grid>
-        <Card>
-          <h2 style={{ marginTop: 0 }}>Your active service</h2>
-          <Status tone="amber">No active request</Status>
-          <p style={{ color: "#52606d" }}>
-            Your requests, quotes, payments, invoices, warranties, and messages
-            will appear here.
-          </p>
-        </Card>
+              {/* NPS Score */}
+              <div>
+                <NpsScale value={npsScore} onChange={setNpsScore} />
+              </div>
 
-        <Card>
-          <h2 style={{ marginTop: 0 }}>Previous service</h2>
-          <p style={{ margin: "6px 0", fontWeight: 800 }}>
-            John S. · ABC Heating & Cooling
-          </p>
-          <p style={{ color: "#52606d" }}>
-            AC tune-up · Completed Aug 2026 · ★ 4.9
-          </p>
-          <Button variant="secondary">Rebook this technician</Button>
-        </Card>
-      </Grid>
+              {/* Aspect Toggles */}
+              <div>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
+                  Service Standards Met
+                </label>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {[
+                    { key: "punctuality", label: "⏰ Arrived on Time" },
+                    { key: "cleanliness", label: "🧹 Clean Work Area" },
+                    { key: "communication", label: "💬 Clear Communication" },
+                    { key: "quality", label: "🔧 High Craftsmanship Quality" },
+                  ].map((aspect) => {
+                    const isChecked =
+                      aspectRatings[aspect.key as keyof typeof aspectRatings];
+                    return (
+                      <button
+                        key={aspect.key}
+                        type="button"
+                        onClick={() =>
+                          setAspectRatings((prev) => ({
+                            ...prev,
+                            [aspect.key]: !isChecked,
+                          }))
+                        }
+                        style={{
+                          padding: "8px 14px",
+                          borderRadius: 9999,
+                          border: `1.5px solid ${isChecked ? "#059669" : "#e2e8f0"}`,
+                          background: isChecked ? "#ecfdf5" : "#fff",
+                          color: isChecked ? "#065f46" : "#64748b",
+                          fontWeight: 700,
+                          fontSize: 13,
+                          cursor: "pointer",
+                          transition: "all 0.14s ease",
+                        }}
+                      >
+                        {aspect.label} {isChecked ? "✓" : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Freeform Review */}
+              <Field
+                label="Detailed Feedback (Optional)"
+                multiline
+                value={surveyNotes}
+                onChange={setSurveyNotes}
+                placeholder="Share specifics about the diagnosis, explanation, and results..."
+              />
+
+              {surveySubmitted ? (
+                <Callout tone="success" title="Review & Reward Confirmed!">
+                  Thank you! Your review is published. Your $30.00 CAD credit voucher code is{" "}
+                  <strong>SKILLED-REWARD-10</strong>, automatically applied to your next booking.
+                </Callout>
+              ) : (
+                <div>
+                  <Button variant="primary" size="lg" onClick={handleSurveySubmit}>
+                    Submit Honest Review & Unlock $30 Credit
+                  </Button>
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
     </Shell>
   );
 }
