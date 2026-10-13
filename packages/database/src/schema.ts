@@ -3051,7 +3051,6 @@ export const dispatchSlotHolds = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     serviceRequestId: uuid("service_request_id")
-      .notNull()
       .references(() => serviceRequests.id, { onDelete: "cascade" }),
     technicianId: uuid("technician_id")
       .notNull()
@@ -3059,6 +3058,9 @@ export const dispatchSlotHolds = pgTable(
     contractorId: uuid("contractor_id")
       .notNull()
       .references(() => contractors.id, { onDelete: "cascade" }),
+    holdToken: varchar("hold_token", { length: 64 }).unique(),
+    postalFsa: varchar("postal_fsa", { length: 8 }),
+    verticalId: uuid("vertical_id").references(() => verticals.id, { onDelete: "cascade" }),
     slotStartsAt: timestamp("slot_starts_at", { withTimezone: true }).notNull(),
     slotEndsAt: timestamp("slot_ends_at", { withTimezone: true }).notNull(),
     travelBufferMinutes: integer("travel_buffer_minutes").notNull().default(30),

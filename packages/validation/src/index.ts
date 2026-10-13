@@ -1079,6 +1079,40 @@ export const triageFallbackQueueSchema = z.object({
   resolutionNotes: z.string().max(500).optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Evidence-Backed Booking Availability & SLA Validation (SH-02)
+// ---------------------------------------------------------------------------
+
+export const slotAvailabilityQuerySchema = z.object({
+  vertical: z.string().optional(),
+  region: z.string().optional(),
+  postalCode: z.string().optional(),
+  fsa: z.string().optional(),
+  slot: z.string().optional(),
+  slotStartsAt: z.string().optional(),
+  slotEndsAt: z.string().optional(),
+  urgency: z.enum(["STANDARD", "EMERGENCY"]).optional(),
+  forceSurge: z.string().optional(),
+});
+
+export const reserveSlotSchema = z.object({
+  verticalSlug: z.string().min(1),
+  postalCode: z.string().min(3),
+  slotStartsAt: z.string().datetime(),
+  slotEndsAt: z.string().datetime(),
+  serviceRequestId: uuid.optional(),
+  urgency: z.enum(["STANDARD", "EMERGENCY"]).optional(),
+});
+
+export const confirmSlotSchema = z.object({
+  holdId: uuid.optional(),
+  holdToken: z.string().optional(),
+  serviceRequestId: uuid.optional(),
+  customerId: uuid.optional(),
+  propertyId: uuid.optional(),
+  notes: z.string().max(1000).optional(),
+});
+
 
 
 

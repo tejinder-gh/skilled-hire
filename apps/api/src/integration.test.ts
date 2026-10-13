@@ -7276,6 +7276,337 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(dbJob?.status).toBe("ASSIGNED");
     expect(dbJob?.technicianId).toBe(testTech!.id);
   });
+
+  it("22. Evidence-backed booking availability, dynamic capacity calculation, atomic slot reservations, expiring hold lease, and truthful SLA claims (#3, SH-02)", async () => {
+    // 1. Resolve HVAC vertical and verify test environment prerequisites
+    const [hvacVertical] = await db
+      .select({ id: verticals.id, slug: verticals.slug, name: verticals.name })
+      .from(verticals)
+      .where(eq(verticals.slug, "hvac"))
+      .limit(1);
+    expect(hvacVertical).toBeDefined();
+
+    // Find or seed a verified contractor for HVAC
+    const [contractor] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(
+        and(
+          eq(contractors.status, "VERIFIED"),
+          sql`${contractors.verticalIds} ? ${hvacVertical!.id}`,
+        ),
+      )
+      .limit(1);
+    expect(contractor).toBeDefined();
+
+    // Create a dedicated technician for deterministic availability testing in postal FSA "M5B"
+    const [techUser] = await db
+      .insert(users)
+      .values({
+        email: `sh02-tech-${crypto.randomUUID()}@example.test`,
+        passwordHash: "$2b$10$abcdefghijklmnopqrstuvwxyz123456",
+        displayName: "SH-02 Evidence Tech",
+      })
+      .returning({ id: users.id });
+
+    const [sh02Tech] = await db
+      .insert(technicians)
+      .values({
+        userId: techUser!.id,
+        contractorId: contractor!.id,
+        displayName: "SH-02 Lead Journeyperson",
+        active: true,
+        emergencyAvailable: true,
+        workload: 0,
+      })
+      .returning({ id: technicians.id });
+
+    // Seed weekly shift on all days 0-6 00:00 - 23:59 so on-call covers current test execution time
+    for (let day = 0; day <= 6; day++) {
+      await db.insert(technicianSchedules).values({
+        technicianId: sh02Tech!.id,
+        contractorId: contractor!.id,
+        dayOfWeek: day,
+        startTime: "00:00",
+        endTime: "23:59",
+        timezone: "America/Toronto",
+        active: true,
+      });
+    }
+
+    // Clean up any test records for test FSA to ensure clean slate
+    await db.delete(technicianServiceRegions).where(eq(technicianServiceRegions.postalFsa, "M5B"));
+
+    // Seed service region covering exclusively FSA "M5B"
+    await db.insert(technicianServiceRegions).values({
+      technicianId: sh02Tech!.id,
+      contractorId: contractor!.id,
+      postalFsa: "M5B",
+      maxTravelRadiusKm: 25,
+      travelBufferMinutes: 30,
+      active: true,
+    });
+
+    const targetDateStr = "2026-10-15"; // Thursday
+    const slotStartsAt = `${targetDateStr}T13:00:00.000Z`;
+    const slotEndsAt = `${targetDateStr}T15:00:00.000Z`;
+
+    // 2. Query evidence-backed slot availability with specific FSA and ISO window
+    const availRes = await app.inject({
+      method: "GET",
+      url: `/v1/dispatch/slot-availability?vertical=hvac&postalCode=M5B%202K3&slotStartsAt=${encodeURIComponent(slotStartsAt)}&slotEndsAt=${encodeURIComponent(slotEndsAt)}`,
+    });
+    expect(availRes.statusCode).toBe(200);
+    const availData = availRes.json<{
+      available: boolean;
+      status: string;
+      availableCapacity: number;
+      availabilityConfidence: string;
+      postalFsa: string;
+      alternativeSlots: Array<{ id: string; guaranteed: boolean; availableCapacity: number; confidence: string }>;
+      emergencyOption: { available: boolean; evidenceSupported: boolean; slaMinutes: number; availableTechniciansCount: number };
+    }>();
+
+    expect(availData.available).toBe(true);
+    expect(availData.status).toBe("AVAILABLE");
+    expect(availData.availableCapacity).toBeGreaterThanOrEqual(1);
+    expect(availData.postalFsa).toBe("M5B");
+    expect(["HIGH", "LIMITED"]).toContain(availData.availabilityConfidence);
+    expect(availData.emergencyOption.available).toBe(true);
+    expect(availData.emergencyOption.evidenceSupported).toBe(true);
+    expect(availData.emergencyOption.slaMinutes).toBe(45);
+    expect(availData.emergencyOption.availableTechniciansCount).toBeGreaterThanOrEqual(1);
+
+    // Verify alternative slots have honest evidence-backed guarantee = false
+    expect(availData.alternativeSlots.length).toBeGreaterThan(0);
+    for (const alt of availData.alternativeSlots) {
+      expect(alt.guaranteed).toBe(false);
+      expect(typeof alt.availableCapacity).toBe("number");
+      expect(["HIGH", "LIMITED", "NONE"]).toContain(alt.confidence);
+    }
+
+    // 3. Reserve the slot atomically with 15-minute lease
+    const reserveRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/reserve",
+      headers: auth("customer@example.test"),
+      payload: {
+        verticalSlug: "hvac",
+        postalCode: "M5B 2K3",
+        slotStartsAt,
+        slotEndsAt,
+      },
+    });
+    expect(reserveRes.statusCode).toBe(201);
+    const reserveData = reserveRes.json<{
+      success: boolean;
+      status: string;
+      holdId: string;
+      holdToken: string;
+      technicianId: string;
+      holdExpiresAt: string;
+      expiresInSeconds: number;
+    }>();
+    expect(reserveData.success).toBe(true);
+    expect(reserveData.status).toBe("HELD");
+    expect(reserveData.holdId).toBeDefined();
+    expect(reserveData.holdToken).toBeDefined();
+    expect(reserveData.expiresInSeconds).toBe(900);
+
+    const firstHoldId = reserveData.holdId;
+
+    // 4. Concurrency & Overbooking Prevention: Attempting a second reservation for the same slot in M5B
+    // Since sh02Tech is the only technician in M5B, capacity is now 0.
+    const secondReserveRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/reserve",
+      headers: auth("customer@example.test"),
+      payload: {
+        verticalSlug: "hvac",
+        postalCode: "M5B 2K3",
+        slotStartsAt,
+        slotEndsAt,
+      },
+    });
+    expect(secondReserveRes.statusCode).toBe(409);
+    const secondReserveData = secondReserveRes.json<{
+      success: boolean;
+      status: string;
+      reason: string;
+    }>();
+    expect(secondReserveData.success).toBe(false);
+    expect(secondReserveData.status).toBe("UNAVAILABLE");
+
+    // 5. Query availability while hold is active -> must reflect NO open capacity
+    const busyCheckRes = await app.inject({
+      method: "GET",
+      url: `/v1/dispatch/slot-availability?vertical=hvac&postalCode=M5B%202K3&slotStartsAt=${encodeURIComponent(slotStartsAt)}&slotEndsAt=${encodeURIComponent(slotEndsAt)}`,
+    });
+    expect(busyCheckRes.statusCode).toBe(200);
+    const busyCheckData = busyCheckRes.json<{
+      available: boolean;
+      status: string;
+      availableCapacity: number;
+      availabilityConfidence: string;
+      standbyWaitlist: { available: boolean; queuePosition: number };
+    }>();
+    expect(busyCheckData.available).toBe(false);
+    expect(busyCheckData.status).toBe("BUSIER_THAN_USUAL");
+    expect(busyCheckData.availableCapacity).toBe(0);
+    expect(busyCheckData.availabilityConfidence).toBe("NONE");
+    expect(busyCheckData.standbyWaitlist.available).toBe(true);
+    expect(busyCheckData.standbyWaitlist.queuePosition).toBeGreaterThanOrEqual(1);
+
+    // 6. Test expiring holds: artificially expire the hold in DB
+    await db
+      .update(dispatchSlotHolds)
+      .set({ holdExpiresAt: new Date(Date.now() - 60 * 1000) })
+      .where(eq(dispatchSlotHolds.id, firstHoldId));
+
+    // Confirm on expired hold must be rejected with 410 HOLD_EXPIRED
+    const expiredConfirmRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/confirm",
+      headers: auth("customer@example.test"),
+      payload: {
+        holdId: firstHoldId,
+      },
+    });
+    expect(expiredConfirmRes.statusCode).toBe(410);
+    expect(expiredConfirmRes.json<{ code: string }>().code).toBe("HOLD_EXPIRED");
+
+    // Query availability again -> capacity is restored after hold expired!
+    const restoredAvailRes = await app.inject({
+      method: "GET",
+      url: `/v1/dispatch/slot-availability?vertical=hvac&postalCode=M5B%202K3&slotStartsAt=${encodeURIComponent(slotStartsAt)}&slotEndsAt=${encodeURIComponent(slotEndsAt)}`,
+    });
+    expect(restoredAvailRes.statusCode).toBe(200);
+    expect(restoredAvailRes.json<{ available: boolean }>().available).toBe(true);
+
+    // 7. Acquire fresh hold and atomically confirm with a service request
+    const freshReserveRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/reserve",
+      headers: auth("customer@example.test"),
+      payload: {
+        verticalSlug: "hvac",
+        postalCode: "M5B 2K3",
+        slotStartsAt,
+        slotEndsAt,
+      },
+    });
+    expect(freshReserveRes.statusCode).toBe(201);
+    const freshHold = freshReserveRes.json<{ holdId: string; holdToken: string; technicianId: string }>();
+
+    // Customer submits a service request
+    const [custProp] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, custUser.id))
+      .limit(1);
+
+    const [firstCat] = await db
+      .select({ id: serviceCategories.id })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, hvacVertical!.id))
+      .limit(1);
+
+    const [firstIssue] = await db
+      .select({ id: issueTypes.id })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, firstCat!.id))
+      .limit(1);
+
+    const reqRes = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: custProp!.id,
+        verticalId: hvacVertical!.id,
+        categoryId: firstCat!.id,
+        issueTypeId: firstIssue!.id,
+        urgency: "STANDARD",
+        description: "Furnace burner failing ignition cycle with diagnostic lock code",
+      },
+    });
+    expect(reqRes.statusCode).toBe(201);
+    const newServiceReqId = reqRes.json<{ id: string }>().id;
+
+    // Atomically confirm the slot hold for this service request
+    const confirmRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/confirm",
+      headers: auth("customer@example.test"),
+      payload: {
+        holdToken: freshHold.holdToken,
+        serviceRequestId: newServiceReqId,
+      },
+    });
+    expect(confirmRes.statusCode).toBe(200);
+    const confirmData = confirmRes.json<{
+      success: boolean;
+      status: string;
+      jobId: string;
+      technicianId: string;
+      scheduledStartsAt: string;
+    }>();
+    expect(confirmData.success).toBe(true);
+    expect(confirmData.status).toBe("CONFIRMED");
+    expect(confirmData.jobId).toBeDefined();
+    expect(confirmData.technicianId).toBe(freshHold.technicianId);
+
+    // Verify DB integrity: hold is CONFIRMED, service request is SCHEDULED, job is created and ASSIGNED
+    const [savedHold] = await db
+      .select({ status: dispatchSlotHolds.status })
+      .from(dispatchSlotHolds)
+      .where(eq(dispatchSlotHolds.id, freshHold.holdId));
+    expect(savedHold?.status).toBe("CONFIRMED");
+
+    const [savedReq] = await db
+      .select({ status: serviceRequests.status, preferredStartsAt: serviceRequests.preferredStartsAt })
+      .from(serviceRequests)
+      .where(eq(serviceRequests.id, newServiceReqId));
+    expect(savedReq?.status).toBe("SCHEDULED");
+    expect(savedReq?.preferredStartsAt).toBeDefined();
+
+    const [savedJob] = await db
+      .select({ status: jobs.status, technicianId: jobs.technicianId })
+      .from(jobs)
+      .where(eq(jobs.id, confirmData.jobId));
+    expect(savedJob?.status).toBe("ASSIGNED");
+    expect(savedJob?.technicianId).toBe(freshHold.technicianId);
+
+    // Attempting to re-confirm the confirmed hold fails with 409
+    const duplicateConfirmRes = await app.inject({
+      method: "POST",
+      url: "/v1/dispatch/slots/confirm",
+      headers: auth("customer@example.test"),
+      payload: {
+        holdId: freshHold.holdId,
+      },
+    });
+    expect(duplicateConfirmRes.statusCode).toBe(409);
+
+    // 8. Fails closed on emergency SLA claims when no emergency technician is available in the FSA
+    // Update technician emergencyAvailable = false
+    await db
+      .update(technicians)
+      .set({ emergencyAvailable: false })
+      .where(eq(technicians.id, sh02Tech!.id));
+
+    const noEmergencyRes = await app.inject({
+      method: "GET",
+      url: `/v1/dispatch/slot-availability?vertical=hvac&postalCode=M5B%202K3&slotStartsAt=${encodeURIComponent(slotStartsAt)}&slotEndsAt=${encodeURIComponent(slotEndsAt)}`,
+    });
+    expect(noEmergencyRes.statusCode).toBe(200);
+    const noEmergencyData = noEmergencyRes.json<{
+      emergencyOption: { available: boolean; evidenceSupported: boolean; slaMinutes: number };
+    }>();
+    expect(noEmergencyData.emergencyOption.available).toBe(false);
+    expect(noEmergencyData.emergencyOption.evidenceSupported).toBe(false);
+    expect(noEmergencyData.emergencyOption.slaMinutes).toBe(0);
+  });
 });
 
 

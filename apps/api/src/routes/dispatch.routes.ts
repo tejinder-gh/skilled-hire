@@ -13,6 +13,7 @@ import {
   or,
   desc,
   sql,
+  inArray,
   verticals,
   technicians,
   contractors,
@@ -46,6 +47,9 @@ import {
   checkSlotConflict,
   rankCandidatesForSlot,
   computeTravelBufferMinutes,
+  computeEvidenceBasedAvailability,
+  parseSlotWindow,
+  type EvidenceTechnicianData,
 } from "@marketplace/vertical-engine";
 import {
   evaluatePreDispatchSchema,
@@ -56,6 +60,9 @@ import {
   generateDispatchOffersSchema,
   respondDispatchOfferSchema,
   triageFallbackQueueSchema,
+  slotAvailabilityQuerySchema,
+  reserveSlotSchema,
+  confirmSlotSchema,
 } from "@marketplace/validation";
 import { actor, authenticate, parse, uuid } from "../common/auth.js";
 import { audit } from "../common/events.js";
@@ -197,12 +204,14 @@ const getCandidatesHandler = async (
 
 export const dispatchRoutes: FastifyPluginAsync = async (app) => {
   app.get("/v1/dispatch/slot-availability", async (request, reply) => {
-    const query = request.query as
-      | { vertical?: string; region?: string; slot?: string }
-      | undefined;
-    const verticalSlug = query?.vertical ?? "hvac";
-    const region = (query?.region ?? "ON").toUpperCase();
-    const queriedSlot = query?.slot ?? "today-13-15";
+    const query = parse(slotAvailabilityQuerySchema, request.query ?? {});
+    const verticalSlug = query.vertical ?? "hvac";
+    const region = (query.region ?? "ON").toUpperCase();
+    const queriedSlot = query.slot ?? "today-13-15";
+    const postalFsa = (query.fsa ?? query.postalCode)
+      ?.toUpperCase()
+      .replace(/\s+/g, "")
+      .slice(0, 3);
 
     const [vertical] = await db
       .select({ id: verticals.id, slug: verticals.slug, name: verticals.name })
@@ -216,19 +225,26 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
       .limit(1);
 
     if (!vertical) {
-      return reply
-        .code(404)
-        .send({
-          code: "NOT_FOUND",
-          message: `Vertical '${verticalSlug}' not found`,
-        });
+      return reply.code(404).send({
+        code: "NOT_FOUND",
+        message: `Vertical '${verticalSlug}' not found`,
+      });
     }
+
+    const slotWindowParsed = parseSlotWindow(
+      queriedSlot,
+      query.slotStartsAt,
+      query.slotEndsAt,
+      new Date(),
+    );
 
     const activeTechs = await db
       .select({
         id: technicians.id,
-        workload: technicians.workload,
-        emergency_available: technicians.emergencyAvailable,
+        displayName: technicians.displayName,
+        contractorId: technicians.contractorId,
+        contractorName: contractors.name,
+        emergencyAvailable: technicians.emergencyAvailable,
       })
       .from(technicians)
       .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
@@ -252,116 +268,478 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
       );
 
     const activeJobsCount = parseInt(jobCountRow?.count ?? "0", 10);
+    const techIds = activeTechs.map((t) => t.id);
 
-    const isPeakSlot =
+    let schedules: Array<typeof technicianSchedules.$inferSelect> = [];
+    let exceptions: Array<typeof technicianScheduleExceptions.$inferSelect> = [];
+    let regions: Array<typeof technicianServiceRegions.$inferSelect> = [];
+    let existingJobs: Array<typeof jobs.$inferSelect> = [];
+    let activeHolds: Array<typeof dispatchSlotHolds.$inferSelect> = [];
+
+    if (techIds.length > 0) {
+      const now = new Date();
+      [schedules, exceptions, regions, existingJobs, activeHolds] =
+        await Promise.all([
+          db
+            .select()
+            .from(technicianSchedules)
+            .where(
+              and(
+                inArray(technicianSchedules.technicianId, techIds),
+                eq(technicianSchedules.active, true),
+              ),
+            ),
+          db
+            .select()
+            .from(technicianScheduleExceptions)
+            .where(inArray(technicianScheduleExceptions.technicianId, techIds)),
+          db
+            .select()
+            .from(technicianServiceRegions)
+            .where(
+              and(
+                inArray(technicianServiceRegions.technicianId, techIds),
+                eq(technicianServiceRegions.active, true),
+              ),
+            ),
+          db
+            .select()
+            .from(jobs)
+            .where(
+              and(
+                inArray(jobs.technicianId, techIds),
+                sql`${jobs.status} NOT IN ('COMPLETED', 'CANCELLED', 'CLOSED')`,
+                sql`${jobs.scheduledStartsAt} IS NOT NULL`,
+              ),
+            ),
+          db
+            .select()
+            .from(dispatchSlotHolds)
+            .where(
+              and(
+                inArray(dispatchSlotHolds.technicianId, techIds),
+                eq(dispatchSlotHolds.status, "HELD"),
+                gt(dispatchSlotHolds.holdExpiresAt, now),
+              ),
+            ),
+        ]);
+    }
+
+    const evidenceTechs: EvidenceTechnicianData[] = activeTechs.map((t) => ({
+      id: t.id,
+      displayName: t.displayName,
+      contractorId: t.contractorId,
+      contractorName: t.contractorName,
+      emergencyAvailable: t.emergencyAvailable,
+      serviceRegions: regions
+        .filter((r) => r.technicianId === t.id)
+        .map((r) => ({
+          postalFsa: r.postalFsa,
+          active: r.active,
+          maxTravelRadiusKm: r.maxTravelRadiusKm,
+          travelBufferMinutes: r.travelBufferMinutes,
+        })),
+      weeklySchedules: schedules
+        .filter((s) => s.technicianId === t.id)
+        .map((s) => ({
+          dayOfWeek: s.dayOfWeek,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          active: s.active,
+        })),
+      exceptions: exceptions
+        .filter((e) => e.technicianId === t.id)
+        .map((e) => ({
+          id: e.id,
+          exceptionType: e.exceptionType,
+          startDate: e.startDate,
+          endDate: e.endDate,
+          startTime: e.startTime,
+          endTime: e.endTime,
+          allDay: e.allDay,
+          reason: e.reason,
+        })),
+      scheduledJobs: existingJobs
+        .filter((j) => j.technicianId === t.id)
+        .map((j) => ({
+          id: j.id,
+          startsAt: new Date(j.scheduledStartsAt!),
+          endsAt: new Date(j.scheduledEndsAt!),
+          travelBufferMinutes: j.travelBufferMinutes ?? 30,
+          status: j.status,
+        })),
+      activeHolds: activeHolds
+        .filter((h) => h.technicianId === t.id)
+        .map((h) => ({
+          id: h.id,
+          bufferedStartsAt: new Date(h.bufferedStartsAt),
+          bufferedEndsAt: new Date(h.bufferedEndsAt),
+          holdExpiresAt: new Date(h.holdExpiresAt),
+        })),
+    }));
+
+    const isLegacySurge =
       queriedSlot === "peak-surge" ||
       queriedSlot === "today-13-15-surge" ||
       queriedSlot.includes("busy") ||
-      (queriedSlot === "today-13-15" &&
-        (query as { forceSurge?: string } | undefined)?.forceSurge === "true");
-    const isAvailable =
-      activeTechs.length > 0 &&
-      !isPeakSlot &&
-      activeJobsCount < activeTechs.length;
+      query.forceSurge === "true";
 
-    if (!isAvailable) {
-      const response: SlotAvailabilityResponse = {
-        verticalSlug: vertical.slug,
-        verticalName: vertical.name,
-        region,
-        queriedSlot,
-        available: false,
-        status: "BUSIER_THAN_USUAL",
-        headline: `We're experiencing higher than usual demand for ${vertical.name} in ${region === "ON" ? "Ontario / Greater Toronto Area" : region}`,
-        reason:
-          activeTechs.length === 0
-            ? `All certified ${vertical.name} trade specialists in ${region} are currently committed on active dispatches.`
-            : `High demand surge: 100% of verified ${vertical.name} technicians are currently dispatched on service calls in this time window.`,
-        metrics: {
-          activeCertifiedTechnicians: activeTechs.length,
-          dispatchedCount: activeJobsCount,
-          capacitySaturationBps:
-            activeTechs.length === 0
-              ? 10000
-              : Math.min(
-                  10000,
-                  Math.round(
-                    ((activeJobsCount + 1) / Math.max(1, activeTechs.length)) *
-                      10000,
-                  ),
-                ),
-          estimatedWaitMinutes: 120,
-        },
-        alternativeSlots: [
-          {
-            id: "tomorrow-09-11",
-            label: "Tomorrow · 9:00–11:00 AM",
-            day: "Tomorrow",
-            time: "9:00 AM – 11:00 AM",
-            guaranteed: true,
-            demandLevel: "NORMAL",
-            badge: "Recommended · Guaranteed Arrival",
-          },
-          {
-            id: "tomorrow-14-16",
-            label: "Tomorrow · 2:00–4:00 PM",
-            day: "Tomorrow",
-            time: "2:00 PM – 4:00 PM",
-            guaranteed: true,
-            demandLevel: "NORMAL",
-            badge: "Standard Service Window",
-          },
-          {
-            id: "friday-10-12",
-            label: "Friday · 10:00 AM–12:00 PM",
-            day: "Friday",
-            time: "10:00 AM – 12:00 PM",
-            guaranteed: true,
-            demandLevel: "LOW",
-            badge: "Off-Peak Window · Best Availability",
-          },
-        ],
-        emergencyOption: {
-          available: true,
-          title: "Request Emergency Priority Dispatch",
-          badge: "⚡ Guaranteed 45-min on-call arrival",
-          description: `Routes directly to on-call certified ${vertical.name} journeypersons reserved strictly for emergency response.`,
-          calloutFeeCents: 14900,
-          slaMinutes: 45,
-        },
-        standbyWaitlist: {
-          available: true,
-          title: "Join Priority Standby Waitlist",
-          badge: "⏱️ Automated dispatch on early finish",
-          description:
-            "Keep your desired time slot. If an existing job finishes early or an appointment reschedules, you are automatically assigned first in line.",
-          queuePosition: 2,
-          estimatedNoticeMinutes: 30,
-        },
-      };
-      return reply.code(200).send(response);
-    }
-
-    const response: SlotAvailabilityResponse = {
+    const response = computeEvidenceBasedAvailability({
       verticalSlug: vertical.slug,
       verticalName: vertical.name,
       region,
-      queriedSlot,
-      available: true,
-      status: "AVAILABLE",
-      headline: `Verified ${vertical.name} technicians ready for dispatch`,
-      reason:
-        "Certified trade professionals have open capacity in this requested appointment window.",
-      metrics: {
-        activeCertifiedTechnicians: activeTechs.length,
-        dispatchedCount: activeJobsCount,
-        capacitySaturationBps: Math.round(
-          (activeJobsCount / Math.max(1, activeTechs.length)) * 10000,
-        ),
-        estimatedWaitMinutes: 0,
+      postalFsa,
+      slotKey: queriedSlot,
+      slotWindow: {
+        startsAt: slotWindowParsed.startsAt,
+        endsAt: slotWindowParsed.endsAt,
+        travelBufferMinutes: 30,
       },
-    };
+      slotLabel: slotWindowParsed.label,
+      technicians: evidenceTechs,
+      activeJobsInVerticalCount: activeJobsCount,
+      now: new Date(),
+      isLegacySurge,
+    });
+
     return reply.code(200).send(response);
+  });
+
+  // Atomic Slot Reservation (15-min lease)
+  app.post("/v1/dispatch/slots/reserve", async (request, reply) => {
+    const body = parse(reserveSlotSchema, request.body);
+    const postalFsa = body.postalCode.toUpperCase().replace(/\s+/g, "").slice(0, 3);
+    const startsAt = new Date(body.slotStartsAt);
+    const endsAt = new Date(body.slotEndsAt);
+    const now = new Date();
+
+    if (endsAt.getTime() <= startsAt.getTime()) {
+      return reply.code(400).send({
+        code: "INVALID_SLOT_WINDOW",
+        message: "slotEndsAt must be strictly after slotStartsAt",
+      });
+    }
+
+    const [vertical] = await db
+      .select({ id: verticals.id, slug: verticals.slug, name: verticals.name })
+      .from(verticals)
+      .where(sql`lower(${verticals.slug}) = lower(${body.verticalSlug})`)
+      .limit(1);
+
+    if (!vertical) {
+      return reply.code(404).send({
+        code: "NOT_FOUND",
+        message: `Vertical '${body.verticalSlug}' not found`,
+      });
+    }
+
+    // Atomic transaction: Find available technician and place exclusive hold
+    const result = await db.transaction(async (tx) => {
+      // Find candidate verified technicians serving this FSA
+      const candidateTechs = await tx
+        .select({
+          id: technicians.id,
+          displayName: technicians.displayName,
+          contractorId: technicians.contractorId,
+          emergencyAvailable: technicians.emergencyAvailable,
+        })
+        .from(technicians)
+        .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
+        .innerJoin(
+          technicianServiceRegions,
+          and(
+            eq(technicianServiceRegions.technicianId, technicians.id),
+            eq(technicianServiceRegions.active, true),
+            sql`upper(${technicianServiceRegions.postalFsa}) = ${postalFsa}`,
+          ),
+        )
+        .where(
+          and(
+            eq(technicians.active, true),
+            eq(contractors.status, "VERIFIED"),
+            sql`${contractors.verticalIds} ? ${vertical.id}`,
+            body.urgency === "EMERGENCY"
+              ? eq(technicians.emergencyAvailable, true)
+              : sql`true`,
+          ),
+        );
+
+      if (candidateTechs.length === 0) {
+        return {
+          success: false,
+          status: "UNAVAILABLE" as const,
+          reason: `No verified ${vertical.name} technicians currently serve postal FSA ${postalFsa}.`,
+        };
+      }
+
+      const techIds = candidateTechs.map((t) => t.id);
+
+      // Lock existing active holds for candidate techs to prevent race conditions
+      const existingHolds = await tx
+        .select()
+        .from(dispatchSlotHolds)
+        .where(
+          and(
+            inArray(dispatchSlotHolds.technicianId, techIds),
+            eq(dispatchSlotHolds.status, "HELD"),
+            gt(dispatchSlotHolds.holdExpiresAt, now),
+          ),
+        )
+        .for("update");
+
+      const existingJobs = await tx
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            inArray(jobs.technicianId, techIds),
+            sql`${jobs.status} NOT IN ('COMPLETED', 'CANCELLED', 'CLOSED')`,
+            sql`${jobs.scheduledStartsAt} IS NOT NULL`,
+          ),
+        );
+
+      const schedules = await tx
+        .select()
+        .from(technicianSchedules)
+        .where(
+          and(
+            inArray(technicianSchedules.technicianId, techIds),
+            eq(technicianSchedules.active, true),
+          ),
+        );
+
+      const exceptions = await tx
+        .select()
+        .from(technicianScheduleExceptions)
+        .where(inArray(technicianScheduleExceptions.technicianId, techIds));
+
+      const slotWindow = { startsAt, endsAt, travelBufferMinutes: 30 };
+
+      // Find first conflict-free technician
+      let chosenTech: (typeof candidateTechs)[number] | null = null;
+      for (const tech of candidateTechs) {
+        const techJobs = existingJobs
+          .filter((j) => j.technicianId === tech.id)
+          .map((j) => ({
+            id: j.id,
+            startsAt: new Date(j.scheduledStartsAt!),
+            endsAt: new Date(j.scheduledEndsAt!),
+            travelBufferMinutes: j.travelBufferMinutes ?? 30,
+            status: j.status,
+          }));
+        const techHolds = existingHolds
+          .filter((h) => h.technicianId === tech.id)
+          .map((h) => ({
+            id: h.id,
+            bufferedStartsAt: new Date(h.bufferedStartsAt),
+            bufferedEndsAt: new Date(h.bufferedEndsAt),
+            holdExpiresAt: new Date(h.holdExpiresAt),
+          }));
+        const techSchedules = schedules.filter((s) => s.technicianId === tech.id);
+        const techExceptions = exceptions.filter((e) => e.technicianId === tech.id);
+
+        const conflict = checkSlotConflict(slotWindow, {
+          existingJobs: techJobs,
+          activeHolds: techHolds,
+          weeklySchedules: techSchedules,
+          exceptions: techExceptions,
+          now,
+        });
+
+        if (!conflict.hasConflict) {
+          chosenTech = tech;
+          break;
+        }
+      }
+
+      if (!chosenTech) {
+        return {
+          success: false,
+          status: "UNAVAILABLE" as const,
+          reason: `All verified ${vertical.name} specialists in postal FSA ${postalFsa} are committed for this requested arrival window.`,
+        };
+      }
+
+      const holdExpiresAt = new Date(now.getTime() + 15 * 60 * 1000);
+      const holdToken = `hold_${crypto.randomUUID().replace(/-/g, "")}`;
+      const bufferedStartsAt = new Date(startsAt.getTime() - 30 * 60 * 1000);
+      const bufferedEndsAt = new Date(endsAt.getTime() + 30 * 60 * 1000);
+
+      const [hold] = await tx
+        .insert(dispatchSlotHolds)
+        .values({
+          serviceRequestId: body.serviceRequestId ?? null,
+          technicianId: chosenTech.id,
+          contractorId: chosenTech.contractorId,
+          holdToken,
+          postalFsa,
+          verticalId: vertical.id,
+          slotStartsAt: startsAt,
+          slotEndsAt: endsAt,
+          travelBufferMinutes: 30,
+          bufferedStartsAt,
+          bufferedEndsAt,
+          status: "HELD",
+          holdExpiresAt,
+          heldByUserId: request.actor?.id ?? null,
+        })
+        .returning();
+
+      return {
+        success: true,
+        status: "HELD" as const,
+        holdId: hold!.id,
+        holdToken,
+        technicianId: chosenTech.id,
+        technicianName: chosenTech.displayName,
+        contractorId: chosenTech.contractorId,
+        slotStartsAt: startsAt.toISOString(),
+        slotEndsAt: endsAt.toISOString(),
+        holdExpiresAt: holdExpiresAt.toISOString(),
+        expiresInSeconds: 900,
+      };
+    });
+
+    if (!result.success) {
+      return reply.code(409).send(result);
+    }
+    return reply.code(201).send(result);
+  });
+
+  // Atomic Slot Hold Confirmation & Job Appointment Creation
+  app.post("/v1/dispatch/slots/confirm", async (request, reply) => {
+    const body = parse(confirmSlotSchema, request.body);
+    const now = new Date();
+
+    if (!body.holdId && !body.holdToken) {
+      return reply.code(400).send({
+        code: "VALIDATION_ERROR",
+        message: "Either holdId or holdToken must be provided",
+      });
+    }
+
+    const [hold] = await db
+      .select()
+      .from(dispatchSlotHolds)
+      .where(
+        body.holdId
+          ? eq(dispatchSlotHolds.id, body.holdId)
+          : eq(dispatchSlotHolds.holdToken, body.holdToken!),
+      )
+      .limit(1);
+
+    if (!hold) {
+      return reply.code(404).send({
+        code: "NOT_FOUND",
+        message: "Slot reservation hold not found",
+      });
+    }
+
+    if (hold.status === "CONFIRMED") {
+      return reply.code(409).send({
+        code: "ALREADY_CONFIRMED",
+        message: "This slot hold has already been confirmed",
+      });
+    }
+
+    if (new Date(hold.holdExpiresAt).getTime() <= now.getTime()) {
+      await db
+        .update(dispatchSlotHolds)
+        .set({ status: "EXPIRED", updatedAt: now })
+        .where(eq(dispatchSlotHolds.id, hold.id));
+
+      return reply.code(410).send({
+        code: "HOLD_EXPIRED",
+        message:
+          "Slot hold lease has expired. Please select and reserve an open arrival window.",
+      });
+    }
+
+    const serviceRequestId = body.serviceRequestId ?? hold.serviceRequestId;
+
+    const result = await db.transaction(async (tx) => {
+      await tx
+        .update(dispatchSlotHolds)
+        .set({
+          status: "CONFIRMED",
+          serviceRequestId: serviceRequestId ?? hold.serviceRequestId,
+          updatedAt: now,
+        })
+        .where(eq(dispatchSlotHolds.id, hold.id));
+
+      let jobId: string | undefined;
+
+      if (serviceRequestId) {
+        await tx
+          .update(serviceRequests)
+          .set({
+            preferredStartsAt: hold.slotStartsAt,
+            preferredEndsAt: hold.slotEndsAt,
+            status: "SCHEDULED",
+            updatedAt: now,
+          })
+          .where(eq(serviceRequests.id, serviceRequestId));
+
+        const [existingJob] = await tx
+          .select({ id: jobs.id })
+          .from(jobs)
+          .where(eq(jobs.serviceRequestId, serviceRequestId))
+          .limit(1);
+
+        if (existingJob) {
+          jobId = existingJob.id;
+          await tx
+            .update(jobs)
+            .set({
+              technicianId: hold.technicianId,
+              scheduledStartsAt: hold.slotStartsAt,
+              scheduledEndsAt: hold.slotEndsAt,
+              travelBufferMinutes: hold.travelBufferMinutes,
+              status: "ASSIGNED",
+              updatedAt: now,
+            })
+            .where(eq(jobs.id, existingJob.id));
+        } else {
+          const [newJob] = await tx
+            .insert(jobs)
+            .values({
+              serviceRequestId,
+              contractorId: hold.contractorId,
+              technicianId: hold.technicianId,
+              status: "ASSIGNED",
+              scheduledStartsAt: hold.slotStartsAt,
+              scheduledEndsAt: hold.slotEndsAt,
+              travelBufferMinutes: hold.travelBufferMinutes,
+            })
+            .returning({ id: jobs.id });
+          jobId = newJob?.id;
+        }
+      }
+
+      return {
+        success: true,
+        status: "CONFIRMED" as const,
+        holdId: hold.id,
+        serviceRequestId: serviceRequestId ?? undefined,
+        jobId,
+        technicianId: hold.technicianId,
+        scheduledStartsAt: new Date(hold.slotStartsAt).toISOString(),
+        scheduledEndsAt: new Date(hold.slotEndsAt).toISOString(),
+      };
+    });
+
+    if (request.actor?.id) {
+      await audit(
+        request.actor.id,
+        "DISPATCH_SLOT_CONFIRMED",
+        "DISPATCH_SLOT_HOLD",
+        hold.id,
+        { status: "HELD" },
+        { status: "CONFIRMED", jobId: result.jobId },
+      );
+    }
+
+    return reply.code(200).send(result);
   });
 
   app.get(

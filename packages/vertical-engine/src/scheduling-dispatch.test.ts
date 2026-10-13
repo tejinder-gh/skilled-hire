@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   checkSlotConflict,
+  computeEvidenceBasedAvailability,
   computeTravelBufferMinutes,
+  parseSlotWindow,
   rankCandidatesForSlot,
+  type EvidenceTechnicianData,
 } from "./scheduling-dispatch.js";
 
 describe("Technician Scheduling & Dispatch Conflict Engine (SH-06)", () => {
@@ -219,5 +222,198 @@ describe("Technician Scheduling & Dispatch Conflict Engine (SH-06)", () => {
     expect(computeTravelBufferMinutes(20)).toBe(30);
     expect(computeTravelBufferMinutes(35)).toBe(45);
     expect(computeTravelBufferMinutes(60)).toBe(60);
+  });
+});
+
+describe("Evidence-Backed Booking Availability & SLA Claims Engine (SH-02)", () => {
+  const baseTime = new Date("2026-10-15T10:00:00Z"); // Thursday 10:00 UTC
+  const slotWindow = {
+    startsAt: new Date("2026-10-15T13:00:00Z"),
+    endsAt: new Date("2026-10-15T15:00:00Z"),
+    travelBufferMinutes: 30,
+  };
+
+  const sampleTechs: EvidenceTechnicianData[] = [
+    {
+      id: "tech-101",
+      displayName: "Marcus S.",
+      contractorId: "con-1",
+      contractorName: "Toronto HVAC Pros",
+      emergencyAvailable: true,
+      serviceRegions: [
+        { postalFsa: "M5V", active: true, maxTravelRadiusKm: 25, travelBufferMinutes: 30 },
+        { postalFsa: "M5R", active: true, maxTravelRadiusKm: 25, travelBufferMinutes: 30 },
+      ],
+      weeklySchedules: [
+        { dayOfWeek: 4, startTime: "08:00", endTime: "18:00", active: true },
+      ],
+      exceptions: [],
+      scheduledJobs: [],
+      activeHolds: [],
+    },
+    {
+      id: "tech-102",
+      displayName: "Elena R.",
+      contractorId: "con-1",
+      contractorName: "Toronto HVAC Pros",
+      emergencyAvailable: false,
+      serviceRegions: [
+        { postalFsa: "M5V", active: true, maxTravelRadiusKm: 25, travelBufferMinutes: 30 },
+      ],
+      weeklySchedules: [
+        { dayOfWeek: 4, startTime: "08:00", endTime: "18:00", active: true },
+      ],
+      exceptions: [],
+      scheduledJobs: [],
+      activeHolds: [],
+    },
+    {
+      id: "tech-103",
+      displayName: "David K.",
+      contractorId: "con-2",
+      contractorName: "York Heating",
+      emergencyAvailable: true,
+      serviceRegions: [
+        { postalFsa: "L4B", active: true, maxTravelRadiusKm: 25, travelBufferMinutes: 30 }, // Different FSA!
+      ],
+      weeklySchedules: [
+        { dayOfWeek: 4, startTime: "08:00", endTime: "18:00", active: true },
+      ],
+      exceptions: [],
+      scheduledJobs: [],
+      activeHolds: [],
+    },
+  ];
+
+  it("calculates high availability confidence when multiple conflict-free technicians cover FSA", () => {
+    const res = computeEvidenceBasedAvailability({
+      verticalSlug: "hvac",
+      verticalName: "Heating & Cooling",
+      postalFsa: "M5V",
+      slotWindow,
+      technicians: sampleTechs,
+      now: baseTime,
+    });
+
+    expect(res.available).toBe(true);
+    expect(res.status).toBe("AVAILABLE");
+    expect(res.availableCapacity).toBe(2); // tech-101 and tech-102 cover M5V
+    expect(res.availabilityConfidence).toBe("HIGH");
+    expect(res.metrics?.eligibleTechniciansInFsa).toBe(2);
+    expect(res.metrics?.openSlotCount).toBe(2);
+  });
+
+  it("downgrades confidence to LIMITED when only 1 technician is available", () => {
+    // Put tech-102 in a conflicting job
+    const techsWithBusyElena: EvidenceTechnicianData[] = [
+      sampleTechs[0]!,
+      {
+        ...sampleTechs[1]!,
+        scheduledJobs: [
+          {
+            id: "job-99",
+            startsAt: new Date("2026-10-15T13:30:00Z"),
+            endsAt: new Date("2026-10-15T14:30:00Z"),
+            status: "ASSIGNED",
+          },
+        ],
+      },
+    ];
+
+    const res = computeEvidenceBasedAvailability({
+      verticalSlug: "hvac",
+      verticalName: "Heating & Cooling",
+      postalFsa: "M5V",
+      slotWindow,
+      technicians: techsWithBusyElena,
+      now: baseTime,
+    });
+
+    expect(res.available).toBe(true);
+    expect(res.availableCapacity).toBe(1);
+    expect(res.availabilityConfidence).toBe("LIMITED");
+  });
+
+  it("detects no capacity when unexpired slot hold reserves the only available technician", () => {
+    // tech-101 has an active unexpired hold
+    const techsWithHold: EvidenceTechnicianData[] = [
+      {
+        ...sampleTechs[0]!,
+        activeHolds: [
+          {
+            id: "hold-active",
+            bufferedStartsAt: new Date("2026-10-15T12:30:00Z"),
+            bufferedEndsAt: new Date("2026-10-15T15:30:00Z"),
+            holdExpiresAt: new Date("2026-10-15T10:15:00Z"), // Expires in 15 mins (after baseTime 10:00)
+          },
+        ],
+      },
+    ];
+
+    const res = computeEvidenceBasedAvailability({
+      verticalSlug: "hvac",
+      verticalName: "Heating & Cooling",
+      postalFsa: "M5V",
+      slotWindow,
+      technicians: techsWithHold,
+      activeJobsInVerticalCount: 1,
+      now: baseTime,
+    });
+
+    expect(res.available).toBe(false);
+    expect(res.availableCapacity).toBe(0);
+    expect(res.availabilityConfidence).toBe("NONE");
+    expect(res.standbyWaitlist?.available).toBe(true);
+    expect(res.standbyWaitlist?.queuePosition).toBe(2); // 1 active job + 1 = 2
+  });
+
+  it("fails closed on emergency SLA claims when no on-call emergency technician serves FSA", () => {
+    // Only tech-102 covers M5V, but tech-102 is NOT emergencyAvailable
+    const noEmergencyTechs = [sampleTechs[1]!];
+
+    const res = computeEvidenceBasedAvailability({
+      verticalSlug: "hvac",
+      verticalName: "Heating & Cooling",
+      postalFsa: "M5V",
+      slotWindow,
+      technicians: noEmergencyTechs,
+      now: baseTime,
+    });
+
+    expect(res.emergencyOption?.available).toBe(false);
+    expect(res.emergencyOption?.evidenceSupported).toBe(false);
+    expect(res.emergencyOption?.slaMinutes).toBe(0);
+    expect(res.emergencyOption?.availableTechniciansCount).toBe(0);
+  });
+
+  it("validates evidence-backed emergency SLA when on-call technician is open and conflict-free", () => {
+    const res = computeEvidenceBasedAvailability({
+      verticalSlug: "hvac",
+      verticalName: "Heating & Cooling",
+      postalFsa: "M5V",
+      slotWindow,
+      technicians: sampleTechs,
+      now: baseTime,
+    });
+
+    expect(res.emergencyOption?.available).toBe(true);
+    expect(res.emergencyOption?.evidenceSupported).toBe(true);
+    expect(res.emergencyOption?.slaMinutes).toBe(45);
+    expect(res.emergencyOption?.availableTechniciansCount).toBe(1); // tech-101
+  });
+
+  it("parses explicit ISO dates as well as legacy slot labels", () => {
+    const parsedIso = parseSlotWindow(
+      undefined,
+      "2026-10-20T14:00:00Z",
+      "2026-10-20T16:00:00Z",
+      baseTime,
+    );
+    expect(parsedIso.startsAt.toISOString()).toBe("2026-10-20T14:00:00.000Z");
+    expect(parsedIso.endsAt.toISOString()).toBe("2026-10-20T16:00:00.000Z");
+
+    const parsedTomorrow = parseSlotWindow("tomorrow-09-11", undefined, undefined, baseTime);
+    expect(parsedTomorrow.startsAt.getUTCHours()).toBe(9);
+    expect(parsedTomorrow.endsAt.getUTCHours()).toBe(11);
   });
 });
