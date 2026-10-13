@@ -9,11 +9,18 @@ import type {
   SubmittedCredentialInput,
 } from "@marketplace/contracts";
 import {
+  Badge,
   Button,
+  Callout,
   Card,
   Divider,
+  EmptyState,
+  Field,
   Grid,
   Metric,
+  Modal,
+  ProgressBar,
+  SegmentedControl,
   Shell,
   Status,
   Stepper,
@@ -95,9 +102,7 @@ const LOCATIONS: LocationOption[] = [
   { code: "TX", label: "Texas (TDLR / TSBPE)", country: "USA", flag: "🇺🇸" },
 ];
 
-// Sample baseline credentials for demonstration
 const INITIAL_DEMO_CREDENTIALS: Record<string, SubmittedCredentialInput> = {
-  // Ontario baseline
   ON_TSSA_GAS_G2: {
     code: "ON_TSSA_GAS_G2",
     status: "VERIFIED",
@@ -122,95 +127,45 @@ const INITIAL_DEMO_CREDENTIALS: Record<string, SubmittedCredentialInput> = {
   ON_WSIB_CLEARANCE: {
     code: "ON_WSIB_CLEARANCE",
     status: "VERIFIED",
-    expiryDate: "2027-06-30",
+    expiryDate: "2027-11-30",
     geography: "ON",
-    licenseNumber: "WSIB-99120",
+    licenseNumber: "WSIB-991204",
   },
-  ON_MOL_HEIGHTS: {
-    code: "ON_MOL_HEIGHTS",
+  ON_COMMERCIAL_LIABILITY_2M: {
+    code: "ON_COMMERCIAL_LIABILITY_2M",
     status: "VERIFIED",
-    expiryDate: "2027-09-10",
+    expiryDate: "2027-10-15",
     geography: "ON",
-    licenseNumber: "WAH-1039",
-  },
-  CGL_INSURANCE_2M: {
-    code: "CGL_INSURANCE_2M",
-    status: "VERIFIED",
-    expiryDate: "2027-06-30",
-    geography: "*",
-    licenseNumber: "POL-7741029",
-  },
-  COMMERCIAL_AUTO_1M: {
-    code: "COMMERCIAL_AUTO_1M",
-    status: "VERIFIED",
-    expiryDate: "2027-06-30",
-    geography: "*",
-    licenseNumber: "AUTO-9912",
-  },
-  GOVT_PHOTO_ID: { code: "GOVT_PHOTO_ID", status: "VERIFIED", geography: "*" },
-  BACKGROUND_CHECK_ANNUAL: {
-    code: "BACKGROUND_CHECK_ANNUAL",
-    status: "VERIFIED",
-    expiryDate: "2027-08-20",
-    geography: "*",
-  },
-  FIRST_AID_CPR_C: {
-    code: "FIRST_AID_CPR_C",
-    status: "VERIFIED",
-    expiryDate: "2027-11-01",
-    geography: "*",
-  },
-
-  // California baseline
-  CA_CSLB_C20: {
-    code: "CA_CSLB_C20",
-    status: "VERIFIED",
-    expiryDate: "2027-10-15",
-    geography: "CA",
-    licenseNumber: "CSLB-1049281",
-  },
-  US_EPA_608_UNIVERSAL: {
-    code: "US_EPA_608_UNIVERSAL",
-    status: "VERIFIED",
-    geography: "CA",
-    licenseNumber: "EPA-UNIV-4921",
-  },
-  CA_CSLB_SURETY_BOND: {
-    code: "CA_CSLB_SURETY_BOND",
-    status: "VERIFIED",
-    expiryDate: "2027-10-15",
-    geography: "CA",
-    licenseNumber: "BOND-25K-881",
-  },
-  CA_WORKERS_COMP: {
-    code: "CA_WORKERS_COMP",
-    status: "VERIFIED",
-    expiryDate: "2027-10-15",
-    geography: "CA",
-    licenseNumber: "WC-CA-44102",
-  },
-
-  // Texas baseline
-  TX_TDLR_ACR_CLASS_A: {
-    code: "TX_TDLR_ACR_CLASS_A",
-    status: "VERIFIED",
-    expiryDate: "2027-04-12",
-    geography: "TX",
-    licenseNumber: "TACLA-88129",
-  },
-  TX_TDLR_INSURANCE: {
-    code: "TX_TDLR_INSURANCE",
-    status: "VERIFIED",
-    expiryDate: "2027-04-12",
-    geography: "TX",
-    licenseNumber: "TDI-INS-551",
+    licenseNumber: "POL-INT-55029",
   },
 };
 
+type MaterialReceiptItem = {
+  id: string;
+  vendor: string;
+  invoiceNumber: string;
+  description: string;
+  contractorCostCents: number;
+  markupPercent: number;
+};
+
+type WarrantyClaimItem = {
+  id: string;
+  jobId: string;
+  customerName: string;
+  reportedIssue: string;
+  severity: "LOW" | "MODERATE" | "HIGH" | "EMERGENCY";
+  daysSinceCompletion: number;
+  status: "OPEN_TRIAGE" | "CURE_OFFERED" | "DISPUTED" | "RESOLVED";
+  contractorNotes?: string;
+};
+
 export default function ContractorHome() {
-  const [activeTab, setActiveTab] = useState<"workspace" | "compliance">(
-    "compliance",
-  );
+  const [activeTab, setActiveTab] = useState<
+    "workspace" | "evidence" | "completion" | "warranty" | "compliance"
+  >("workspace");
+
+  // Filter state for Compliance Tab
   const [selectedVertical, setSelectedVertical] = useState("hvac");
   const [selectedLocation, setSelectedLocation] = useState("ON");
   const [selectedEntityLevel, setSelectedEntityLevel] = useState<
@@ -220,7 +175,6 @@ export default function ContractorHome() {
     CredentialGroupCode | "ALL"
   >("ALL");
 
-  // Local state of submitted/held credentials so prospective providers can test their readiness
   const [userCredentials, setUserCredentials] = useState<
     Record<string, SubmittedCredentialInput>
   >(INITIAL_DEMO_CREDENTIALS);
@@ -228,12 +182,83 @@ export default function ContractorHome() {
     null,
   );
 
-  // Job workboard state
-  const [accepted, setAccepted] = useState(false);
-  const [current, setCurrent] = useState(accepted ? 1 : 0);
-  const step = accepted ? current : 0;
+  // Job Workboard State
+  const [dispatchOfferAccepted, setDispatchOfferAccepted] = useState(true);
+  const [currentStep, setCurrentStep] = useState(1); // 1 = En Route
+  const [etaMinutes, setEtaMinutes] = useState(22);
+  const [workerVerified, setWorkerVerified] = useState(true);
 
-  // Filter applicable standards
+  // Field Evidence State
+  const [evidencePhotos, setEvidencePhotos] = useState<
+    Array<{ id: string; label: string; type: "before" | "after"; timestamp: string }>
+  >([
+    {
+      id: "ev-1",
+      label: "Diagnostic test: Burned dual-run capacitor contacts",
+      type: "before",
+      timestamp: "10:14 AM",
+    },
+    {
+      id: "ev-2",
+      label: "Installed OEM Lennox 45/5 uF capacitor & secure wiring",
+      type: "after",
+      timestamp: "11:02 AM",
+    },
+  ]);
+  const [newPhotoLabel, setNewPhotoLabel] = useState("");
+  const [newPhotoType, setNewPhotoType] = useState<"before" | "after">("before");
+
+  // Materials Receipts State
+  const [materialReceipts, setMaterialReceipts] = useState<MaterialReceiptItem[]>([
+    {
+      id: "mat-1",
+      vendor: "Noble Trade Supply — Toronto North",
+      invoiceNumber: "INV-99412",
+      description: "OEM Dual Run Capacitor 45/5 uF 440V Round",
+      contractorCostCents: 4200,
+      markupPercent: 15,
+    },
+    {
+      id: "mat-2",
+      vendor: "Noble Trade Supply — Toronto North",
+      invoiceNumber: "INV-99412",
+      description: "Heavy-duty spade connectors & heat-shrink wrap",
+      contractorCostCents: 1200,
+      markupPercent: 15,
+    },
+  ]);
+  const [newVendor, setNewVendor] = useState("Wolseley Industrial Plumbing & HVAC");
+  const [newInvoice, setNewInvoice] = useState("WOL-2026-881");
+  const [newDesc, setNewDesc] = useState("Refrigerant top-off R-410A (1.5 lbs)");
+  const [newCost, setNewCost] = useState("65.00");
+
+  // Completion Report Generator State
+  const [completionWorkSummary, setCompletionWorkSummary] = useState(
+    "Diagnosed failed capacitor causing compressor hard start. Replaced dual-run capacitor, verified coil temperatures, and cycled air conditioner for 25 minutes. Delta T measured at 18.5°F. Operational amperage within manufacturer specifications.",
+  );
+  const [equipType, setEquipType] = useState("Central Air Conditioner");
+  const [equipBrand, setEquipBrand] = useState("Lennox");
+  const [equipModel, setEquipModel] = useState("XC21-036-230");
+  const [equipSerial, setEquipSerial] = useState("SN-8821940-2026");
+  const [attestationConfirmed, setAttestationConfirmed] = useState(true);
+  const [completionSubmitted, setCompletionSubmitted] = useState(false);
+
+  // Warranty Claims Triage State
+  const [warrantyClaims, setWarrantyClaims] = useState<WarrantyClaimItem[]>([
+    {
+      id: "CLM-2026-08A2",
+      jobId: "JOB-2026-4412",
+      customerName: "Avery H.",
+      reportedIssue:
+        "Condensate drain line showed minor moisture pooling 4 days after capacitor repair.",
+      severity: "MODERATE",
+      daysSinceCompletion: 4,
+      status: "OPEN_TRIAGE",
+    },
+  ]);
+  const [selectedClaim, setSelectedClaim] = useState<WarrantyClaimItem | null>(null);
+
+  // Compliance calculations
   const applicableStandards = useMemo(() => {
     const entity =
       selectedEntityLevel === "ALL" ? undefined : selectedEntityLevel;
@@ -245,7 +270,6 @@ export default function ContractorHome() {
     );
   }, [selectedVertical, selectedLocation, selectedEntityLevel]);
 
-  // Evaluate real-time compliance scorecard
   const scorecard = useMemo(() => {
     const credsList = Object.values(userCredentials);
     const entity =
@@ -263,14 +287,6 @@ export default function ContractorHome() {
     selectedEntityLevel,
   ]);
 
-  // Group status helper
-  const getStatusTone = (status: ComplianceEvaluationStatus) => {
-    if (status === "VERIFIED") return "green";
-    if (status === "PENDING_REVIEW") return "blue";
-    if (status === "EXPIRED") return "amber";
-    return "amber";
-  };
-
   const toggleCredentialStatus = (
     credentialCode: string,
     standardGeography: string,
@@ -278,7 +294,6 @@ export default function ContractorHome() {
     setUserCredentials((prev) => {
       const currentVal = prev[credentialCode];
       if (!currentVal) {
-        // Add as verified
         return {
           ...prev,
           [credentialCode]: {
@@ -291,14 +306,12 @@ export default function ContractorHome() {
         };
       }
       if (currentVal.status === "VERIFIED") {
-        // Toggle to PENDING
         return {
           ...prev,
           [credentialCode]: { ...currentVal, status: "PENDING" },
         };
       }
       if (currentVal.status === "PENDING") {
-        // Toggle to EXPIRED
         return {
           ...prev,
           [credentialCode]: {
@@ -308,7 +321,6 @@ export default function ContractorHome() {
           },
         };
       }
-      // Remove entirely (MISSING)
       const copy = { ...prev };
       delete copy[credentialCode];
       return copy;
@@ -317,397 +329,805 @@ export default function ContractorHome() {
     setTimeout(() => setSubmissionFeedback(null), 3000);
   };
 
-  // Real-time job synchronization with live backend API
-  const [liveJob, setLiveJob] = useState<{
-    id: string;
-    serviceRequestId: string;
-    description: string;
-    address: string;
-    status: string;
-  } | null>(null);
-
-  useEffect(() => {
-    async function fetchContractorJobs() {
-      try {
-        const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: "owner@example.test",
-            password: "DemoPassword!2026",
-          }),
-        });
-        if (loginRes.ok) {
-          const { accessToken } = await loginRes.json();
-          const jobsRes = await fetch("http://localhost:4000/v1/jobs", {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          if (jobsRes.ok) {
-            const jobs = await jobsRes.json();
-            if (jobs.length > 0) {
-              const j = jobs[0];
-              setLiveJob({
-                id: j.id,
-                serviceRequestId: j.service_request_id,
-                description:
-                  j.request_description ?? "AC not cooling — Avery's Home",
-                address: `${j.address_line1 ?? "123 King Street W"} · ${j.city ?? "Toronto"}`,
-                status: j.status,
-              });
-              if (j.status !== "ASSIGNED") {
-                setAccepted(true);
-                const stepMap: Record<string, number> = {
-                  ASSIGNED: 0,
-                  TECHNICIAN_EN_ROUTE: 1,
-                  TECHNICIAN_ARRIVED: 2,
-                  ASSESSMENT_IN_PROGRESS: 3,
-                  QUOTE_PENDING: 4,
-                  WORK_IN_PROGRESS: 4,
-                  COMPLETION_PENDING: 4,
-                  COMPLETED: 5,
-                };
-                const mappedStep = stepMap[j.status];
-                if (typeof mappedStep === "number") {
-                  setCurrent(mappedStep);
-                }
-              }
-            }
-          }
-        }
-      } catch {
-        // Fall back to offline demo state
-      }
-    }
-    fetchContractorJobs();
-  }, []);
-
-  const handleAcceptJob = async () => {
-    setAccepted(true);
-    setCurrent(1);
-    if (liveJob) {
-      try {
-        const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: "owner@example.test",
-            password: "DemoPassword!2026",
-          }),
-        });
-        if (loginRes.ok) {
-          const { accessToken } = await loginRes.json();
-          await fetch(
-            `http://localhost:4000/v1/service-requests/${liveJob.serviceRequestId}/transition`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${accessToken}`,
-              },
-              body: JSON.stringify({ to: "TECHNICIAN_EN_ROUTE" }),
-            },
-          );
-        }
-      } catch {
-        // Graceful offline fallback
-      }
-    }
+  const handleAddMaterial = () => {
+    const costCents = Math.round(parseFloat(newCost || "0") * 100);
+    if (!costCents || isNaN(costCents)) return;
+    const item: MaterialReceiptItem = {
+      id: `mat-${Date.now()}`,
+      vendor: newVendor,
+      invoiceNumber: newInvoice,
+      description: newDesc,
+      contractorCostCents: costCents,
+      markupPercent: 15,
+    };
+    setMaterialReceipts((prev) => [...prev, item]);
+    setNewDesc("");
+    setNewCost("");
   };
 
-  const handleAdvanceJobStatus = async () => {
-    const nextStep = Math.min(jobSteps.length - 1, current + 1);
-    setCurrent(nextStep);
-    if (liveJob) {
-      const stepToTargetState: Record<number, string> = {
-        1: "TECHNICIAN_EN_ROUTE",
-        2: "TECHNICIAN_ARRIVED",
-        3: "ASSESSMENT_IN_PROGRESS",
-        4: "QUOTE_PENDING",
-        5: "COMPLETED",
-      };
-      const targetState = stepToTargetState[nextStep];
-      if (targetState) {
-        try {
-          const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email: "owner@example.test",
-              password: "DemoPassword!2026",
-            }),
-          });
-          if (loginRes.ok) {
-            const { accessToken } = await loginRes.json();
-            await fetch(
-              `http://localhost:4000/v1/service-requests/${liveJob.serviceRequestId}/transition`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  Authorization: `Bearer ${accessToken}`,
-                },
-                body: JSON.stringify({ to: targetState }),
-              },
-            );
-          }
-        } catch {
-          // Graceful offline fallback
-        }
-      }
-    }
-  };
-
-  const uploadSampleCredential = async (
-    standardCode: string,
-    standardName: string,
-  ) => {
-    setUserCredentials((prev) => ({
-      ...prev,
-      [standardCode]: {
-        code: standardCode,
-        status: "PENDING",
-        geography: selectedLocation,
-        documentKey: `uploads/${standardCode.toLowerCase()}-doc.pdf`,
-        expiryDate: "2028-06-30",
-        licenseNumber: `VER-${Date.now().toString().slice(-6)}`,
-      },
-    }));
-    try {
-      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: "owner@example.test",
-          password: "DemoPassword!2026",
-        }),
-      });
-      if (loginRes.ok) {
-        const { accessToken } = await loginRes.json();
-        await fetch("http://localhost:4000/v1/credentials/submit", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            code: standardCode,
-            geography: selectedLocation,
-            documentKey: `uploads/${standardCode.toLowerCase()}-doc.pdf`,
-            expiryDate: "2028-06-30",
-            licenseNumber: `VER-${Date.now().toString().slice(-6)}`,
-            entityType:
-              selectedEntityLevel === "TECHNICIAN"
-                ? "TECHNICIAN"
-                : "CONTRACTOR",
-          }),
-        });
-        setSubmissionFeedback(
-          `Document submitted & saved to platform database for ${standardName}! Status: PENDING_REVIEW`,
-        );
-      } else {
-        setSubmissionFeedback(
-          `Document submitted for ${standardName}! Platform audit status: PENDING_REVIEW`,
-        );
-      }
-    } catch {
-      setSubmissionFeedback(
-        `Document submitted for ${standardName}! Platform audit status: PENDING_REVIEW`,
-      );
-    }
-    setTimeout(() => setSubmissionFeedback(null), 4000);
-  };
-
-  const selectedDomainObj = DOMAINS.find((d) => d.slug === selectedVertical);
-  const selectedLocObj = LOCATIONS.find((l) => l.code === selectedLocation);
-
-  const domainSelectId = useId();
-  const locationSelectId = useId();
-  const entitySelectId = useId();
+  const totalContractorMaterialsCostCents = materialReceipts.reduce(
+    (acc, m) => acc + m.contractorCostCents,
+    0,
+  );
+  const totalBilledMaterialsCents = materialReceipts.reduce(
+    (acc, m) => acc + Math.round(m.contractorCostCents * (1 + m.markupPercent / 100)),
+    0,
+  );
 
   return (
     <Shell
-      title="Contractor & Trade Partner Operations"
-      subtitle="Manage field service dispatching and verify compliance against statutory government regulations across Canada & US on skilledhire.ca."
-      eyebrow="SKILLED HIRE · SERVICE PROVIDER NETWORK"
+      title="Contractor & Field Operations Command"
+      subtitle="Apple-inspired unified operations portal: live dispatch offers, navigation, evidence locker, materials receipts, structured completion sign-offs, and 365-day warranty claims triage."
+      eyebrow="LICENSED TRADE WORKFORCE · ONTARIO TSSA & ESA"
     >
-      {/* Top Navigation Tabs */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
-        <Button
-          variant={activeTab === "compliance" ? "primary" : "secondary"}
-          onClick={() => setActiveTab("compliance")}
-        >
-          🛡️ Compliance & Standards Verification
-        </Button>
-        <Button
-          variant={activeTab === "workspace" ? "primary" : "secondary"}
-          onClick={() => setActiveTab("workspace")}
-        >
-          📋 Active Job Workboard
-        </Button>
+      {/* Primary Apple-style Navigation */}
+      <div style={{ marginBottom: 24, overflowX: "auto" }}>
+        <SegmentedControl
+          ariaLabel="Contractor operations navigation"
+          value={activeTab}
+          onChange={(tab) => setActiveTab(tab)}
+          options={[
+            {
+              value: "workspace",
+              label: "Live Jobs & Dispatch",
+              icon: "⚡",
+              badge: dispatchOfferAccepted ? undefined : "1 Offer",
+            },
+            {
+              value: "evidence",
+              label: "Field Evidence & Receipts",
+              icon: "📸",
+              badge: materialReceipts.length,
+            },
+            {
+              value: "completion",
+              label: "Completion & Sign-Off",
+              icon: "📝",
+              badge: completionSubmitted ? "Ready" : undefined,
+            },
+            {
+              value: "warranty",
+              label: "Warranty & Claims Triage",
+              icon: "🛡️",
+              badge: warrantyClaims.filter((c) => c.status === "OPEN_TRIAGE").length || undefined,
+            },
+            {
+              value: "compliance",
+              label: "Compliance Scorecard",
+              icon: "📜",
+              badge: `${scorecard.scoreBps / 100}%`,
+            },
+          ]}
+        />
       </div>
 
-      {activeTab === "compliance" ? (
-        <>
-          {/* Executive Compliance Scorecard Banner */}
-          <Card
-            tone={
-              scorecard.overallStatus === "VERIFIED"
-                ? "green"
-                : scorecard.overallStatus === "PENDING_REVIEW"
-                  ? "blue"
-                  : "amber"
-            }
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: 16,
-                flexWrap: "wrap",
-              }}
-            >
-              <div>
+      {submissionFeedback && (
+        <Callout tone="success" title="Verification Engine Updated">
+          {submissionFeedback}
+        </Callout>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 1: LIVE JOBS & DISPATCH WORKSPACE
+         ------------------------------------------------------------- */}
+      {activeTab === "workspace" && (
+        <div>
+          {!dispatchOfferAccepted ? (
+            <Card tone="amber" padding="lg">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                  gap: 16,
+                  marginBottom: 16,
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <Status tone="amber">New High-Priority Dispatch Offer</Status>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                      15-Minute SLA Window
+                    </span>
+                  </div>
+                  <h2 style={{ fontSize: 24, margin: "8px 0 4px" }}>
+                    Emergency AC Diagnostic · Toronto (Downtown)
+                  </h2>
+                  <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                    123 King Street W · Unit 1402 · Distance: 4.8 km (18 min drive)
+                  </p>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "#475569" }}>
+                    Guaranteed Payout
+                  </p>
+                  <p style={{ margin: 0, fontSize: 32, fontWeight: 900, color: "#0f172a" }}>
+                    $240.00 <span style={{ fontSize: 14 }}>CAD</span>
+                  </p>
+                </div>
+              </div>
+
+              <Callout tone="info" title="Customer Scope & Diagnostic Description">
+                &ldquo;AC compressor fan humming loudly but outdoor unit fan blades not spinning.
+                Room temperature rising rapidly (currently 26°C indoors). Requested immediate
+                certified technician arrival.&rdquo;
+              </Callout>
+
+              <ProgressBar value={75} max={100} label="Response Window Remaining (11m 15s)" tone="amber" />
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  marginTop: 20,
+                  flexWrap: "wrap",
+                }}
+              >
+                <Button
+                  variant="primary"
+                  size="lg"
+                  onClick={() => {
+                    setDispatchOfferAccepted(true);
+                    setCurrentStep(1);
+                  }}
+                >
+                  ✓ Accept Dispatch Offer
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  onClick={() => alert("Dispatch passed to next eligible on-call provider.")}
+                >
+                  Decline & Pass Offer
+                </Button>
+              </div>
+            </Card>
+          ) : (
+            <div>
+              {/* Active Job Journey Board */}
+              <Card tone="white" padding="lg">
                 <div
                   style={{
                     display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    marginBottom: 6,
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    flexWrap: "wrap",
+                    gap: 16,
+                    marginBottom: 20,
                   }}
                 >
-                  <Status tone={getStatusTone(scorecard.overallStatus)}>
-                    {scorecard.overallStatus === "VERIFIED"
-                      ? "● Fully Verified & Dispatch Ready"
-                      : scorecard.overallStatus === "PENDING_REVIEW"
-                        ? "● Documents In Verification Audit Queue"
-                        : scorecard.overallStatus === "EXPIRED"
-                          ? "▲ Action Required: Expired Mandatory Credential"
-                          : "▲ Compliance Deficient: Mandatory Standards Missing"}
-                  </Status>
-                  <span
-                    style={{ fontSize: 13, fontWeight: 700, color: "#52606d" }}
-                  >
-                    Standard: {selectedDomainObj?.label} in{" "}
-                    {selectedLocObj?.label}
-                  </span>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <Status tone="blue">Active Dispatch In Progress</Status>
+                      <Badge tone="neutral">Job #JOB-2026-4412</Badge>
+                      <Badge tone="green">Ontario TSSA Validated</Badge>
+                    </div>
+                    <h2 style={{ fontSize: 26, margin: "8px 0 4px" }}>
+                      Lennox Central AC Diagnostic & Repair
+                    </h2>
+                    <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                      Customer: Avery H. · 123 King Street W · Toronto, ON
+                    </p>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "#475569" }}>
+                      Estimated Technician Arrival
+                    </p>
+                    <p style={{ margin: 0, fontSize: 28, fontWeight: 900, color: "#1d4ed8" }}>
+                      {etaMinutes} min <span style={{ fontSize: 14 }}>ETA</span>
+                    </p>
+                  </div>
                 </div>
-                <h2
-                  style={{
-                    margin: "4px 0 6px",
-                    fontSize: 24,
-                    letterSpacing: "-0.01em",
-                  }}
-                >
-                  Provider Readiness Scorecard:{" "}
-                  {Math.round(scorecard.scoreBps / 100)}%
-                </h2>
-                <p
-                  style={{
-                    margin: 0,
-                    color: "#52606d",
-                    fontSize: 14,
-                    maxWidth: 680,
-                  }}
-                >
-                  {scorecard.overallStatus === "VERIFIED"
-                    ? "Congratulations! All statutory regulations, trade licenses, environmental mandates, and insurance bounds are fully verified. You are eligible for automated customer lead dispatch in this jurisdiction."
-                    : scorecard.overallStatus === "PENDING_REVIEW"
-                      ? "Credentials have been uploaded and are currently under secondary platform audit. Verification typically takes 2-4 business hours."
-                      : "To provide field services in this jurisdiction, statutory regulations require active verification of all mandatory standards before customer jobs can be dispatched."}
-                </p>
-              </div>
 
-              <div style={{ textAlign: "right", minWidth: 160 }}>
-                <span
-                  style={{ fontSize: 32, fontWeight: 900, color: "#172033" }}
-                >
-                  {scorecard.mandatoryPassed} / {scorecard.mandatoryTotal}
-                </span>
-                <p
-                  style={{
-                    margin: "2px 0 0",
-                    color: "#52606d",
-                    fontSize: 13,
-                    fontWeight: 700,
-                  }}
-                >
-                  Mandatory Standards Met
-                </p>
+                <div style={{ margin: "24px 0" }}>
+                  <Stepper steps={jobSteps} current={currentStep} />
+                </div>
+
+                <Divider />
+
+                {/* Real-time State Actions */}
+                <div style={{ display: "grid", gap: 16 }}>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                    Technician Action Controls
+                  </h3>
+
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <Button
+                      variant={currentStep === 1 ? "primary" : "secondary"}
+                      disabled={currentStep > 1}
+                      onClick={() => {
+                        setCurrentStep(1);
+                        setEtaMinutes(18);
+                      }}
+                    >
+                      🚗 Start Navigation (En Route)
+                    </Button>
+                    <Button
+                      variant={currentStep === 2 ? "primary" : "secondary"}
+                      disabled={currentStep >= 2}
+                      onClick={() => {
+                        setCurrentStep(2);
+                        setEtaMinutes(0);
+                      }}
+                    >
+                      📍 Confirm Arrived on Site
+                    </Button>
+                    <Button
+                      variant={currentStep === 3 ? "primary" : "secondary"}
+                      disabled={currentStep >= 3}
+                      onClick={() => setCurrentStep(3)}
+                    >
+                      🔍 Begin Assessment
+                    </Button>
+                    <Button
+                      variant={currentStep === 4 ? "primary" : "secondary"}
+                      disabled={currentStep >= 4}
+                      onClick={() => setCurrentStep(4)}
+                    >
+                      📋 Present Diagnostic Quote
+                    </Button>
+                    <Button
+                      variant={currentStep === 5 ? "success" : "secondary"}
+                      onClick={() => {
+                        setCurrentStep(5);
+                        setActiveTab("completion");
+                      }}
+                    >
+                      ✓ Complete & Generate Sign-off
+                    </Button>
+                  </div>
+
+                  {workerVerified && (
+                    <Callout tone="success" title="Technician Identity & Credential Gate Verified">
+                      Journeyperson Marcus Sterling (TSSA G2 #984210 · Skilled Trades 313A #44912)
+                      holds active liability insurance and zero safety quarantines. Customer
+                      notified with verified technician badge.
+                    </Callout>
+                  )}
+                </div>
+              </Card>
+
+              {/* Quick Metrics */}
+              <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">
+                <Card padding="sm">
+                  <Metric
+                    label="Service Rate Card"
+                    value="$129.00 CAD"
+                    detail="Fixed diagnostic call-out (applied to repair)"
+                  />
+                </Card>
+                <Card padding="sm">
+                  <Metric
+                    label="Field Evidence Collected"
+                    value={`${evidencePhotos.length} Items`}
+                    detail="Before & after photos time-stamped"
+                  />
+                </Card>
+                <Card padding="sm">
+                  <Metric
+                    label="Materials Charged"
+                    value={`$${(totalBilledMaterialsCents / 100).toFixed(2)} CAD`}
+                    detail="Transparent 15% platform markup verified"
+                  />
+                </Card>
+                <Card padding="sm">
+                  <Metric
+                    label="Warranty Coverage"
+                    value="365 Days"
+                    detail="Skilled Hire Workmanship Guarantee"
+                  />
+                </Card>
+              </Grid>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 2: FIELD EVIDENCE & MATERIALS RECEIPTS
+         ------------------------------------------------------------- */}
+      {activeTab === "evidence" && (
+        <div>
+          <Card tone="white" padding="lg">
+            <h2 style={{ fontSize: 22, margin: "0 0 8px" }}>
+              Field Photo Evidence Locker
+            </h2>
+            <p style={{ margin: "0 0 20px", color: "#475569", fontSize: 14 }}>
+              Capture required diagnostic and completion photos. Evidence is cryptographically
+              anchored and displayed on homeowner completion reports.
+            </p>
+
+            <Grid columns="repeat(auto-fill, minmax(280px, 1fr))">
+              {evidencePhotos.map((photo) => (
                 <div
+                  key={photo.id}
                   style={{
-                    background: "#e2e8f0",
-                    height: 8,
-                    borderRadius: 999,
-                    overflow: "hidden",
-                    marginTop: 8,
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 16,
+                    padding: 16,
+                    background: photo.type === "before" ? "#fffbeb" : "#ecfdf5",
                   }}
                 >
                   <div
                     style={{
-                      height: "100%",
-                      width: `${scorecard.mandatoryTotal > 0 ? (scorecard.mandatoryPassed / scorecard.mandatoryTotal) * 100 : 100}%`,
-                      background:
-                        scorecard.overallStatus === "VERIFIED"
-                          ? "#087f5b"
-                          : "#1d4ed8",
-                      borderRadius: 999,
-                      transition: "width 0.3s ease",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 8,
                     }}
-                  />
+                  >
+                    <Badge tone={photo.type === "before" ? "amber" : "green"}>
+                      {photo.type === "before" ? "BEFORE WORK" : "AFTER WORK"}
+                    </Badge>
+                    <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                      {photo.timestamp}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      height: 120,
+                      borderRadius: 12,
+                      background: "#e2e8f0",
+                      display: "grid",
+                      placeItems: "center",
+                      fontSize: 32,
+                      marginBottom: 10,
+                    }}
+                  >
+                    📷
+                  </div>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                    {photo.label}
+                  </p>
+                </div>
+              ))}
+            </Grid>
+
+            <div style={{ marginTop: 24, padding: 18, background: "#f8fafc", borderRadius: 16 }}>
+              <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 800 }}>
+                Attach New Photo Evidence
+              </h3>
+              <div style={{ display: "grid", gap: 12 }}>
+                <Field
+                  label="Description / Diagnostic Finding"
+                  placeholder="e.g. Suction line pressure gauge showing 118 PSI"
+                  value={newPhotoLabel}
+                  onChange={setNewPhotoLabel}
+                />
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <Button
+                    variant={newPhotoType === "before" ? "primary" : "secondary"}
+                    size="sm"
+                    onClick={() => setNewPhotoType("before")}
+                  >
+                    Tag as &lsquo;Before&rsquo;
+                  </Button>
+                  <Button
+                    variant={newPhotoType === "after" ? "primary" : "secondary"}
+                    size="sm"
+                    onClick={() => setNewPhotoType("after")}
+                  >
+                    Tag as &lsquo;After&rsquo;
+                  </Button>
+                  <Button
+                    variant="success"
+                    size="sm"
+                    disabled={!newPhotoLabel.trim()}
+                    onClick={() => {
+                      setEvidencePhotos((prev) => [
+                        ...prev,
+                        {
+                          id: `ev-${Date.now()}`,
+                          label: newPhotoLabel.trim(),
+                          type: newPhotoType,
+                          timestamp: "Just now",
+                        },
+                      ]);
+                      setNewPhotoLabel("");
+                    }}
+                  >
+                    + Upload & Seal Evidence
+                  </Button>
                 </div>
               </div>
             </div>
+          </Card>
 
-            {submissionFeedback && (
-              <div
+          {/* Materials Receipts Tracker */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <h2 style={{ fontSize: 22, margin: 0 }}>
+                  Materials & Parts Receipts Tracker
+                </h2>
+                <p style={{ margin: "4px 0 0", color: "#475569", fontSize: 14 }}>
+                  Itemized parts receipts with transparent 15% platform markup. Invoices sync with
+                  customer invoice and homeowner Property Passport.
+                </p>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                  Total Billable Parts
+                </p>
+                <p style={{ margin: 0, fontSize: 24, fontWeight: 800, color: "#0f172a" }}>
+                  ${(totalBilledMaterialsCents / 100).toFixed(2)} CAD
+                </p>
+              </div>
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table
                 style={{
-                  marginTop: 14,
-                  padding: "10px 14px",
-                  background: "#f8fafc",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: 8,
+                  width: "100%",
+                  borderCollapse: "collapse",
                   fontSize: 13,
-                  fontWeight: 700,
-                  color: "#0f172a",
+                  textAlign: "left",
                 }}
               >
-                🔔 {submissionFeedback}
+                <thead>
+                  <tr style={{ borderBottom: "2px solid #e2e8f0", color: "#64748b" }}>
+                    <th style={{ padding: "10px 12px" }}>Vendor</th>
+                    <th style={{ padding: "10px 12px" }}>Invoice #</th>
+                    <th style={{ padding: "10px 12px" }}>Part Description</th>
+                    <th style={{ padding: "10px 12px" }}>Your Cost</th>
+                    <th style={{ padding: "10px 12px" }}>Markup</th>
+                    <th style={{ padding: "10px 12px" }}>Customer Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {materialReceipts.map((mat) => {
+                    const billable = Math.round(
+                      mat.contractorCostCents * (1 + mat.markupPercent / 100),
+                    );
+                    return (
+                      <tr key={mat.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "12px", fontWeight: 700 }}>{mat.vendor}</td>
+                        <td style={{ padding: "12px", color: "#64748b" }}>{mat.invoiceNumber}</td>
+                        <td style={{ padding: "12px" }}>{mat.description}</td>
+                        <td style={{ padding: "12px" }}>
+                          ${(mat.contractorCostCents / 100).toFixed(2)}
+                        </td>
+                        <td style={{ padding: "12px" }}>
+                          <Badge tone="blue">+{mat.markupPercent}%</Badge>
+                        </td>
+                        <td style={{ padding: "12px", fontWeight: 800, color: "#0f172a" }}>
+                          ${(billable / 100).toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <Divider />
+
+            {/* Add Material Row */}
+            <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 800 }}>
+              Record Supplier Part Receipt
+            </h3>
+            <Grid columns="repeat(auto-fit, minmax(200px, 1fr))">
+              <Field label="Wholesale Supplier" value={newVendor} onChange={setNewVendor} />
+              <Field label="Supplier Invoice #" value={newInvoice} onChange={setNewInvoice} />
+              <Field
+                label="Part Description & Specs"
+                value={newDesc}
+                onChange={setNewDesc}
+                placeholder="e.g. Honeywell R8184G Protectorelay"
+              />
+              <Field
+                label="Contractor Cost ($ CAD)"
+                value={newCost}
+                onChange={setNewCost}
+                placeholder="0.00"
+              />
+            </Grid>
+            <div style={{ marginTop: 14 }}>
+              <Button variant="primary" onClick={handleAddMaterial} disabled={!newDesc || !newCost}>
+                + Add Part to Billable Job Summary
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 3: STRUCTURED JOB COMPLETION REPORT GENERATOR
+         ------------------------------------------------------------- */}
+      {activeTab === "completion" && (
+        <div>
+          <Card tone="white" padding="lg">
+            <h2 style={{ fontSize: 22, margin: "0 0 8px" }}>
+              Structured Job Completion Report
+            </h2>
+            <p style={{ margin: "0 0 20px", color: "#475569", fontSize: 14 }}>
+              Upon submission, this report is immediately dispatched to the homeowner for review
+              and digital sign-off, automatically generating the 365-day Skilled Hire Workmanship
+              Warranty Certificate and logging equipment to the Property Service Passport.
+            </p>
+
+            <div style={{ display: "grid", gap: 18 }}>
+              <Field
+                label="Diagnostic Findings & Completed Work Summary"
+                multiline
+                value={completionWorkSummary}
+                onChange={setCompletionWorkSummary}
+              />
+
+              <div style={{ background: "#f8fafc", padding: 18, borderRadius: 16 }}>
+                <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 800 }}>
+                  Equipment Service Passport Registration
+                </h3>
+                <p style={{ margin: "0 0 14px", color: "#64748b", fontSize: 13 }}>
+                  Recorded equipment is permanently tied to the property address (123 King Street W)
+                  for warranty coverage and future service history.
+                </p>
+                <Grid columns="repeat(auto-fit, minmax(200px, 1fr))">
+                  <Field label="Equipment Category" value={equipType} onChange={setEquipType} />
+                  <Field label="Manufacturer / Brand" value={equipBrand} onChange={setEquipBrand} />
+                  <Field label="Model Number" value={equipModel} onChange={setEquipModel} />
+                  <Field label="Serial Number" value={equipSerial} onChange={setEquipSerial} />
+                </Grid>
+              </div>
+
+              <div
+                style={{
+                  border: "1px solid #bfdbfe",
+                  background: "#eff6ff",
+                  padding: 16,
+                  borderRadius: 14,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  id="attestation-checkbox"
+                  checked={attestationConfirmed}
+                  onChange={(e) => setAttestationConfirmed(e.target.checked)}
+                  style={{ width: 20, height: 20 }}
+                />
+                <label
+                  htmlFor="attestation-checkbox"
+                  style={{ fontSize: 13, fontWeight: 700, color: "#1e3a8a", cursor: "pointer" }}
+                >
+                  I attest that all completed work conforms to Ontario Building Code, TSSA Gas
+                  Utilization Code B149.1, and Skilled Trades Ontario standards. Installed parts are
+                  new and certified.
+                </label>
+              </div>
+
+              {completionSubmitted ? (
+                <Callout tone="success" title="Completion Report Dispatched to Homeowner">
+                  Report successfully transmitted. Homeowner sign-off notification sent via SMS &
+                  App. 365-Day Workmanship Warranty #WAR-2026-9F8A1 generated.
+                </Callout>
+              ) : (
+                <div>
+                  <Button
+                    variant="success"
+                    size="lg"
+                    disabled={!attestationConfirmed || !completionWorkSummary}
+                    onClick={() => setCompletionSubmitted(true)}
+                  >
+                    ✓ Submit Completion Report & Dispatch Sign-Off
+                  </Button>
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 4: WARRANTY & CLAIMS TRIAGE
+         ------------------------------------------------------------- */}
+      {activeTab === "warranty" && (
+        <div>
+          {/* Recovery Ledger Card */}
+          <Card tone="blue" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <Status tone="blue">Platform Warranty & Recovery Ledger</Status>
+                <h2 style={{ fontSize: 24, margin: "6px 0 2px" }}>
+                  Workmanship Warranty Reserve Account
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  All completed jobs carry 365-day platform workmanship protection. Right-to-cure
+                  gives you 48 hours to remediate reported issues before platform intervention.
+                </p>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>
+                  Available Holdback Balance
+                </span>
+                <p style={{ margin: 0, fontSize: 32, fontWeight: 900, color: "#1d4ed8" }}>
+                  $850.00 <span style={{ fontSize: 14 }}>CAD</span>
+                </p>
+              </div>
+            </div>
+
+            <Grid columns="repeat(auto-fit, minmax(200px, 1fr))">
+              <div>
+                <Metric label="Active Warranties" value="14 Jobs" detail="All covered under 365-day SLA" />
+              </div>
+              <div>
+                <Metric label="Open Claims" value="1 Item" detail="Awaiting right-to-cure action" />
+              </div>
+              <div>
+                <Metric label="Resolved Remedials" value="100%" detail="Zero customer chargebacks" />
+              </div>
+            </Grid>
+          </Card>
+
+          {/* Incoming Claims List */}
+          <Card tone="white" padding="lg">
+            <h2 style={{ fontSize: 20, margin: "0 0 12px" }}>
+              Incoming Customer Warranty Claims
+            </h2>
+
+            {warrantyClaims.length === 0 ? (
+              <EmptyState
+                icon="🎉"
+                title="No Open Warranty Claims"
+                description="All completed jobs are currently operating with 100% customer satisfaction."
+              />
+            ) : (
+              <div style={{ display: "grid", gap: 14 }}>
+                {warrantyClaims.map((claim) => (
+                  <div
+                    key={claim.id}
+                    style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 16,
+                      padding: 18,
+                      background: "#fff",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        flexWrap: "wrap",
+                        gap: 12,
+                        marginBottom: 10,
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <Badge tone="amber">Claim #{claim.id}</Badge>
+                          <Badge tone="neutral">Job #{claim.jobId}</Badge>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+                            Day {claim.daysSinceCompletion} of 365
+                          </span>
+                        </div>
+                        <h3 style={{ margin: "6px 0 2px", fontSize: 16, fontWeight: 800 }}>
+                          {claim.customerName} · Moderate Callback Request
+                        </h3>
+                      </div>
+                      <Status tone={claim.status === "CURE_OFFERED" ? "green" : "amber"}>
+                        {claim.status === "CURE_OFFERED" ? "Callback Scheduled" : "Awaiting Right-to-Cure"}
+                      </Status>
+                    </div>
+
+                    <p style={{ margin: "0 0 14px", fontSize: 14, color: "#334155" }}>
+                      &ldquo;{claim.reportedIssue}&rdquo;
+                    </p>
+
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={claim.status === "CURE_OFFERED"}
+                        onClick={() => {
+                          setWarrantyClaims((prev) =>
+                            prev.map((c) =>
+                              c.id === claim.id
+                                ? { ...c, status: "CURE_OFFERED" }
+                                : c,
+                            ),
+                          );
+                        }}
+                      >
+                        ✓ Exercise Right-to-Cure (Free Remedial Visit)
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setSelectedClaim(claim)}
+                      >
+                        Review Customer Photos & Notes
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </Card>
 
-          {/* Standards Query & Configuration Filter Bar */}
-          <Card>
-            <h3 style={{ margin: "0 0 12px", fontSize: 16 }}>
-              🔍 Filter Standards by Domain & Jurisdiction
-            </h3>
-            <Grid columns="repeat(auto-fit, minmax(240px, 1fr))">
-              <div>
-                <label
-                  htmlFor={domainSelectId}
+          {/* Claim Modal Details */}
+          {selectedClaim && (
+            <Modal
+              isOpen={Boolean(selectedClaim)}
+              onClose={() => setSelectedClaim(null)}
+              title={`Warranty Claim Details · ${selectedClaim.id}`}
+            >
+              <div style={{ display: "grid", gap: 14 }}>
+                <p style={{ margin: 0, fontSize: 14, color: "#334155" }}>
+                  <strong>Reported Problem:</strong> {selectedClaim.reportedIssue}
+                </p>
+                <div
                   style={{
-                    display: "block",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: "#52606d",
-                    marginBottom: 6,
+                    height: 140,
+                    borderRadius: 12,
+                    background: "#f1f5f9",
+                    display: "grid",
+                    placeItems: "center",
+                    color: "#64748b",
+                    fontSize: 14,
                   }}
                 >
-                  TRADE VERTICAL (DOMAIN)
-                </label>
+                  📷 Homeowner Attached Photo: Condensate drain pipe junction
+                </div>
+                <Callout tone="info" title="Right-to-Cure Statutory Policy">
+                  Contractor has the right to resolve workmanship defects within 48 hours without
+                  financial penalty or platform strike.
+                </Callout>
+                <Button variant="primary" onClick={() => setSelectedClaim(null)}>
+                  Close
+                </Button>
+              </div>
+            </Modal>
+          )}
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 5: PROVIDER ONBOARDING & COMPLIANCE SCORECARD
+         ------------------------------------------------------------- */}
+      {activeTab === "compliance" && (
+        <div>
+          <Card tone="white" padding="lg">
+            <h2 style={{ fontSize: 22, margin: "0 0 6px" }}>
+              Multi-Trade Provider Qualification & Compliance
+            </h2>
+            <p style={{ margin: "0 0 20px", color: "#475569", fontSize: 14 }}>
+              Skilled Hire enforces strict 100% statutory credential compliance. Select your trade
+              vertical and jurisdiction to test verification status.
+            </p>
+
+            <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">
+              <label style={{ display: "grid", gap: 6, fontSize: 13, fontWeight: 700 }}>
+                Trade Domain
                 <select
-                  id={domainSelectId}
                   value={selectedVertical}
                   onChange={(e) => setSelectedVertical(e.target.value)}
                   style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: "1px solid #d9e2ec",
-                    fontWeight: 700,
-                    color: "#172033",
-                    background: "#fff",
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    border: "1px solid #cbd5e1",
+                    fontSize: 14,
                   }}
                 >
                   {DOMAINS.map((d) => (
@@ -716,33 +1136,18 @@ export default function ContractorHome() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </label>
 
-              <div>
-                <label
-                  htmlFor={locationSelectId}
-                  style={{
-                    display: "block",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: "#52606d",
-                    marginBottom: 6,
-                  }}
-                >
-                  LOCATION / JURISDICTION
-                </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 13, fontWeight: 700 }}>
+                Jurisdiction
                 <select
-                  id={locationSelectId}
                   value={selectedLocation}
                   onChange={(e) => setSelectedLocation(e.target.value)}
                   style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: "1px solid #d9e2ec",
-                    fontWeight: 700,
-                    color: "#172033",
-                    background: "#fff",
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    border: "1px solid #cbd5e1",
+                    fontSize: 14,
                   }}
                 >
                   {LOCATIONS.map((l) => (
@@ -751,544 +1156,107 @@ export default function ContractorHome() {
                     </option>
                   ))}
                 </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor={entitySelectId}
-                  style={{
-                    display: "block",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: "#52606d",
-                    marginBottom: 6,
-                  }}
-                >
-                  ENTITY SCOPE
-                </label>
-                <select
-                  id={entitySelectId}
-                  value={selectedEntityLevel}
-                  onChange={(e) =>
-                    setSelectedEntityLevel(e.target.value as any)
-                  }
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: "1px solid #d9e2ec",
-                    fontWeight: 700,
-                    color: "#172033",
-                    background: "#fff",
-                  }}
-                >
-                  <option value="ALL">
-                    All Entity Requirements (Contractor & Technician)
-                  </option>
-                  <option value="CONTRACTOR">
-                    Contractor Business Entity Only
-                  </option>
-                  <option value="TECHNICIAN">
-                    Individual Field Technician Only
-                  </option>
-                </select>
-              </div>
+              </label>
             </Grid>
-          </Card>
 
-          {/* The 6 Canonical Regulatory Groups Carousel / Selector */}
-          <div style={{ marginBottom: 18 }}>
-            <p
-              style={{
-                margin: "0 0 10px",
-                fontSize: 12,
-                fontWeight: 800,
-                color: "#52606d",
-                letterSpacing: "0.06em",
-              }}
-            >
-              REGULATORY COMPLIANCE PILLARS ({CREDENTIAL_GROUPS.length}{" "}
-              STATUTORY GROUPS)
-            </p>
+            <Divider />
+
+            {/* Scorecard Hero */}
             <div
               style={{
                 display: "flex",
-                gap: 8,
-                overflowX: "auto",
-                paddingBottom: 6,
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 16,
+                padding: 20,
+                borderRadius: 18,
+                background:
+                  scorecard.overallStatus === "VERIFIED"
+                    ? "#ecfdf5"
+                    : "#fffbeb",
+                border: `1.5px solid ${scorecard.overallStatus === "VERIFIED" ? "#a7f3d0" : "#fde68a"}`,
+                marginBottom: 24,
               }}
             >
-              <button
-                type="button"
-                onClick={() => setSelectedGroupFilter("ALL")}
-                style={{
-                  padding: "8px 14px",
-                  borderRadius: 999,
-                  border: `1px solid ${selectedGroupFilter === "ALL" ? "#1d4ed8" : "#cbd5e1"}`,
-                  background:
-                    selectedGroupFilter === "ALL" ? "#eff6ff" : "#fff",
-                  color: selectedGroupFilter === "ALL" ? "#1d4ed8" : "#334155",
-                  fontWeight: 800,
-                  fontSize: 13,
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                All Groups ({applicableStandards.length} Standards)
-              </button>
-              {CREDENTIAL_GROUPS.map((group) => {
-                const groupStandards = applicableStandards.filter(
-                  (s) => s.groupCode === group.code,
-                );
-                const isSelected = selectedGroupFilter === group.code;
+              <div>
+                <Status tone={scorecard.overallStatus === "VERIFIED" ? "green" : "amber"}>
+                  {scorecard.overallStatus === "VERIFIED"
+                    ? "✓ 100% Fully Verified for Dispatch"
+                    : "⚠️ Mandatory Credentials Deficient"}
+                </Status>
+                <h3 style={{ margin: "8px 0 4px", fontSize: 20, fontWeight: 800 }}>
+                  Statutory Scorecard: {scorecard.mandatoryPassed} of {scorecard.mandatoryTotal}{" "}
+                  Mandatory Standards Passed
+                </h3>
+                <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+                  Regulatory standards enforced under Ontario Trades & Safety Authorities.
+                </p>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 36, fontWeight: 900, color: "#0f172a" }}>
+                  {scorecard.scoreBps / 100}%
+                </span>
+                <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                  Compliance Index
+                </p>
+              </div>
+            </div>
+
+            {/* Interactive Standards Checklist */}
+            <h3 style={{ fontSize: 16, margin: "0 0 12px" }}>
+              Applicable Credential Verification Checklist
+            </h3>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {applicableStandards.map((std) => {
+                const isHeld = Boolean(userCredentials[std.credentialCode]);
+                const cred = userCredentials[std.credentialCode];
+                const isVerified = cred?.status === "VERIFIED";
+
                 return (
-                  <button
-                    key={group.code}
-                    type="button"
-                    onClick={() => setSelectedGroupFilter(group.code)}
+                  <div
+                    key={std.id}
                     style={{
-                      padding: "8px 14px",
-                      borderRadius: 999,
-                      border: `1px solid ${isSelected ? "#1d4ed8" : "#cbd5e1"}`,
-                      background: isSelected ? "#eff6ff" : "#fff",
-                      color: isSelected ? "#1d4ed8" : "#334155",
-                      fontWeight: 800,
-                      fontSize: 13,
-                      cursor: "pointer",
-                      whiteSpace: "nowrap",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 14,
+                      padding: "14px 18px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 12,
+                      background: isVerified ? "#fff" : "#fafafa",
                     }}
                   >
-                    {group.name} ({groupStandards.length})
-                  </button>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
+                          {std.name}
+                        </span>
+                        <Badge tone={std.requirementLevel === "MANDATORY" ? "danger" : "neutral"}>
+                          {std.requirementLevel}
+                        </Badge>
+                      </div>
+                      <p style={{ margin: "3px 0 0", fontSize: 12, color: "#64748b" }}>
+                        Authority: {std.issuingAuthority} · {std.credentialCode}
+                        {cred?.licenseNumber && ` · License #${cred.licenseNumber}`}
+                      </p>
+                    </div>
+
+                    <Button
+                      variant={isVerified ? "success" : "secondary"}
+                      size="sm"
+                      onClick={() => toggleCredentialStatus(std.credentialCode, std.geography)}
+                    >
+                      {isVerified ? "✓ Verified & Active" : "+ Click to Upload & Verify"}
+                    </Button>
+                  </div>
                 );
               })}
             </div>
-          </div>
-
-          {/* Group Summaries & Interactive Standard Verification Cards */}
-          {scorecard.groups
-            .filter(
-              (group) =>
-                selectedGroupFilter === "ALL" ||
-                group.groupCode === selectedGroupFilter,
-            )
-            .map((group) => (
-              <Card key={group.groupCode}>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: 14,
-                  }}
-                >
-                  <div>
-                    <h3
-                      style={{
-                        margin: "0 0 4px",
-                        fontSize: 18,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                      }}
-                    >
-                      <span>{group.groupName}</span>
-                    </h3>
-                    <p style={{ margin: 0, fontSize: 13, color: "#52606d" }}>
-                      {
-                        CREDENTIAL_GROUPS.find(
-                          (g) => g.code === group.groupCode,
-                        )?.description
-                      }
-                    </p>
-                  </div>
-                  <Status
-                    tone={
-                      group.status === "PASS"
-                        ? "green"
-                        : group.status === "PENDING"
-                          ? "blue"
-                          : "amber"
-                    }
-                  >
-                    {group.status === "PASS"
-                      ? "✓ Group Verified"
-                      : group.status === "PENDING"
-                        ? "⏳ Under Review"
-                        : "▲ Incomplete"}
-                  </Status>
-                </div>
-
-                <div style={{ display: "grid", gap: 12 }}>
-                  {group.items.map((item) => {
-                    const { standard, matchedCredential, status, reason } =
-                      item;
-                    const isPassed = status === "PASS";
-                    const isPending = status === "FAIL_PENDING";
-                    const isExpired = status === "FAIL_EXPIRED";
-                    const isMissing = status === "FAIL_MISSING";
-
-                    return (
-                      <div
-                        key={standard.id}
-                        style={{
-                          border: "1px solid #e2e8f0",
-                          borderRadius: 12,
-                          padding: "14px 16px",
-                          background: isPassed
-                            ? "#f0fdf4"
-                            : isPending
-                              ? "#f0f9ff"
-                              : isExpired
-                                ? "#fffbeb"
-                                : "#fff",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 16,
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <div style={{ flex: "1 1 360px" }}>
-                          <div
-                            style={{
-                              display: "flex",
-                              gap: 8,
-                              alignItems: "center",
-                              flexWrap: "wrap",
-                              marginBottom: 4,
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontWeight: 800,
-                                fontSize: 15,
-                                color: "#0f172a",
-                              }}
-                            >
-                              {standard.name}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 800,
-                                padding: "2px 7px",
-                                borderRadius: 4,
-                                background:
-                                  standard.requirementLevel === "MANDATORY"
-                                    ? "#fee2e2"
-                                    : "#f1f5f9",
-                                color:
-                                  standard.requirementLevel === "MANDATORY"
-                                    ? "#991b1b"
-                                    : "#475569",
-                              }}
-                            >
-                              {standard.requirementLevel}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 700,
-                                padding: "2px 7px",
-                                borderRadius: 4,
-                                background: "#f1f5f9",
-                                color: "#475569",
-                              }}
-                            >
-                              {standard.entityLevel === "CONTRACTOR"
-                                ? "🏢 Contractor Business"
-                                : "👷 Field Tech"}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 700,
-                                color: "#64748b",
-                              }}
-                            >
-                              Code: {standard.credentialCode}
-                            </span>
-                          </div>
-
-                          <p
-                            style={{
-                              margin: "2px 0 6px",
-                              fontSize: 13,
-                              color: "#475569",
-                            }}
-                          >
-                            {standard.description}
-                          </p>
-
-                          <div
-                            style={{
-                              display: "flex",
-                              gap: 14,
-                              fontSize: 12,
-                              color: "#64748b",
-                              flexWrap: "wrap",
-                            }}
-                          >
-                            <span>
-                              🏛️ Authority:{" "}
-                              <strong>{standard.issuingAuthority}</strong>
-                            </span>
-                            {standard.legalReference && (
-                              <span>
-                                📜 Ref: <em>{standard.legalReference}</em>
-                              </span>
-                            )}
-                            <span>
-                              Verification:{" "}
-                              <strong>{standard.verificationMethod}</strong>
-                            </span>
-                            {standard.validityPeriodMonths && (
-                              <span>
-                                Renewal:{" "}
-                                <strong>
-                                  Every {standard.validityPeriodMonths} mo
-                                </strong>
-                              </span>
-                            )}
-                          </div>
-
-                          {matchedCredential && (
-                            <div
-                              style={{
-                                marginTop: 8,
-                                fontSize: 12,
-                                color: "#334155",
-                                background: "rgba(255,255,255,0.7)",
-                                padding: "4px 8px",
-                                borderRadius: 6,
-                                display: "inline-block",
-                              }}
-                            >
-                              {matchedCredential.licenseNumber && (
-                                <span>
-                                  License #{matchedCredential.licenseNumber}{" "}
-                                  ·{" "}
-                                </span>
-                              )}
-                              {matchedCredential.expiryDate && (
-                                <span>
-                                  Expires: {matchedCredential.expiryDate} ·{" "}
-                                </span>
-                              )}
-                              <span>
-                                Status:{" "}
-                                <strong>{matchedCredential.status}</strong>
-                              </span>
-                            </div>
-                          )}
-
-                          <div
-                            style={{
-                              marginTop: 4,
-                              fontSize: 12,
-                              fontWeight: 700,
-                              color: isPassed
-                                ? "#166534"
-                                : isPending
-                                  ? "#0369a1"
-                                  : "#991b1b",
-                            }}
-                          >
-                            {reason}
-                          </div>
-                        </div>
-
-                        {/* Interactive Verification Action Buttons */}
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: 8,
-                            alignItems: "center",
-                          }}
-                        >
-                          <Button
-                            variant={isPassed ? "secondary" : "primary"}
-                            onClick={() =>
-                              uploadSampleCredential(
-                                standard.credentialCode,
-                                standard.name,
-                              )
-                            }
-                          >
-                            {isPassed
-                              ? "Re-upload"
-                              : isPending
-                                ? "Replace Document"
-                                : "Upload Credential"}
-                          </Button>
-                          <Button
-                            variant="quiet"
-                            onClick={() =>
-                              toggleCredentialStatus(
-                                standard.credentialCode,
-                                standard.geography,
-                              )
-                            }
-                          >
-                            {isPassed
-                              ? "Simulate Expiry"
-                              : isPending
-                                ? "Simulate Expire"
-                                : isExpired
-                                  ? "Simulate Missing"
-                                  : "Simulate Verify"}
-                          </Button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-            ))}
-
-          {/* Actionable Next Steps / Regulatory Guidance Card */}
-          {scorecard.actionItems.length > 0 && (
-            <Card tone="amber">
-              <h3 style={{ margin: "0 0 8px", fontSize: 16 }}>
-                📋 Outstanding Compliance Requirements to Unblock Dispatch
-              </h3>
-              <p style={{ margin: "0 0 12px", fontSize: 13, color: "#52606d" }}>
-                Complete the following items to achieve 100% verified standing
-                for {selectedDomainObj?.label} in {selectedLocObj?.label}:
-              </p>
-              <ul
-                style={{
-                  margin: 0,
-                  paddingLeft: 20,
-                  fontSize: 13,
-                  lineHeight: 1.6,
-                  color: "#172033",
-                }}
-              >
-                {scorecard.actionItems.map((action) => (
-                  <li key={action} style={{ marginBottom: 4 }}>
-                    <strong>{action}</strong>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}
-        </>
-      ) : (
-        /* Original Active Job Workboard */
-        <>
-          <Grid columns="repeat(3, minmax(0, 1fr))">
-            <Card>
-              <Metric
-                label="Today’s jobs"
-                value="3"
-                detail="1 awaiting acceptance"
-              />
-            </Card>
-            <Card>
-              <Metric
-                label="This month"
-                value="$8,420"
-                detail="Pending payout $1,240"
-              />
-            </Card>
-            <Card>
-              <Metric
-                label="Reputation"
-                value="4.9 ★"
-                detail="183 completed jobs"
-              />
-            </Card>
-          </Grid>
-          <Grid columns="minmax(0, 1.35fr) minmax(260px, .65fr)">
-            <Card>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  alignItems: "flex-start",
-                }}
-              >
-                <div>
-                  <Status tone={accepted ? "blue" : "amber"}>
-                    {accepted
-                      ? "Accepted · Live in Progress"
-                      : "New assignment · Awaiting Acceptance"}
-                  </Status>
-                  <h2>
-                    {liveJob
-                      ? liveJob.description
-                      : "AC not cooling — Avery’s Home"}
-                  </h2>
-                  <p style={{ color: "#52606d" }}>
-                    {liveJob ? liveJob.address : "123 King Street W · Toronto"}{" "}
-                    · Standard service
-                  </p>
-                </div>
-                <span style={{ fontWeight: 850 }}>
-                  Job #
-                  {liveJob ? liveJob.id.slice(0, 8).toUpperCase() : "10428"}
-                </span>
-              </div>
-              <Divider />
-              <p style={{ color: "#52606d" }}>
-                Customer description: system runs, but the air stays warm. One
-                photo attached. Equipment: Carrier AC.
-              </p>
-              {!accepted ? (
-                <div style={{ display: "flex", gap: 10 }}>
-                  <Button onClick={handleAcceptJob}>Accept job</Button>
-                  <Button variant="secondary">Decline</Button>
-                </div>
-              ) : (
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <Button onClick={handleAdvanceJobStatus}>
-                    {current < 2
-                      ? "Update status"
-                      : current < 4
-                        ? "Open assessment"
-                        : "Complete job"}
-                  </Button>
-                  <Button variant="secondary">Message customer</Button>
-                </div>
-              )}
-            </Card>
-            <Card tone="blue">
-              <h3 style={{ marginTop: 0 }}>Job progress</h3>
-              <Stepper steps={jobSteps} current={step} />
-              <Divider />
-              <p style={{ marginBottom: 0, color: "#52606d", fontSize: 13 }}>
-                Quote totals are calculated server-side. Add diagnostic, labour,
-                material, equipment, and tax as separate items.
-              </p>
-            </Card>
-          </Grid>
-          <Card>
-            <h2 style={{ marginTop: 0 }}>Company readiness</h2>
-            <Grid>
-              <div>
-                <Status>Company verified</Status>
-                <p style={{ color: "#52606d" }}>
-                  ABC Heating & Cooling · Toronto service area
-                </p>
-              </div>
-              <div>
-                <Status>Insurance verified</Status>
-                <p style={{ color: "#52606d" }}>
-                  Expires 30 Jun 2027 · renewal reminders enabled
-                </p>
-              </div>
-              <div>
-                <Status>Credential verified</Status>
-                <p style={{ color: "#52606d" }}>
-                  HVAC_LICENSE · John S. · expires 21 Aug 2027
-                </p>
-              </div>
-            </Grid>
           </Card>
-        </>
+        </div>
       )}
     </Shell>
   );
