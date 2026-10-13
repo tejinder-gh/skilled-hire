@@ -40,6 +40,7 @@ import {
   protectionClaims,
   protectionFinancialLedger,
   jobDocumentationPackages,
+  serviceRequests,
   eq,
   ne,
   and,
@@ -5643,6 +5644,375 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(metricsJson.metrics.totalPackages).toBeGreaterThanOrEqual(1);
     expect(metricsJson.metrics.qaSamplingRateBps).toBeGreaterThan(0);
     expect(metricsJson.metrics.tierBreakdown["HIGH"]?.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it("enforces structured job completion reports, customer acceptance/disputes, Property Service Passport, access grants, and ownership transfers (#50, #51)", async () => {
+    // 1. Locate completed job with contractor and customer
+    const [job] = await db
+      .select({
+        id: jobs.id,
+        contractorId: jobs.contractorId,
+        technicianId: jobs.technicianId,
+        serviceRequestId: jobs.serviceRequestId,
+      })
+      .from(jobs)
+      .where(eq(jobs.status, "COMPLETED"))
+      .limit(1);
+    if (!job) throw new Error("Missing completed job");
+
+    // 2. Draft Sync: Save offline draft completion report
+    const draftRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job.id}/completion-report`,
+      headers: auth("owner@example.test"),
+      payload: {
+        workSummary: "Draft work summary for furnace blower and capacitor inspection.",
+        diagnosis: "Draft diagnosis: degraded run capacitor.",
+        workStartedAt: "2026-10-12T13:00:00Z",
+        workCompletedAt: "2026-10-12T15:00:00Z",
+        clientMutationId: "mutation-draft-uuid-1",
+        isDraft: true,
+      },
+    });
+    expect([200, 201]).toContain(draftRes.statusCode);
+    const draftJson = draftRes.json<{
+      completionReport: { status: string; clientMutationId: string };
+    }>();
+    expect(draftJson.completionReport.status).toBe("DRAFT");
+    expect(draftJson.completionReport.clientMutationId).toBe("mutation-draft-uuid-1");
+
+    // 3. Validation rejection: Invalid chronologies or missing photos reject with 400
+    const invalidRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job.id}/completion-report`,
+      headers: auth("owner@example.test"),
+      payload: {
+        workSummary: "Valid work summary description",
+        diagnosis: "Valid diagnosis description",
+        workStartedAt: "2026-10-12T18:00:00Z",
+        workCompletedAt: "2026-10-12T15:00:00Z", // start > completed
+        beforePhotos: [],
+        afterPhotos: [],
+        isDraft: false,
+      },
+    });
+    expect(invalidRes.statusCode).toBe(400);
+    const errJson = invalidRes.json<{ code: string; errors: string[] }>();
+    expect(errJson.code).toBe("VALIDATION_FAILED");
+    expect(errJson.errors.length).toBeGreaterThanOrEqual(1);
+
+    // 4. Submit Valid Completion Report
+    const submitRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job.id}/completion-report`,
+      headers: auth("owner@example.test"),
+      payload: {
+        workSummary: "Replaced dual run capacitor 45/5 MFD, lubricated blower motor bearings, and verified temperature rise.",
+        diagnosis: "Run capacitor microfarads dropped from 45uF to 28uF causing blower hesitation and thermal cutoff.",
+        workStartedAt: "2026-10-12T13:00:00Z",
+        workCompletedAt: "2026-10-12T15:30:00Z",
+        partsInstalled: [
+          {
+            partNumber: "CAP-45-5-HD",
+            description: "Titan Pro Dual Run Capacitor 45/5 MFD 440V",
+            quantity: 1,
+            unitCostCents: 4500,
+            warrantyMonths: 24,
+          },
+        ],
+        testsPerformed: [
+          {
+            testName: "Capacitor Microfarad Rating",
+            result: "PASS",
+            measuredValue: "44.9",
+            unit: "uF",
+          },
+          {
+            testName: "Temperature Rise Delta T",
+            result: "PASS",
+            measuredValue: "21.0",
+            unit: "Fahrenheit",
+          },
+        ],
+        beforePhotos: [
+          { url: "https://photos.test/furnace-before.jpg", phase: "BEFORE" },
+        ],
+        afterPhotos: [
+          { url: "https://photos.test/furnace-after.jpg", phase: "AFTER" },
+        ],
+        maintenanceRecommendations: [
+          {
+            recommendation: "Inspect blower wheel balance at annual pre-winter tune-up.",
+            recommendedIntervalDays: 180,
+            priority: "RECOMMENDED",
+          },
+        ],
+        isDraft: false,
+      },
+    });
+    expect(submitRes.statusCode).toBe(200);
+    const submitJson = submitRes.json<{
+      completionReport: { status: string; partsInstalled: unknown[] };
+    }>();
+    expect(submitJson.completionReport.status).toBe("SUBMITTED");
+    expect(submitJson.completionReport.partsInstalled.length).toBe(1);
+
+    // 5. Customer Dispute Drill: Customer disputes incomplete work
+    const disputeRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job.id}/completion-report/dispute`,
+      headers: auth("customer@example.test"),
+      payload: {
+        reason: "Blower compartment filter door rattling loudly after startup.",
+      },
+    });
+    expect(disputeRes.statusCode).toBe(200);
+    expect(
+      disputeRes.json<{ completionReport: { status: string } }>()
+        .completionReport.status,
+    ).toBe("DISPUTED");
+
+    // 6. Technician Attestation & Resubmission
+    const attestRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job.id}/completion-report/attest`,
+      headers: auth("technician@example.test"),
+      payload: {
+        technicianName: "Alex Certified Tech",
+        licenseNumber: "HVAC-313A-987654",
+        notes: "Reseated and latched blower compartment door clips, rattle eliminated.",
+      },
+    });
+    expect(attestRes.statusCode).toBe(200);
+    expect(
+      attestRes.json<{ completionReport: { status: string } }>()
+        .completionReport.status,
+    ).toBe("SUBMITTED");
+
+    // 7. Customer Acceptance
+    const acceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job.id}/completion-report/accept`,
+      headers: auth("customer@example.test"),
+      payload: {
+        accepted: true,
+        notes: "Confirmed blower runs smoothly and quiet. Heating verified operational.",
+        signatureDigest: "SHA256:d8b2e5a1c4f7902348b56789a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      },
+    });
+    expect(acceptRes.statusCode).toBe(200);
+    expect(
+      acceptRes.json<{ completionReport: { status: string } }>()
+        .completionReport.status,
+    ).toBe("ACCEPTED");
+
+    // Idempotent secondary acceptance
+    const reAcceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job.id}/completion-report/accept`,
+      headers: auth("customer@example.test"),
+      payload: { accepted: true },
+    });
+    expect(reAcceptRes.statusCode).toBe(200);
+
+    // 8. Property Asset Registration & Property Service Passport
+    const [propRow] = await db
+      .select({
+        id: properties.id,
+        verticalId: serviceRequests.verticalId,
+      })
+      .from(serviceRequests)
+      .innerJoin(jobs, eq(jobs.serviceRequestId, serviceRequests.id))
+      .innerJoin(properties, eq(properties.id, serviceRequests.propertyId))
+      .where(eq(jobs.id, job.id))
+      .limit(1);
+    if (!propRow) throw new Error("Missing property for job");
+
+    const assetRes = await app.inject({
+      method: "POST",
+      url: `/v1/properties/${propRow.id}/assets`,
+      headers: auth("customer@example.test"),
+      payload: {
+        name: "Lennox Elite High-Efficiency Gas Furnace",
+        verticalId: propRow.verticalId,
+        assetType: "HVAC_FURNACE",
+        manufacturer: "Lennox",
+        modelNumber: "EL296UH070XE36B",
+        serialNumber: "SN-LNX-2026-88412",
+        installedOn: "2024-10-01",
+        warrantyStatus: "ACTIVE",
+        metadata: { AFUE: "96%", stage: 2 },
+      },
+    });
+    expect(assetRes.statusCode).toBe(201);
+    const assetId = assetRes.json<{ asset: { id: string } }>().asset.id;
+    expect(assetId).toBeDefined();
+
+    // 9. Passport Query by Homeowner: full unredacted view
+    const ownerPassportRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${propRow.id}/passport`,
+      headers: auth("customer@example.test"),
+    });
+    expect(ownerPassportRes.statusCode).toBe(200);
+    const ownerPassport = ownerPassportRes.json<{
+      passport: {
+        isOwner: boolean;
+        assets: Array<{ id: string; name: string }>;
+        serviceHistory: Array<{ costRedacted: boolean; summary: string }>;
+      };
+    }>();
+    expect(ownerPassport.passport.isOwner).toBe(true);
+    expect(ownerPassport.passport.assets.length).toBeGreaterThanOrEqual(1);
+    expect(ownerPassport.passport.serviceHistory.length).toBeGreaterThanOrEqual(1);
+    expect(ownerPassport.passport.serviceHistory[0]?.costRedacted).toBe(false);
+
+    // 10. Access Grant RBAC: Homeowner grants access to rival contractor B
+    const [contractorB] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(eq(contractors.name, "Rival Trade Services Inc"))
+      .limit(1);
+    if (!contractorB) throw new Error("Missing rival contractor");
+
+    const [rivalUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, "rival-owner@example.test"))
+      .limit(1);
+    if (rivalUser) {
+      tokens.set(
+        "rival-owner@example.test",
+        app.jwt.sign({ sub: rivalUser.id, sessionVersion: 1 }),
+      );
+    }
+
+    // Unauthenticated contractor attempt receives 403
+    const unauthPassportRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${propRow.id}/passport`,
+      headers: auth("rival-owner@example.test"),
+    });
+    expect(unauthPassportRes.statusCode).toBe(403);
+
+    // Homeowner issues access grant
+    const grantRes = await app.inject({
+      method: "POST",
+      url: `/v1/properties/${propRow.id}/access-grants`,
+      headers: auth("customer@example.test"),
+      payload: {
+        granteeContractorId: contractorB.id,
+        scope: "REDACTED_COMMERCIAL",
+        reason: "Secondary opinion for ductwork zoning",
+        durationDays: 14,
+      },
+    });
+    expect(grantRes.statusCode).toBe(201);
+    const grantId = grantRes.json<{ accessGrant: { id: string } }>().accessGrant.id;
+
+    // Granted contractor reads passport: commercial cost is redacted
+    const grantedPassportRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${propRow.id}/passport`,
+      headers: auth("rival-owner@example.test"),
+    });
+    expect(grantedPassportRes.statusCode).toBe(200);
+    const grantedPassport = grantedPassportRes.json<{
+      passport: {
+        isOwner: boolean;
+        serviceHistory: Array<{ costRedacted: boolean }>;
+      };
+    }>();
+    expect(grantedPassport.passport.isOwner).toBe(false);
+    expect(grantedPassport.passport.serviceHistory[0]?.costRedacted).toBe(true);
+
+    // Homeowner revokes access grant
+    const revokeRes = await app.inject({
+      method: "DELETE",
+      url: `/v1/properties/${propRow.id}/access-grants/${grantId}`,
+      headers: auth("customer@example.test"),
+    });
+    expect(revokeRes.statusCode).toBe(200);
+
+    // Revoked contractor receives 403
+    const revokedReadRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${propRow.id}/passport`,
+      headers: auth("rival-owner@example.test"),
+    });
+    expect(revokedReadRes.statusCode).toBe(403);
+
+    // 11. Property Ownership Transfer Lifecycle
+    // Provision new home buyer
+    let [buyerUser] = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.email, "homebuyer@example.test"))
+      .limit(1);
+
+    if (!buyerUser) {
+      const [newU] = await db
+        .insert(users)
+        .values({
+          email: "homebuyer@example.test",
+          passwordHash: "hash",
+          displayName: "Home Buyer",
+        })
+        .returning({ id: users.id, email: users.email });
+      buyerUser = newU;
+    }
+    if (!buyerUser) throw new Error("Missing buyer user");
+    tokens.set(
+      "homebuyer@example.test",
+      app.jwt.sign({ sub: buyerUser.id, sessionVersion: 1 }),
+    );
+
+    // Initiate ownership transfer
+    const transferRes = await app.inject({
+      method: "POST",
+      url: `/v1/properties/${propRow.id}/transfer`,
+      headers: auth("customer@example.test"),
+      payload: {
+        newOwnerEmail: "homebuyer@example.test",
+        transferNotes: "Property sale closing date October 2026.",
+      },
+    });
+    expect(transferRes.statusCode).toBe(201);
+    const transferJson = transferRes.json<{ verificationToken: string }>();
+    expect(transferJson.verificationToken.startsWith("TRF-")).toBe(true);
+
+    // Buyer accepts ownership transfer with verification token
+    const acceptTransferRes = await app.inject({
+      method: "POST",
+      url: "/v1/properties/transfers/accept",
+      headers: auth("homebuyer@example.test"),
+      payload: {
+        verificationToken: transferJson.verificationToken,
+      },
+    });
+    expect(acceptTransferRes.statusCode).toBe(200);
+
+    // Buyer is now owner of property passport
+    const newOwnerPassportRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${propRow.id}/passport`,
+      headers: auth("homebuyer@example.test"),
+    });
+    expect(newOwnerPassportRes.statusCode).toBe(200);
+    expect(newOwnerPassportRes.json<{ passport: { isOwner: boolean } }>().passport.isOwner).toBe(true);
+
+    // Restore property ownership back to customer@example.test to maintain idempotent seed integrity
+    const [originalCustomer] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, "customer@example.test"))
+      .limit(1);
+    if (originalCustomer) {
+      await db
+        .update(properties)
+        .set({ customerId: originalCustomer.id })
+        .where(eq(properties.id, propRow.id));
+    }
   });
 });
 

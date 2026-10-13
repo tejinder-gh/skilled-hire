@@ -691,6 +691,111 @@ export const qaSampleJobSchema = z.object({
   notes: z.string().max(1000).optional(),
 });
 
+// 19. Structured Job Completion Reports & Acceptance (Issue #50)
+export const installedPartSchema = z.object({
+  partNumber: z.string().min(1).max(100),
+  description: z.string().min(1).max(500),
+  quantity: z.number().int().min(1).max(1000),
+  unitCostCents: z.number().int().min(0).optional(),
+  supplierReceiptUrl: z.string().url().optional(),
+  warrantyMonths: z.number().int().min(0).optional(),
+});
+
+export const performedTestSchema = z.object({
+  testName: z.string().min(1).max(200),
+  result: z.enum(["PASS", "FAIL", "INCONCLUSIVE"]),
+  measuredValue: z.string().max(100).optional(),
+  unit: z.string().max(50).optional(),
+  notes: z.string().max(500).optional(),
+});
+
+export const completionPhotoSchema = z.object({
+  url: z.string().url(),
+  caption: z.string().max(500).optional(),
+  timestamp: z.string().optional(),
+  phase: z.enum(["BEFORE", "AFTER"]),
+});
+
+export const outstandingIssueSchema = z.object({
+  description: z.string().min(1).max(500),
+  severity: z.enum(["LOW", "MODERATE", "HIGH", "CRITICAL"]),
+  actionRequired: z.string().min(1).max(500),
+});
+
+export const maintenanceRecommendationSchema = z.object({
+  recommendation: z.string().min(1).max(500),
+  recommendedIntervalDays: z.number().int().min(1).optional(),
+  priority: z.enum(["LOW", "RECOMMENDED", "URGENT"]),
+});
+
+export const createCompletionReportSchema = z.object({
+  workSummary: z.string().min(5).max(2000),
+  diagnosis: z.string().min(5).max(2000),
+  workStartedAt: z.string(),
+  workCompletedAt: z.string(),
+  assetId: uuid.optional(),
+  partsInstalled: z.array(installedPartSchema).default([]),
+  testsPerformed: z.array(performedTestSchema).default([]),
+  beforePhotos: z.array(completionPhotoSchema).default([]),
+  afterPhotos: z.array(completionPhotoSchema).default([]),
+  permitId: uuid.optional(),
+  outstandingIssues: z.array(outstandingIssueSchema).default([]),
+  maintenanceRecommendations: z.array(maintenanceRecommendationSchema).default([]),
+  clientMutationId: z.string().max(100).optional(),
+  isDraft: z.boolean().default(false),
+});
+
+export const contractorAttestationSchema = z.object({
+  technicianName: z.string().min(1).max(100),
+  licenseNumber: z.string().max(100).optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+export const customerAcceptanceSchema = z.object({
+  accepted: z.boolean(),
+  notes: z.string().max(1000).optional(),
+  signatureDigest: z.string().min(10).max(128).optional(),
+});
+
+export const disputeCompletionReportSchema = z.object({
+  reason: z.string().min(5).max(2000),
+});
+
+// 20. Property Service Passport, Assets & Access Grants (Issue #51)
+export const createPropertyAssetSchema = z.object({
+  name: z.string().min(1).max(200),
+  verticalId: uuid,
+  assetType: z.string().min(1).max(100).default("GENERAL_EQUIPMENT"),
+  manufacturer: z.string().max(100).optional(),
+  modelNumber: z.string().max(100).optional(),
+  serialNumber: z.string().max(100).optional(),
+  installedOn: z.string().optional(),
+  warrantyStatus: z
+    .enum(["ACTIVE", "EXPIRED", "UNKNOWN", "EXTENDED"])
+    .default("ACTIVE"),
+  metadata: z.record(z.unknown()).default({}),
+});
+
+export const createPropertyAccessGrantSchema = z.object({
+  granteeContractorId: uuid,
+  scope: z
+    .enum(["FULL_HISTORY", "SERVICE_SPECIFIC", "REDACTED_COMMERCIAL"])
+    .default("FULL_HISTORY"),
+  serviceVerticalId: uuid.optional(),
+  reason: z.string().max(500).optional(),
+  durationDays: z.number().int().min(1).max(365).default(30),
+});
+
+export const initiatePropertyTransferSchema = z.object({
+  newOwnerEmail: z.string().email(),
+  transferNotes: z.string().max(500).optional(),
+});
+
+export const acceptPropertyTransferSchema = z.object({
+  verificationToken: z.string().min(10).max(100),
+});
+
+
 
 
 
