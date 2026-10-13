@@ -2625,5 +2625,153 @@ export const warrantyRecoveryLedgerRelations = relations(
   }),
 );
 
+// 22. Post-Job Surveys, Fair Reviews & Rewards Ledger (Issue #52)
+export const customerFeedbackPreferences = pgTable(
+  "customer_feedback_preferences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .unique()
+      .references(() => users.id, { onDelete: "cascade" }),
+    feedbackOptIn: boolean("feedback_opt_in").notNull().default(true),
+    smsOptIn: boolean("sms_opt_in").notNull().default(false),
+    emailOptIn: boolean("email_opt_in").notNull().default(true),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const postJobSurveys = pgTable("post_job_surveys", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  jobId: uuid("job_id")
+    .notNull()
+    .unique()
+    .references((): AnyPgColumn => jobs.id, { onDelete: "cascade" }),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  surveyToken: text("survey_token").notNull().unique(),
+  status: text("status").notNull().default("PENDING"),
+  channel: text("channel").notNull().default("EMAIL"),
+  overallRating: smallint("overall_rating"),
+  qualityRating: smallint("quality_rating"),
+  professionalismRating: smallint("professionalism_rating"),
+  timelinessRating: smallint("timeliness_rating"),
+  communicationRating: smallint("communication_rating"),
+  npsScore: smallint("nps_score"),
+  feedbackComment: text("feedback_comment"),
+  reviewId: uuid("review_id").references((): AnyPgColumn => reviews.id, {
+    onDelete: "set null",
+  }),
+  routedToSupport: boolean("routed_to_support").notNull().default(false),
+  supportTicketId: uuid("support_ticket_id").references(
+    (): AnyPgColumn => supportTickets.id,
+    { onDelete: "set null" },
+  ),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const customerRewardCredits = pgTable("customer_reward_credits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  originJobId: uuid("origin_job_id")
+    .notNull()
+    .references((): AnyPgColumn => jobs.id, { onDelete: "restrict" }),
+  surveyId: uuid("survey_id")
+    .notNull()
+    .unique()
+    .references(() => postJobSurveys.id, { onDelete: "restrict" }),
+  rewardType: text("reward_type")
+    .notNull()
+    .default("POST_JOB_SURVEY_10_PERCENT"),
+  amountCents: integer("amount_cents").notNull(),
+  balanceCents: integer("balance_cents").notNull(),
+  capCents: integer("cap_cents").notNull().default(3000),
+  percentageBps: integer("percentage_bps").notNull().default(1000),
+  status: text("status").notNull().default("ACTIVE"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
+  redeemedJobId: uuid("redeemed_job_id").references((): AnyPgColumn => jobs.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const customerFeedbackPreferencesRelations = relations(
+  customerFeedbackPreferences,
+  ({ one }) => ({
+    customer: one(users, {
+      fields: [customerFeedbackPreferences.customerId],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const postJobSurveysRelations = relations(
+  postJobSurveys,
+  ({ one, many }) => ({
+    job: one(jobs, {
+      fields: [postJobSurveys.jobId],
+      references: [jobs.id],
+    }),
+    customer: one(users, {
+      fields: [postJobSurveys.customerId],
+      references: [users.id],
+    }),
+    contractor: one(contractors, {
+      fields: [postJobSurveys.contractorId],
+      references: [contractors.id],
+    }),
+    review: one(reviews, {
+      fields: [postJobSurveys.reviewId],
+      references: [reviews.id],
+    }),
+    supportTicket: one(supportTickets, {
+      fields: [postJobSurveys.supportTicketId],
+      references: [supportTickets.id],
+    }),
+    credit: one(customerRewardCredits, {
+      fields: [postJobSurveys.id],
+      references: [customerRewardCredits.surveyId],
+    }),
+  }),
+);
+
+export const customerRewardCreditsRelations = relations(
+  customerRewardCredits,
+  ({ one }) => ({
+    customer: one(users, {
+      fields: [customerRewardCredits.customerId],
+      references: [users.id],
+    }),
+    originJob: one(jobs, {
+      fields: [customerRewardCredits.originJobId],
+      references: [jobs.id],
+    }),
+    survey: one(postJobSurveys, {
+      fields: [customerRewardCredits.surveyId],
+      references: [postJobSurveys.id],
+    }),
+    redeemedJob: one(jobs, {
+      fields: [customerRewardCredits.redeemedJobId],
+      references: [jobs.id],
+    }),
+  }),
+);
+
 
 

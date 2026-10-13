@@ -867,6 +867,48 @@ export const recordWarrantyRecoverySchema = z.object({
     .default("PENDING"),
 });
 
+// 22. Post-Job Surveys, Fair Reviews & Rewards Ledger (Issue #52)
+export const updateCustomerFeedbackPreferencesSchema = z.object({
+  feedbackOptIn: z.boolean().optional(),
+  smsOptIn: z.boolean().optional(),
+  emailOptIn: z.boolean().optional(),
+});
+
+export const createSurveyInvitationSchema = z.object({
+  jobId: uuid,
+  channel: z.enum(["EMAIL", "SMS", "IN_APP"]).default("EMAIL"),
+  expiresInDays: z.number().int().min(1).max(60).default(14),
+});
+
+export const submitPostJobSurveySchema = z.object({
+  overallRating: z.number().int().min(1).max(5),
+  qualityRating: z.number().int().min(1).max(5).optional(),
+  professionalismRating: z.number().int().min(1).max(5).optional(),
+  timelinessRating: z.number().int().min(1).max(5).optional(),
+  communicationRating: z.number().int().min(1).max(5).optional(),
+  npsScore: z.number().int().min(0).max(10).optional(),
+  feedbackComment: z.string().max(3000).optional(),
+  shareAsPublicReview: z.boolean().default(true),
+});
+
+export const redeemRewardCreditSchema = z.object({
+  creditId: uuid,
+  jobId: uuid,
+  amountCents: z.number().int().min(1).optional(),
+});
+
+export const surveyWebhookPayloadSchema = z.object({
+  surveyToken: z.string().min(5).max(100),
+  overallRating: z.number().int().min(1).max(5),
+  qualityRating: z.number().int().min(1).max(5).optional(),
+  professionalismRating: z.number().int().min(1).max(5).optional(),
+  timelinessRating: z.number().int().min(1).max(5).optional(),
+  communicationRating: z.number().int().min(1).max(5).optional(),
+  npsScore: z.number().int().min(0).max(10).optional(),
+  feedbackComment: z.string().max(3000).optional(),
+  externalSubmissionId: z.string().min(1).max(100).optional(),
+});
+
 
 
 

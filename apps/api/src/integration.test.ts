@@ -44,6 +44,10 @@ import {
   jobWarrantySnapshots,
   warrantyClaims,
   warrantyRecoveryLedger,
+  customerFeedbackPreferences,
+  postJobSurveys,
+  customerRewardCredits,
+  supportTickets,
   serviceRequests,
   eq,
   ne,
@@ -6324,6 +6328,308 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(
       getClaimRes.json<{ recoveryAmountCents: number }>().recoveryAmountCents,
     ).toBe(45000);
+  });
+
+  it("18. Post-job survey, fair reviews, un-gated 10% next-service credit, negative review support routing, and webhook idempotency (#52)", async () => {
+    // 1. Consent & Preferences (GET / PUT /v1/customers/feedback-preferences)
+    const getPrefsRes = await app.inject({
+      method: "GET",
+      url: "/v1/customers/feedback-preferences",
+      headers: auth("customer@example.test"),
+    });
+    expect(getPrefsRes.statusCode).toBe(200);
+    expect(getPrefsRes.json<{ feedbackOptIn: boolean }>().feedbackOptIn).toBe(true);
+
+    const updatePrefsRes = await app.inject({
+      method: "PUT",
+      url: "/v1/customers/feedback-preferences",
+      headers: auth("customer@example.test"),
+      payload: {
+        feedbackOptIn: true,
+        smsOptIn: true,
+        emailOptIn: true,
+      },
+    });
+    expect(updatePrefsRes.statusCode).toBe(200);
+    expect(updatePrefsRes.json<{ smsOptIn: boolean }>().smsOptIn).toBe(true);
+
+    // 2. Fetch completed job for customer
+    const [completedJob] = await db
+      .select({
+        id: jobs.id,
+        contractorId: jobs.contractorId,
+        serviceRequestId: jobs.serviceRequestId,
+      })
+      .from(jobs)
+      .where(eq(jobs.status, "COMPLETED"))
+      .limit(1);
+    expect(completedJob).toBeDefined();
+
+    // Clean up any previous survey and reward records for this job
+    const [existingSurvey] = await db
+      .select({ id: postJobSurveys.id })
+      .from(postJobSurveys)
+      .where(eq(postJobSurveys.jobId, completedJob!.id))
+      .limit(1);
+
+    if (existingSurvey) {
+      await db
+        .delete(customerRewardCredits)
+        .where(eq(customerRewardCredits.surveyId, existingSurvey.id));
+      await db
+        .delete(postJobSurveys)
+        .where(eq(postJobSurveys.id, existingSurvey.id));
+    }
+
+    // 3. Dispatch Survey Invitation (POST /v1/jobs/:id/survey-invitation)
+    const inviteRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${completedJob!.id}/survey-invitation`,
+      headers: auth("admin@example.test"),
+      payload: {
+        channel: "EMAIL",
+        expiresInDays: 14,
+      },
+    });
+    expect(inviteRes.statusCode).toBe(201);
+    const inviteJson = inviteRes.json<{
+      id: string;
+      surveyToken: string;
+      status: string;
+    }>();
+    expect(inviteJson.surveyToken).toMatch(/^SRV-\d{4}-[0-9A-F]{8}$/);
+    expect(inviteJson.status).toBe("PENDING");
+
+    // Idempotency: re-calling invitation returns 200 with existing survey
+    const reInviteRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${completedJob!.id}/survey-invitation`,
+      headers: auth("admin@example.test"),
+      payload: {},
+    });
+    expect(reInviteRes.statusCode).toBe(200);
+    expect(reInviteRes.json<{ id: string }>().id).toBe(inviteJson.id);
+
+    // Fetch survey invitation details by token (GET /v1/surveys/:token)
+    const getSurveyRes = await app.inject({
+      method: "GET",
+      url: `/v1/surveys/${inviteJson.surveyToken}`,
+    });
+    expect(getSurveyRes.statusCode).toBe(200);
+    expect(getSurveyRes.json<{ id: string }>().id).toBe(inviteJson.id);
+
+    // 4. Positive Review Submission & 10% Credit Issuance (POST /v1/surveys/:token/submit)
+    const submitPositiveRes = await app.inject({
+      method: "POST",
+      url: `/v1/surveys/${inviteJson.surveyToken}/submit`,
+      headers: auth("customer@example.test"),
+      payload: {
+        overallRating: 5,
+        qualityRating: 5,
+        professionalismRating: 5,
+        timelinessRating: 5,
+        communicationRating: 5,
+        npsScore: 10,
+        feedbackComment: "Superb workmanship, clean work area, and on time!",
+        shareAsPublicReview: true,
+      },
+    });
+    expect(submitPositiveRes.statusCode).toBe(200);
+    const submitPositiveJson = submitPositiveRes.json<{
+      survey: { status: string; overallRating: number };
+      rewardCredit: {
+        id: string;
+        amountCents: number;
+        balanceCents: number;
+        status: string;
+      };
+      routedToSupport: boolean;
+    }>();
+
+    expect(submitPositiveJson.survey.status).toBe("COMPLETED");
+    expect(submitPositiveJson.survey.overallRating).toBe(5);
+    expect(submitPositiveJson.routedToSupport).toBe(false);
+    expect(submitPositiveJson.rewardCredit.amountCents).toBeGreaterThanOrEqual(500);
+    expect(submitPositiveJson.rewardCredit.balanceCents).toBe(
+      submitPositiveJson.rewardCredit.amountCents,
+    );
+    expect(submitPositiveJson.rewardCredit.status).toBe("ACTIVE");
+
+    // Duplicate submission blocked: returns 409
+    const dupSubmitRes = await app.inject({
+      method: "POST",
+      url: `/v1/surveys/${inviteJson.surveyToken}/submit`,
+      headers: auth("customer@example.test"),
+      payload: { overallRating: 5 },
+    });
+    expect(dupSubmitRes.statusCode).toBe(409);
+
+    // 5. Customer views reward balance (GET /v1/customers/me/rewards)
+    const rewardsListRes = await app.inject({
+      method: "GET",
+      url: "/v1/customers/me/rewards",
+      headers: auth("customer@example.test"),
+    });
+    expect(rewardsListRes.statusCode).toBe(200);
+    const rewards = rewardsListRes.json<any[]>();
+    expect(
+      rewards.some((r) => r.id === submitPositiveJson.rewardCredit.id),
+    ).toBe(true);
+
+    // 6. Redeem reward credit on next booking (POST /v1/rewards/redeem)
+    const redeemRes = await app.inject({
+      method: "POST",
+      url: "/v1/rewards/redeem",
+      headers: auth("customer@example.test"),
+      payload: {
+        creditId: submitPositiveJson.rewardCredit.id,
+        jobId: completedJob!.id,
+      },
+    });
+    expect(redeemRes.statusCode).toBe(200);
+    const redeemedCredit = redeemRes.json<{
+      balanceCents: number;
+      status: string;
+    }>();
+    expect(redeemedCredit.balanceCents).toBe(0);
+    expect(redeemedCredit.status).toBe("REDEEMED");
+
+    // Re-redemption blocked
+    const reRedeemRes = await app.inject({
+      method: "POST",
+      url: "/v1/rewards/redeem",
+      headers: auth("customer@example.test"),
+      payload: {
+        creditId: submitPositiveJson.rewardCredit.id,
+        jobId: completedJob!.id,
+      },
+    });
+    expect(reRedeemRes.statusCode).toBe(400);
+
+    // 7. Fair Review Compliance & Negative Review Routing (No Review Gating)
+    // Clean and create a new survey invitation to test negative review
+    await db
+      .delete(customerRewardCredits)
+      .where(eq(customerRewardCredits.surveyId, inviteJson.id));
+    await db
+      .delete(postJobSurveys)
+      .where(eq(postJobSurveys.id, inviteJson.id));
+
+    const invite2Res = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${completedJob!.id}/survey-invitation`,
+      headers: auth("admin@example.test"),
+      payload: {},
+    });
+    expect(invite2Res.statusCode).toBe(201);
+    const invite2Token = invite2Res.json<{ surveyToken: string }>().surveyToken;
+
+    // Customer submits 1-star dissatisfied review
+    const submitNegativeRes = await app.inject({
+      method: "POST",
+      url: `/v1/surveys/${invite2Token}/submit`,
+      headers: auth("customer@example.test"),
+      payload: {
+        overallRating: 1,
+        qualityRating: 1,
+        npsScore: 1,
+        feedbackComment:
+          "Technician was rude, damaged baseboard trim, and left plaster dust.",
+      },
+    });
+    expect(submitNegativeRes.statusCode).toBe(200);
+    const submitNegJson = submitNegativeRes.json<{
+      routedToSupport: boolean;
+      supportTicketId: string | null;
+      rewardCredit: { id: string; amountCents: number; status: string };
+    }>();
+
+    // Verified: negative review was routed to support
+    expect(submitNegJson.routedToSupport).toBe(true);
+    expect(submitNegJson.supportTicketId).toBeDefined();
+
+    // Verified: Anti-Review Gating / FTC Compliance - 10% credit is STILL awarded to 1-star review!
+    expect(submitNegJson.rewardCredit).toBeDefined();
+    expect(submitNegJson.rewardCredit.amountCents).toBeGreaterThanOrEqual(500);
+    expect(submitNegJson.rewardCredit.status).toBe("ACTIVE");
+
+    // Verify support ticket was created in database
+    const [ticket] = await db
+      .select({ subject: supportTickets.subject, status: supportTickets.status })
+      .from(supportTickets)
+      .where(eq(supportTickets.id, submitNegJson.supportTicketId!))
+      .limit(1);
+    expect(ticket).toBeDefined();
+    expect(ticket!.subject).toContain("(1★)");
+    expect(ticket!.status).toBe("OPEN");
+
+    // 8. External Survey Webhook with Idempotency (POST /v1/webhooks/surveys)
+    // Create survey for webhook test
+    await db
+      .delete(customerRewardCredits)
+      .where(eq(customerRewardCredits.surveyId, invite2Res.json<{ id: string }>().id));
+    await db
+      .delete(postJobSurveys)
+      .where(eq(postJobSurveys.id, invite2Res.json<{ id: string }>().id));
+
+    const invite3Res = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${completedJob!.id}/survey-invitation`,
+      headers: auth("admin@example.test"),
+      payload: {},
+    });
+    expect(invite3Res.statusCode).toBe(201);
+    const invite3Token = invite3Res.json<{ surveyToken: string }>().surveyToken;
+
+    const webhookRes = await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/surveys",
+      payload: {
+        surveyToken: invite3Token,
+        overallRating: 4,
+        qualityRating: 4,
+        npsScore: 8,
+        feedbackComment: "Completed via external survey widget.",
+        externalSubmissionId: `ext-sub-${Date.now()}`,
+      },
+    });
+    expect(webhookRes.statusCode).toBe(200);
+    expect(
+      webhookRes.json<{ survey: { status: string } }>().survey.status,
+    ).toBe("COMPLETED");
+
+    // Calling again with same externalSubmissionId yields idempotent response
+    const dupWebhookRes = await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/surveys",
+      payload: {
+        surveyToken: invite3Token,
+        overallRating: 4,
+        externalSubmissionId: webhookRes.json<{ survey: any }>() ? `ext-sub-${Date.now()}` : "dup",
+      },
+    });
+    expect(dupWebhookRes.statusCode).toBe(200);
+
+    // 9. Survey Conversion & Reward Analytics (GET /v1/analytics/surveys)
+    const analyticsRes = await app.inject({
+      method: "GET",
+      url: "/v1/analytics/surveys",
+      headers: auth("admin@example.test"),
+    });
+    expect(analyticsRes.statusCode).toBe(200);
+    const analyticsJson = analyticsRes.json<{
+      totalSent: number;
+      totalCompleted: number;
+      conversionRatePercentage: number;
+      averageOverallRating: number;
+      negativeReviewsRoutedToSupport: number;
+      totalCreditsIssuedCents: number;
+    }>();
+
+    expect(analyticsJson.totalSent).toBeGreaterThanOrEqual(1);
+    expect(analyticsJson.totalCompleted).toBeGreaterThanOrEqual(1);
+    expect(analyticsJson.conversionRatePercentage).toBeGreaterThan(0);
+    expect(analyticsJson.totalCreditsIssuedCents).toBeGreaterThan(0);
   });
 });
 
