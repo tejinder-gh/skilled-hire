@@ -12,13 +12,28 @@ import type {
   VerticalConfig,
 } from "@marketplace/contracts";
 
+export * from "./catalog.js";
+export * from "./regulatory.js";
+export * from "./capability.js";
+export * from "./predispatch.js";
+export * from "./safety.js";
+export * from "./permits.js";
+export * from "./risk.js";
+export * from "./legal.js";
+
 export function validateVerticalConfig(config: VerticalConfig): void {
-  const categoryIds = new Set(config.serviceCategories.map((category) => category.id));
-  if (new Set(config.serviceCategories.map((category) => category.slug)).size !== config.serviceCategories.length) {
+  const categoryIds = new Set(
+    config.serviceCategories.map((category) => category.id),
+  );
+  if (
+    new Set(config.serviceCategories.map((category) => category.slug)).size !==
+    config.serviceCategories.length
+  ) {
     throw new Error("Service category slugs must be unique per vertical");
   }
   for (const issue of config.issueTypes) {
-    if (!categoryIds.has(issue.categoryId)) throw new Error(`Issue ${issue.id} references an unknown category`);
+    if (!categoryIds.has(issue.categoryId))
+      throw new Error(`Issue ${issue.id} references an unknown category`);
   }
 }
 
@@ -26,19 +41,31 @@ export function requiredCredentials(
   requirements: readonly CredentialRequirement[],
   geography: string,
 ): readonly CredentialRequirement[] {
-  return requirements.filter((requirement) => requirement.geography === geography || requirement.geography === "*");
+  return requirements.filter(
+    (requirement) =>
+      requirement.geography === geography || requirement.geography === "*",
+  );
 }
 
-export function selectPaymentRule(rules: readonly PaymentRule[], verticalId: string, totalCents: number): PaymentRule {
+export function selectPaymentRule(
+  rules: readonly PaymentRule[],
+  verticalId: string,
+  totalCents: number,
+): PaymentRule {
   const rule = rules.find(
     (candidate) =>
       candidate.verticalId === verticalId &&
       totalCents >= candidate.minAmountCents &&
-      (candidate.maxAmountCents === null || totalCents <= candidate.maxAmountCents),
+      (candidate.maxAmountCents === null ||
+        totalCents <= candidate.maxAmountCents),
   );
   if (!rule) throw new Error("No payment rule covers this quote total");
-  const bps = rule.milestones.reduce((sum, milestone) => sum + milestone.percentageBps, 0);
-  if (bps !== 10_000) throw new Error("Payment rule milestones must total 100% ");
+  const bps = rule.milestones.reduce(
+    (sum, milestone) => sum + milestone.percentageBps,
+    0,
+  );
+  if (bps !== 10_000)
+    throw new Error("Payment rule milestones must total 100% ");
   return rule;
 }
 
@@ -46,42 +73,48 @@ export const CREDENTIAL_GROUPS: readonly CredentialGroup[] = [
   {
     code: "TRADE_LICENSING",
     name: "Trade & Professional Licensing",
-    description: "Occupational trade certificates, journeyperson cards, master licenses, and statutory contractor board authorizations.",
+    description:
+      "Occupational trade certificates, journeyperson cards, master licenses, and statutory contractor board authorizations.",
     displayOrder: 1,
     icon: "badge-check",
   },
   {
     code: "ENVIRONMENTAL_HAZARDOUS",
     name: "Environmental & Hazardous Materials",
-    description: "Federal and state/provincial environmental protection compliance including EPA refrigerants, ODS, and hazardous material management.",
+    description:
+      "Federal and state/provincial environmental protection compliance including EPA refrigerants, ODS, and hazardous material management.",
     displayOrder: 2,
     icon: "leaf",
   },
   {
     code: "INSURANCE_FINANCIAL",
     name: "Insurance, Bonding & Financial Security",
-    description: "Commercial general liability, workers compensation clearance certificates, commercial auto insurance, and statutory surety bonds.",
+    description:
+      "Commercial general liability, workers compensation clearance certificates, commercial auto insurance, and statutory surety bonds.",
     displayOrder: 3,
     icon: "shield-check",
   },
   {
     code: "HEALTH_SAFETY",
     name: "Occupational Health & Site Safety",
-    description: "Worker and jobsite safety certifications including fall protection/working at heights, OSHA construction safety, and emergency response.",
+    description:
+      "Worker and jobsite safety certifications including fall protection/working at heights, OSHA construction safety, and emergency response.",
     displayOrder: 4,
     icon: "hard-hat",
   },
   {
     code: "STATUTORY_REGISTRATION",
     name: "Statutory Business & Municipal Registration",
-    description: "Corporate entity registration, municipal business licensing, and technical safety authority contractor licenses in good standing.",
+    description:
+      "Corporate entity registration, municipal business licensing, and technical safety authority contractor licenses in good standing.",
     displayOrder: 5,
     icon: "building",
   },
   {
     code: "TRUST_IDENTITY",
     name: "Trust, Safety & Identity Verification",
-    description: "Identity validation, annual criminal background screening with vulnerable sector checks, and clean driving abstracts.",
+    description:
+      "Identity validation, annual criminal background screening with vulnerable sector checks, and clean driving abstracts.",
     displayOrder: 6,
     icon: "user-check",
   },
@@ -94,7 +127,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "ON_TSSA_GAS_G2",
     name: "TSSA Gas Technician 2 (G2) or G1",
-    description: "Required to install, inspect, and service residential & commercial natural gas and propane heating systems.",
+    description:
+      "Required to install, inspect, and service residential & commercial natural gas and propane heating systems.",
     verticalSlug: "hvac",
     geography: "ON",
     entityLevel: "TECHNICIAN",
@@ -110,7 +144,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "ON_SKILLED_TRADES_313A",
     name: "313A Refrigeration & Air Conditioning Systems Mechanic",
-    description: "Mandatory certificate of qualification to install, test, and repair refrigeration and air conditioning systems.",
+    description:
+      "Mandatory certificate of qualification to install, test, and repair refrigeration and air conditioning systems.",
     verticalSlug: "hvac",
     geography: "ON",
     entityLevel: "TECHNICIAN",
@@ -126,12 +161,14 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "ENVIRONMENTAL_HAZARDOUS",
     credentialCode: "CA_ODS_REFRIGERANT",
     name: "ODS Environmental Refrigerant Handling Certificate",
-    description: "Environmental certificate for handling ozone-depleting substances and fluorocarbon refrigerants.",
+    description:
+      "Environmental certificate for handling ozone-depleting substances and fluorocarbon refrigerants.",
     verticalSlug: "hvac",
     geography: "ON",
     entityLevel: "TECHNICIAN",
     requirementLevel: "MANDATORY",
-    issuingAuthority: "Heating, Refrigeration and Air Conditioning Institute (HRAI) / MOECC",
+    issuingAuthority:
+      "Heating, Refrigeration and Air Conditioning Institute (HRAI) / MOECC",
     legalReference: "Ontario Reg 463/10",
     verificationMethod: "DOCUMENT_UPLOAD",
     validityPeriodMonths: 60,
@@ -142,7 +179,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "STATUTORY_REGISTRATION",
     credentialCode: "ON_TSSA_CONTRACTOR_REG",
     name: "TSSA Heating Fuels Contractor Registration",
-    description: "Mandatory annual business registration for companies performing heating fuel installation and maintenance.",
+    description:
+      "Mandatory annual business registration for companies performing heating fuel installation and maintenance.",
     verticalSlug: "hvac",
     geography: "ON",
     entityLevel: "CONTRACTOR",
@@ -158,7 +196,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "ON_WSIB_CLEARANCE",
     name: "WSIB Clearance Certificate",
-    description: "Mandatory clearance certificate verifying active registration and compliance with Ontario workers injury insurance.",
+    description:
+      "Mandatory clearance certificate verifying active registration and compliance with Ontario workers injury insurance.",
     verticalSlug: "hvac",
     geography: "ON",
     entityLevel: "CONTRACTOR",
@@ -174,12 +213,14 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "HEALTH_SAFETY",
     credentialCode: "ON_MOL_HEIGHTS",
     name: "Working at Heights Training (CPO Approved)",
-    description: "Chief Prevention Officer approved fall protection training required for rooftop and elevated service work.",
+    description:
+      "Chief Prevention Officer approved fall protection training required for rooftop and elevated service work.",
     verticalSlug: "hvac",
     geography: "ON",
     entityLevel: "TECHNICIAN",
     requirementLevel: "MANDATORY",
-    issuingAuthority: "Ontario Ministry of Labour, Immigration, Training & Skills",
+    issuingAuthority:
+      "Ontario Ministry of Labour, Immigration, Training & Skills",
     legalReference: "Occupational Health and Safety Act, O.Reg 297/13",
     verificationMethod: "DOCUMENT_UPLOAD",
     validityPeriodMonths: 36,
@@ -192,7 +233,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "CA_CSLB_C20",
     name: "CSLB Class C-20 Warm-Air Heating, Ventilating & AC",
-    description: "Mandatory California specialty contractor license to install, maintain, or repair HVAC systems.",
+    description:
+      "Mandatory California specialty contractor license to install, maintain, or repair HVAC systems.",
     verticalSlug: "hvac",
     geography: "CA",
     entityLevel: "CONTRACTOR",
@@ -208,7 +250,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "ENVIRONMENTAL_HAZARDOUS",
     credentialCode: "US_EPA_608_UNIVERSAL",
     name: "EPA Section 608 Universal Refrigerant Certification",
-    description: "Federal Clean Air Act mandatory certification for servicing stationary refrigeration equipment.",
+    description:
+      "Federal Clean Air Act mandatory certification for servicing stationary refrigeration equipment.",
     verticalSlug: "hvac",
     geography: "CA",
     entityLevel: "TECHNICIAN",
@@ -224,7 +267,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "CA_CSLB_SURETY_BOND",
     name: "CSLB Contractor License Surety Bond ($25,000)",
-    description: "Statutory performance and compliance bond deposited with the California State License Board.",
+    description:
+      "Statutory performance and compliance bond deposited with the California State License Board.",
     verticalSlug: "hvac",
     geography: "CA",
     entityLevel: "CONTRACTOR",
@@ -240,7 +284,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "CA_WORKERS_COMP",
     name: "California Workers Compensation Insurance Certificate",
-    description: "Statutory workers compensation insurance covering all field technicians and apprentices.",
+    description:
+      "Statutory workers compensation insurance covering all field technicians and apprentices.",
     verticalSlug: "hvac",
     geography: "CA",
     entityLevel: "CONTRACTOR",
@@ -256,7 +301,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "HEALTH_SAFETY",
     credentialCode: "US_OSHA_10_CONST",
     name: "OSHA 10-Hour Construction Safety Card",
-    description: "Comprehensive occupational construction safety training covering jobsite hazard mitigation.",
+    description:
+      "Comprehensive occupational construction safety training covering jobsite hazard mitigation.",
     verticalSlug: "hvac",
     geography: "CA",
     entityLevel: "TECHNICIAN",
@@ -274,7 +320,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "TX_TDLR_ACR_CLASS_A",
     name: "TDLR Air Conditioning & Refrigeration Contractor (Class A/B)",
-    description: "State license authorizing environmental air conditioning, commercial refrigeration, and process cooling/heating.",
+    description:
+      "State license authorizing environmental air conditioning, commercial refrigeration, and process cooling/heating.",
     verticalSlug: "hvac",
     geography: "TX",
     entityLevel: "CONTRACTOR",
@@ -290,7 +337,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "ENVIRONMENTAL_HAZARDOUS",
     credentialCode: "US_EPA_608_UNIVERSAL",
     name: "EPA Section 608 Universal Refrigerant Certification",
-    description: "Federal Clean Air Act mandatory certification for servicing stationary refrigeration equipment.",
+    description:
+      "Federal Clean Air Act mandatory certification for servicing stationary refrigeration equipment.",
     verticalSlug: "hvac",
     geography: "TX",
     entityLevel: "TECHNICIAN",
@@ -306,7 +354,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "TX_TDLR_INSURANCE",
     name: "TDLR Commercial Liability Insurance Certificate",
-    description: "State-mandated commercial liability insurance on file with the licensing authority.",
+    description:
+      "State-mandated commercial liability insurance on file with the licensing authority.",
     verticalSlug: "hvac",
     geography: "TX",
     entityLevel: "CONTRACTOR",
@@ -324,7 +373,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "BC_TECH_SAFETY_GAS_A_B",
     name: "Technical Safety BC Gas Fitter Certificate Class A/B",
-    description: "Provincial authorization to install, test, service, and alter gas equipment and heating systems.",
+    description:
+      "Provincial authorization to install, test, service, and alter gas equipment and heating systems.",
     verticalSlug: "hvac",
     geography: "BC",
     entityLevel: "TECHNICIAN",
@@ -340,7 +390,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "BC_WORKSAFE_CLEARANCE",
     name: "WorkSafeBC Clearance Letter",
-    description: "Statutory proof of active registration and good standing with WorkSafeBC.",
+    description:
+      "Statutory proof of active registration and good standing with WorkSafeBC.",
     verticalSlug: "hvac",
     geography: "BC",
     entityLevel: "CONTRACTOR",
@@ -358,7 +409,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "CGL_INSURANCE_2M",
     name: "Commercial General Liability Insurance ($2,000,000 Min)",
-    description: "Active policy protecting consumers against third-party bodily injury, property damage, and completed operations.",
+    description:
+      "Active policy protecting consumers against third-party bodily injury, property damage, and completed operations.",
     verticalSlug: "*",
     geography: "*",
     entityLevel: "CONTRACTOR",
@@ -374,7 +426,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "COMMERCIAL_AUTO_1M",
     name: "Commercial Auto Fleet Liability Insurance ($1,000,000)",
-    description: "Coverage for service vans, trucks, and equipment transports traveling to residential job sites.",
+    description:
+      "Coverage for service vans, trucks, and equipment transports traveling to residential job sites.",
     verticalSlug: "*",
     geography: "*",
     entityLevel: "CONTRACTOR",
@@ -390,7 +443,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRUST_IDENTITY",
     credentialCode: "GOVT_PHOTO_ID",
     name: "Government-Issued Photo Identification",
-    description: "Official government driver license or passport verifying identity of all dispatched field technicians.",
+    description:
+      "Official government driver license or passport verifying identity of all dispatched field technicians.",
     verticalSlug: "*",
     geography: "*",
     entityLevel: "TECHNICIAN",
@@ -406,12 +460,14 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRUST_IDENTITY",
     credentialCode: "BACKGROUND_CHECK_ANNUAL",
     name: "Annual Criminal Background & Judicial Check",
-    description: "Clean background screening with vulnerable sector verification completed within past 12 months.",
+    description:
+      "Clean background screening with vulnerable sector verification completed within past 12 months.",
     verticalSlug: "*",
     geography: "*",
     entityLevel: "TECHNICIAN",
     requirementLevel: "MANDATORY",
-    issuingAuthority: "Accredited Background Screening Partner / Police Service",
+    issuingAuthority:
+      "Accredited Background Screening Partner / Police Service",
     legalReference: "Residential Trust & Safety Policy",
     verificationMethod: "DOCUMENT_UPLOAD",
     validityPeriodMonths: 12,
@@ -422,7 +478,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "HEALTH_SAFETY",
     credentialCode: "FIRST_AID_CPR_C",
     name: "Standard First Aid & CPR Level C (AED)",
-    description: "Accredited basic life support and emergency trauma response training.",
+    description:
+      "Accredited basic life support and emergency trauma response training.",
     verticalSlug: "*",
     geography: "*",
     entityLevel: "TECHNICIAN",
@@ -440,7 +497,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "ON_SKILLED_TRADES_306A",
     name: "306A Plumber Certificate of Qualification",
-    description: "Mandatory trade qualification for installing, repairing, and maintaining water supply and drainage systems.",
+    description:
+      "Mandatory trade qualification for installing, repairing, and maintaining water supply and drainage systems.",
     verticalSlug: "plumbing",
     geography: "ON",
     entityLevel: "TECHNICIAN",
@@ -456,7 +514,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "CA_CSLB_C36",
     name: "CSLB Class C-36 Plumbing Contractor License",
-    description: "California contractor license authorizing water supply, sewer, and gas line service.",
+    description:
+      "California contractor license authorizing water supply, sewer, and gas line service.",
     verticalSlug: "plumbing",
     geography: "CA",
     entityLevel: "CONTRACTOR",
@@ -474,7 +533,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "ON_ESA_LEC_CONTRACTOR",
     name: "ESA Licensed Electrical Contractor (LEC)",
-    description: "Statutory license required to operate an electrical contracting business and pull permits in Ontario.",
+    description:
+      "Statutory license required to operate an electrical contracting business and pull permits in Ontario.",
     verticalSlug: "electrical",
     geography: "ON",
     entityLevel: "CONTRACTOR",
@@ -490,7 +550,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "ON_SKILLED_TRADES_309A",
     name: "309A Electrician - Construction and Maintenance",
-    description: "Certificate of qualification permitting installation and maintenance of electrical systems in buildings.",
+    description:
+      "Certificate of qualification permitting installation and maintenance of electrical systems in buildings.",
     verticalSlug: "electrical",
     geography: "ON",
     entityLevel: "TECHNICIAN",
@@ -506,7 +567,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "CA_CSLB_C10",
     name: "CSLB Class C-10 Electrical Contractor License",
-    description: "California license to install, maintain, and connect electrical wires, conduits, apparatus, and fixtures.",
+    description:
+      "California license to install, maintain, and connect electrical wires, conduits, apparatus, and fixtures.",
     verticalSlug: "electrical",
     geography: "CA",
     entityLevel: "CONTRACTOR",
@@ -524,7 +586,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "HEALTH_SAFETY",
     credentialCode: "ROOFING_FALL_PROTECTION",
     name: "Comprehensive Fall Protection & Rescue Certification",
-    description: "Mandatory safety protocol training for high-angle roofing operations.",
+    description:
+      "Mandatory safety protocol training for high-angle roofing operations.",
     verticalSlug: "roofing",
     geography: "*",
     entityLevel: "TECHNICIAN",
@@ -540,7 +603,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "TRADE_LICENSING",
     credentialCode: "CA_CSLB_C39",
     name: "CSLB Class C-39 Roofing Contractor License",
-    description: "California specialty contractor license for installation and repair of all roof coverings.",
+    description:
+      "California specialty contractor license for installation and repair of all roof coverings.",
     verticalSlug: "roofing",
     geography: "CA",
     entityLevel: "CONTRACTOR",
@@ -556,7 +620,8 @@ export const DEFAULT_COMPLIANCE_STANDARDS: readonly ComplianceStandard[] = [
     groupCode: "INSURANCE_FINANCIAL",
     credentialCode: "ROOFING_OPEN_FLAME_INSURANCE",
     name: "CGL Open Flame / Hot-Tar Endorsement ($3,000,000)",
-    description: "Specific insurance endorsement covering torch-applied roofing systems and fire liability.",
+    description:
+      "Specific insurance endorsement covering torch-applied roofing systems and fire liability.",
     verticalSlug: "roofing",
     geography: "*",
     entityLevel: "CONTRACTOR",
@@ -577,8 +642,12 @@ export function filterComplianceStandards(
 ): ComplianceStandard[] {
   return standards.filter((standard) => {
     if (!standard.active) return false;
-    const matchesVertical = standard.verticalSlug === "*" || standard.verticalSlug.toLowerCase() === verticalSlug.toLowerCase();
-    const matchesGeography = standard.geography === "*" || standard.geography.toUpperCase() === geography.toUpperCase();
+    const matchesVertical =
+      standard.verticalSlug === "*" ||
+      standard.verticalSlug.toLowerCase() === verticalSlug.toLowerCase();
+    const matchesGeography =
+      standard.geography === "*" ||
+      standard.geography.toUpperCase() === geography.toUpperCase();
     const matchesEntity =
       !entityLevel ||
       entityLevel === "EITHER" ||
@@ -605,8 +674,12 @@ export function evaluateCompliance(
 
   for (const standard of applicableStandards) {
     const matched = submittedCredentials.find((cred) => {
-      const codeMatch = cred.code.toUpperCase() === standard.credentialCode.toUpperCase();
-      const geoMatch = !cred.geography || cred.geography === "*" || cred.geography.toUpperCase() === standard.geography.toUpperCase();
+      const codeMatch =
+        cred.code.toUpperCase() === standard.credentialCode.toUpperCase();
+      const geoMatch =
+        !cred.geography ||
+        cred.geography === "*" ||
+        cred.geography.toUpperCase() === standard.geography.toUpperCase();
       return codeMatch && geoMatch;
     });
 
@@ -616,7 +689,9 @@ export function evaluateCompliance(
       evaluationItems.push({ standard, status, reason });
       if (standard.requirementLevel === "MANDATORY") {
         missingMandatoryCodes.push(standard.credentialCode);
-        actionItems.push(`Acquire or upload ${standard.name} (${standard.issuingAuthority})`);
+        actionItems.push(
+          `Acquire or upload ${standard.name} (${standard.issuingAuthority})`,
+        );
       }
       continue;
     }
@@ -625,10 +700,17 @@ export function evaluateCompliance(
     if (credStatus === "VERIFIED") {
       if (matched.expiryDate && new Date(matched.expiryDate) < asOfDate) {
         const reason = `Expired on ${matched.expiryDate}. Current renewal required.`;
-        evaluationItems.push({ standard, matchedCredential: { ...matched, status: credStatus }, status: "FAIL_EXPIRED", reason });
+        evaluationItems.push({
+          standard,
+          matchedCredential: { ...matched, status: credStatus },
+          status: "FAIL_EXPIRED",
+          reason,
+        });
         if (standard.requirementLevel === "MANDATORY") {
           missingMandatoryCodes.push(standard.credentialCode);
-          actionItems.push(`Renew expired ${standard.name} (expired ${matched.expiryDate})`);
+          actionItems.push(
+            `Renew expired ${standard.name} (expired ${matched.expiryDate})`,
+          );
         }
       } else {
         evaluationItems.push({
@@ -672,9 +754,17 @@ export function evaluateCompliance(
 
   const groups: ComplianceGroupSummary[] = CREDENTIAL_GROUPS.map((group) => {
     const items = groupMap.get(group.code) ?? [];
-    const totalRequired = items.filter((i) => i.standard.requirementLevel === "MANDATORY").length;
+    const totalRequired = items.filter(
+      (i) => i.standard.requirementLevel === "MANDATORY",
+    ).length;
     const passed = items.filter((i) => i.status === "PASS").length;
-    const hasFails = items.some((i) => i.standard.requirementLevel === "MANDATORY" && (i.status === "FAIL_MISSING" || i.status === "FAIL_EXPIRED" || i.status === "FAIL_REJECTED"));
+    const hasFails = items.some(
+      (i) =>
+        i.standard.requirementLevel === "MANDATORY" &&
+        (i.status === "FAIL_MISSING" ||
+          i.status === "FAIL_EXPIRED" ||
+          i.status === "FAIL_REJECTED"),
+    );
     const hasPending = items.some((i) => i.status === "FAIL_PENDING");
 
     return {
@@ -683,27 +773,51 @@ export function evaluateCompliance(
       icon: group.icon,
       totalRequired,
       passed,
-      status: (hasFails ? "FAIL" : hasPending ? "PENDING" : "PASS") as "PASS" | "FAIL" | "PENDING",
+      status: (hasFails ? "FAIL" : hasPending ? "PENDING" : "PASS") as
+        "PASS" | "FAIL" | "PENDING",
       items,
     };
   }).filter((group) => group.items.length > 0);
 
-  const mandatoryStandards = evaluationItems.filter((i) => i.standard.requirementLevel === "MANDATORY");
-  const mandatoryPassed = mandatoryStandards.filter((i) => i.status === "PASS").length;
-  const recommendedStandards = evaluationItems.filter((i) => i.standard.requirementLevel === "RECOMMENDED");
-  const recommendedPassed = recommendedStandards.filter((i) => i.status === "PASS").length;
+  const mandatoryStandards = evaluationItems.filter(
+    (i) => i.standard.requirementLevel === "MANDATORY",
+  );
+  const mandatoryPassed = mandatoryStandards.filter(
+    (i) => i.status === "PASS",
+  ).length;
+  const recommendedStandards = evaluationItems.filter(
+    (i) => i.standard.requirementLevel === "RECOMMENDED",
+  );
+  const recommendedPassed = recommendedStandards.filter(
+    (i) => i.status === "PASS",
+  ).length;
 
   // Score in basis points: Mandatory is 80%, Recommended is 20%
-  const mandatoryWeight = mandatoryStandards.length > 0 ? (mandatoryPassed / mandatoryStandards.length) * 8000 : 8000;
-  const recommendedWeight = recommendedStandards.length > 0 ? (recommendedPassed / recommendedStandards.length) * 2000 : 2000;
+  const mandatoryWeight =
+    mandatoryStandards.length > 0
+      ? (mandatoryPassed / mandatoryStandards.length) * 8000
+      : 8000;
+  const recommendedWeight =
+    recommendedStandards.length > 0
+      ? (recommendedPassed / recommendedStandards.length) * 2000
+      : 2000;
   const scoreBps = Math.round(mandatoryWeight + recommendedWeight);
 
   let overallStatus: ComplianceScorecard["overallStatus"] = "VERIFIED";
   if (mandatoryPassed < mandatoryStandards.length) {
-    const hasExpired = mandatoryStandards.some((i) => i.status === "FAIL_EXPIRED");
-    const hasPending = mandatoryStandards.some((i) => i.status === "FAIL_PENDING");
+    const hasExpired = mandatoryStandards.some(
+      (i) => i.status === "FAIL_EXPIRED",
+    );
+    const hasPending = mandatoryStandards.some(
+      (i) => i.status === "FAIL_PENDING",
+    );
     if (hasExpired) overallStatus = "EXPIRED";
-    else if (hasPending && !mandatoryStandards.some((i) => i.status === "FAIL_MISSING" || i.status === "FAIL_REJECTED")) {
+    else if (
+      hasPending &&
+      !mandatoryStandards.some(
+        (i) => i.status === "FAIL_MISSING" || i.status === "FAIL_REJECTED",
+      )
+    ) {
       overallStatus = "PENDING_REVIEW";
     } else {
       overallStatus = "DEFICIENT";
