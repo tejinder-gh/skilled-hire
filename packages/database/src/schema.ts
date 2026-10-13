@@ -1799,4 +1799,291 @@ export const agreementSignaturesRelations = relations(
   }),
 );
 
+// 12. Customer Protection Products & Insurance (Ticket #62)
+export const customerProtectionProducts = pgTable(
+  "customer_protection_products",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: text("slug").notNull().unique(),
+    name: text("name").notNull(),
+    version: text("version").notNull().default("1.0.0"),
+    jurisdiction: text("jurisdiction").notNull().default("ON"),
+    underwriterName: text("underwriter_name").notNull(),
+    underwriterPolicyRef: text("underwriter_policy_ref").notNull(),
+    brokerName: text("broker_name").notNull(),
+    brokerLicenseRef: text("broker_license_ref").notNull(),
+    coverageLimitCents: bigint("coverage_limit_cents", {
+      mode: "number",
+    }).notNull(),
+    deductibleCents: bigint("deductible_cents", { mode: "number" }).notNull(),
+    durationMonths: integer("duration_months").notNull().default(12),
+    baseRateBps: integer("base_rate_bps").notNull().default(250),
+    minPremiumCents: bigint("min_premium_cents", {
+      mode: "number",
+    })
+      .notNull()
+      .default(4900),
+    brokerCommissionBps: integer("broker_commission_bps")
+      .notNull()
+      .default(1500),
+    platformFeeBps: integer("platform_fee_bps").notNull().default(1000),
+    taxRateBps: integer("tax_rate_bps").notNull().default(800),
+    termsMarkdown: text("terms_markdown").notNull(),
+    disclaimers: jsonb("disclaimers").notNull().default([]),
+    allowedVerticalIds: jsonb("allowed_vertical_ids").notNull().default([]),
+    maxJobValueCents: bigint("max_job_value_cents", {
+      mode: "number",
+    })
+      .notNull()
+      .default(50000000),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const protectionQuotes = pgTable("protection_quotes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references(() => serviceRequests.id, { onDelete: "cascade" }),
+  productId: uuid("product_id")
+    .notNull()
+    .references(() => customerProtectionProducts.id, { onDelete: "restrict" }),
+  jobValueCents: bigint("job_value_cents", { mode: "number" }).notNull(),
+  coverageLimitCents: bigint("coverage_limit_cents", {
+    mode: "number",
+  }).notNull(),
+  deductibleCents: bigint("deductible_cents", { mode: "number" }).notNull(),
+  grossPremiumCents: bigint("gross_premium_cents", {
+    mode: "number",
+  }).notNull(),
+  brokerCommissionCents: bigint("broker_commission_cents", {
+    mode: "number",
+  }).notNull(),
+  platformFeeCents: bigint("platform_fee_cents", { mode: "number" }).notNull(),
+  taxCents: bigint("tax_cents", { mode: "number" }).notNull(),
+  totalPayableCents: bigint("total_payable_cents", {
+    mode: "number",
+  }).notNull(),
+  eligible: boolean("eligible").notNull(),
+  underwritingDecision: text("underwriting_decision").notNull(),
+  declineReasons: jsonb("decline_reasons").notNull().default([]),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("ISSUED"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const protectionPolicies = pgTable("protection_policies", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  certificateNumber: text("certificate_number").notNull().unique(),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references(() => serviceRequests.id, { onDelete: "restrict" }),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  productId: uuid("product_id")
+    .notNull()
+    .references(() => customerProtectionProducts.id, { onDelete: "restrict" }),
+  quoteId: uuid("quote_id")
+    .notNull()
+    .references(() => protectionQuotes.id, { onDelete: "restrict" }),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  status: text("status").notNull().default("BOUND_ACTIVE"),
+  coverageLimitCents: bigint("coverage_limit_cents", {
+    mode: "number",
+  }).notNull(),
+  deductibleCents: bigint("deductible_cents", { mode: "number" }).notNull(),
+  grossPremiumCents: bigint("gross_premium_cents", {
+    mode: "number",
+  }).notNull(),
+  taxCents: bigint("tax_cents", { mode: "number" }).notNull(),
+  totalPaidCents: bigint("total_paid_cents", { mode: "number" }).notNull(),
+  effectiveStartDate: timestamp("effective_start_date", {
+    withTimezone: true,
+  }).notNull(),
+  effectiveEndDate: timestamp("effective_end_date", {
+    withTimezone: true,
+  }).notNull(),
+  cancellationDeadline: timestamp("cancellation_deadline", {
+    withTimezone: true,
+  }).notNull(),
+  policyChecksum: text("policy_checksum").notNull(),
+  underwriterPolicyRef: text("underwriter_policy_ref").notNull(),
+  brokerLicenseRef: text("broker_license_ref").notNull(),
+  bindingEvidenceSnapshot: jsonb("binding_evidence_snapshot")
+    .notNull()
+    .default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  cancellationReason: text("cancellation_reason"),
+});
+
+export const protectionClaims = pgTable("protection_claims", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  claimNumber: text("claim_number").notNull().unique(),
+  policyId: uuid("policy_id")
+    .notNull()
+    .references(() => protectionPolicies.id, { onDelete: "restrict" }),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references(() => serviceRequests.id, { onDelete: "restrict" }),
+  claimantUserId: uuid("claimant_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  incidentDate: timestamp("incident_date", { withTimezone: true }).notNull(),
+  incidentDescription: text("incident_description").notNull(),
+  claimedAmountCents: bigint("claimed_amount_cents", {
+    mode: "number",
+  }).notNull(),
+  evidenceUrls: jsonb("evidence_urls").notNull().default([]),
+  status: text("status").notNull().default("SUBMITTED"),
+  adjudicatedAmountCents: bigint("adjudicated_amount_cents", {
+    mode: "number",
+  }).default(0),
+  deductibleAppliedCents: bigint("deductible_applied_cents", {
+    mode: "number",
+  }).default(0),
+  netPayoutCents: bigint("net_payout_cents", { mode: "number" }).default(0),
+  adjudicationNotes: text("adjudication_notes"),
+  adjudicatedByUserId: uuid("adjudicated_by_user_id").references(
+    () => users.id,
+  ),
+  adjudicatedAt: timestamp("adjudicated_at", { withTimezone: true }),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  declineReasonCode: text("decline_reason_code"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const protectionFinancialLedger = pgTable(
+  "protection_financial_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    transactionType: text("transaction_type").notNull(),
+    policyId: uuid("policy_id").references(() => protectionPolicies.id, {
+      onDelete: "set null",
+    }),
+    claimId: uuid("claim_id").references(() => protectionClaims.id, {
+      onDelete: "set null",
+    }),
+    amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+    currency: text("currency").notNull().default("CAD"),
+    direction: text("direction").notNull(),
+    sourceAccount: text("source_account").notNull(),
+    destinationAccount: text("destination_account").notNull(),
+    reference: text("reference").notNull(),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const customerProtectionProductsRelations = relations(
+  customerProtectionProducts,
+  ({ many }) => ({
+    quotes: many(protectionQuotes),
+    policies: many(protectionPolicies),
+  }),
+);
+
+export const protectionQuotesRelations = relations(
+  protectionQuotes,
+  ({ one }) => ({
+    product: one(customerProtectionProducts, {
+      fields: [protectionQuotes.productId],
+      references: [customerProtectionProducts.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [protectionQuotes.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+  }),
+);
+
+export const protectionPoliciesRelations = relations(
+  protectionPolicies,
+  ({ one, many }) => ({
+    product: one(customerProtectionProducts, {
+      fields: [protectionPolicies.productId],
+      references: [customerProtectionProducts.id],
+    }),
+    quote: one(protectionQuotes, {
+      fields: [protectionPolicies.quoteId],
+      references: [protectionQuotes.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [protectionPolicies.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+    customer: one(users, {
+      fields: [protectionPolicies.customerId],
+      references: [users.id],
+    }),
+    contractor: one(contractors, {
+      fields: [protectionPolicies.contractorId],
+      references: [contractors.id],
+    }),
+    claims: many(protectionClaims),
+    ledgerEntries: many(protectionFinancialLedger),
+  }),
+);
+
+export const protectionClaimsRelations = relations(
+  protectionClaims,
+  ({ one, many }) => ({
+    policy: one(protectionPolicies, {
+      fields: [protectionClaims.policyId],
+      references: [protectionPolicies.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [protectionClaims.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+    claimantUser: one(users, {
+      fields: [protectionClaims.claimantUserId],
+      references: [users.id],
+    }),
+    contractor: one(contractors, {
+      fields: [protectionClaims.contractorId],
+      references: [contractors.id],
+    }),
+    ledgerEntries: many(protectionFinancialLedger),
+  }),
+);
+
+export const protectionFinancialLedgerRelations = relations(
+  protectionFinancialLedger,
+  ({ one }) => ({
+    policy: one(protectionPolicies, {
+      fields: [protectionFinancialLedger.policyId],
+      references: [protectionPolicies.id],
+    }),
+    claim: one(protectionClaims, {
+      fields: [protectionFinancialLedger.claimId],
+      references: [protectionClaims.id],
+    }),
+  }),
+);
+
 

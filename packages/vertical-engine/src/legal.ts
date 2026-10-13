@@ -108,6 +108,8 @@ export function computeAgreementChecksum(contentMarkdown: string): string {
   return sha256Sync(contentMarkdown.trim());
 }
 
+export const computeSha256 = sha256Sync;
+
 /**
  * Verifies that a signed agreement record matches the active agreement content and has not been tampered with or revoked.
  */
