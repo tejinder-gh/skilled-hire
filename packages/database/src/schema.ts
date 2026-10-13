@@ -645,6 +645,20 @@ export const propertySystems = pgTable("property_systems", {
   name: text("name").notNull(),
   metadata: jsonb("metadata").notNull().default({}),
   installedOn: date("installed_on"),
+  assetType: text("asset_type").default("GENERAL_EQUIPMENT"),
+  manufacturer: text("manufacturer"),
+  modelNumber: text("model_number"),
+  serialNumber: text("serial_number"),
+  warrantyStatus: text("warranty_status").default("ACTIVE"),
+  lastServiceRecordId: uuid("last_service_record_id").references(
+    (): AnyPgColumn => serviceRecords.id,
+    { onDelete: "set null" },
+  ),
+  lastServicedAt: timestamp("last_serviced_at", { withTimezone: true }),
+  installedByContractorId: uuid("installed_by_contractor_id").references(
+    (): AnyPgColumn => contractors.id,
+    { onDelete: "set null" },
+  ),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -2202,6 +2216,177 @@ export const jobDocumentationPackagesRelations = relations(
     }),
     reviewedByUser: one(users, {
       fields: [jobDocumentationPackages.reviewedByUserId],
+      references: [users.id],
+    }),
+  }),
+);
+
+// 19. Job Completion Reports & Property Service Passport (#50, #51)
+export const jobCompletionReports = pgTable("job_completion_reports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  jobId: uuid("job_id")
+    .notNull()
+    .references((): AnyPgColumn => jobs.id, { onDelete: "cascade" }),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references((): AnyPgColumn => serviceRequests.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  technicianId: uuid("technician_id").references(() => technicians.id, {
+    onDelete: "set null",
+  }),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id, { onDelete: "restrict" }),
+  reportNumber: text("report_number").notNull().unique(),
+  version: integer("version").notNull().default(1),
+  status: text("status").notNull().default("DRAFT"),
+  syncStatus: text("sync_status").notNull().default("SYNCED"),
+  clientMutationId: text("client_mutation_id"),
+  workSummary: text("work_summary").notNull(),
+  diagnosis: text("diagnosis").notNull(),
+  workStartedAt: timestamp("work_started_at", { withTimezone: true }).notNull(),
+  workCompletedAt: timestamp("work_completed_at", { withTimezone: true }).notNull(),
+  assetId: uuid("asset_id").references(() => propertySystems.id, {
+    onDelete: "set null",
+  }),
+  partsInstalled: jsonb("parts_installed").notNull().default([]),
+  testsPerformed: jsonb("tests_performed").notNull().default([]),
+  beforePhotos: jsonb("before_photos").notNull().default([]),
+  afterPhotos: jsonb("after_photos").notNull().default([]),
+  permitId: uuid("permit_id").references(() => electricalPermits.id, {
+    onDelete: "set null",
+  }),
+  outstandingIssues: jsonb("outstanding_issues").notNull().default([]),
+  maintenanceRecommendations: jsonb("maintenance_recommendations").notNull().default([]),
+  contractorAttestation: jsonb("contractor_attestation").notNull().default({}),
+  customerAcceptance: jsonb("customer_acceptance").notNull().default({}),
+  disputeReason: text("dispute_reason"),
+  disputedAt: timestamp("disputed_at", { withTimezone: true }),
+  disputedByUserId: uuid("disputed_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const propertyAccessGrants = pgTable("property_access_grants", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id, { onDelete: "cascade" }),
+  granteeContractorId: uuid("grantee_contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  grantedByUserId: uuid("granted_by_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  scope: text("scope").notNull().default("FULL_HISTORY"),
+  serviceVerticalId: uuid("service_vertical_id").references(() => verticals.id, {
+    onDelete: "set null",
+  }),
+  reason: text("reason"),
+  status: text("status").notNull().default("ACTIVE"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const propertyOwnershipTransfers = pgTable("property_ownership_transfers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id, { onDelete: "cascade" }),
+  previousOwnerUserId: uuid("previous_owner_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  newOwnerUserId: uuid("new_owner_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  status: text("status").notNull().default("PENDING"),
+  verificationToken: text("verification_token").notNull().unique(),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  transferNotes: text("transfer_notes"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const jobCompletionReportsRelations = relations(
+  jobCompletionReports,
+  ({ one }) => ({
+    job: one(jobs, {
+      fields: [jobCompletionReports.jobId],
+      references: [jobs.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [jobCompletionReports.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+    contractor: one(contractors, {
+      fields: [jobCompletionReports.contractorId],
+      references: [contractors.id],
+    }),
+    technician: one(technicians, {
+      fields: [jobCompletionReports.technicianId],
+      references: [technicians.id],
+    }),
+    property: one(properties, {
+      fields: [jobCompletionReports.propertyId],
+      references: [properties.id],
+    }),
+    asset: one(propertySystems, {
+      fields: [jobCompletionReports.assetId],
+      references: [propertySystems.id],
+    }),
+    permit: one(electricalPermits, {
+      fields: [jobCompletionReports.permitId],
+      references: [electricalPermits.id],
+    }),
+  }),
+);
+
+export const propertyAccessGrantsRelations = relations(
+  propertyAccessGrants,
+  ({ one }) => ({
+    property: one(properties, {
+      fields: [propertyAccessGrants.propertyId],
+      references: [properties.id],
+    }),
+    granteeContractor: one(contractors, {
+      fields: [propertyAccessGrants.granteeContractorId],
+      references: [contractors.id],
+    }),
+    grantedByUser: one(users, {
+      fields: [propertyAccessGrants.grantedByUserId],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const propertyOwnershipTransfersRelations = relations(
+  propertyOwnershipTransfers,
+  ({ one }) => ({
+    property: one(properties, {
+      fields: [propertyOwnershipTransfers.propertyId],
+      references: [properties.id],
+    }),
+    previousOwner: one(users, {
+      fields: [propertyOwnershipTransfers.previousOwnerUserId],
+      references: [users.id],
+    }),
+    newOwner: one(users, {
+      fields: [propertyOwnershipTransfers.newOwnerUserId],
       references: [users.id],
     }),
   }),
