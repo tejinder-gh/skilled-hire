@@ -34,6 +34,11 @@ import {
   refunds,
   legalAgreements,
   agreementSignatures,
+  customerProtectionProducts,
+  protectionQuotes,
+  protectionPolicies,
+  protectionClaims,
+  protectionFinancialLedger,
   eq,
   ne,
   and,
@@ -4827,6 +4832,509 @@ describeSuite("Skilled Hire lifecycle", () => {
       ),
     ).toBe(true);
   });
+
+  it("enforces optional customer protection insurance, underwriting eligibility, tamper-evident coverage certificates, claims adjudication, and financial reconciliation (#62)", async () => {
+    // 1. Discover Active Protection Products & Statutory Broker Disclosures (GET /v1/protection/products)
+    const discoveryRes = await app.inject({
+      method: "GET",
+      url: "/v1/protection/products?jurisdiction=ON",
+    });
+    expect(discoveryRes.statusCode).toBe(200);
+    const discoveryJson = discoveryRes.json<{
+      products: Array<{
+        id: string;
+        slug: string;
+        name: string;
+        underwriterName: string;
+        underwriterPolicyRef: string;
+        brokerName: string;
+        brokerLicenseRef: string;
+        coverageLimitCents: number;
+        deductibleCents: number;
+        durationMonths: number;
+        baseRateBps: number;
+        minPremiumCents: number;
+        termsMarkdown: string;
+        disclaimers: string[];
+      }>;
+      jurisdiction: string;
+      statutoryDisclosures: string[];
+    }>();
+
+    expect(discoveryJson.jurisdiction).toBe("ON");
+    expect(discoveryJson.products.length).toBeGreaterThanOrEqual(3);
+
+    // Verify statutory consumer protection disclosures (FSRA/RIBO compliance)
+    expect(
+      discoveryJson.statutoryDisclosures.some((d) =>
+        d.includes("SkilledHire Insurance Services Inc. (RIBO #39102)"),
+      ),
+    ).toBe(true);
+    expect(
+      discoveryJson.statutoryDisclosures.some((d) =>
+        d.includes("Trillium Surety & Casualty Canada ULC"),
+      ),
+    ).toBe(true);
+    expect(
+      discoveryJson.statutoryDisclosures.some((d) =>
+        d.includes("No unsupported 100% guarantee language"),
+      ),
+    ).toBe(true);
+    expect(
+      discoveryJson.statutoryDisclosures.some((d) =>
+        d.includes("10-day statutory cooling-off cancellation rights"),
+      ),
+    ).toBe(true);
+
+    const stdProduct = discoveryJson.products.find(
+      (p) => p.slug === "STANDARD_DEFECT_PROTECTION",
+    );
+    const compProduct = discoveryJson.products.find(
+      (p) => p.slug === "COMPREHENSIVE_PROPERTY_AND_WATER",
+    );
+    const structProduct = discoveryJson.products.find(
+      (p) => p.slug === "MAJOR_MECHANICAL_AND_STRUCTURAL",
+    );
+
+    expect(stdProduct).toBeDefined();
+    expect(stdProduct?.coverageLimitCents).toBe(2500000); // $25,000
+    expect(stdProduct?.deductibleCents).toBe(25000); // $250
+    expect(stdProduct?.brokerLicenseRef).toBe("RIBO-ON-LIC-39102-CORP");
+
+    expect(compProduct).toBeDefined();
+    expect(compProduct?.coverageLimitCents).toBe(10000000); // $100,000
+    expect(compProduct?.deductibleCents).toBe(50000); // $500
+    expect(compProduct?.durationMonths).toBe(24);
+
+    expect(structProduct).toBeDefined();
+    expect(structProduct?.coverageLimitCents).toBe(25000000); // $250,000
+    expect(structProduct?.deductibleCents).toBe(100000); // $1,000
+    expect(structProduct?.durationMonths).toBe(36);
+
+    // 2. Prepare Service Request for Quoting & Underwriting
+    const [elecVertical] = await db
+      .select({ id: verticals.id })
+      .from(verticals)
+      .where(eq(verticals.slug, "electrical"))
+      .limit(1);
+    const [elecCat] = await db
+      .select({ id: serviceCategories.id })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, elecVertical!.id))
+      .limit(1);
+    const [elecIssue] = await db
+      .select({ id: issueTypes.id })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, elecCat!.id))
+      .limit(1);
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, custUser.id))
+      .limit(1);
+
+    const createReqRes = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: prop!.id,
+        verticalId: elecVertical!.id,
+        categoryId: elecCat!.id,
+        issueTypeId: elecIssue!.id,
+        urgency: "STANDARD",
+        description: "200A Electrical Distribution and Whole-Home Power System",
+        attachmentKeys: [],
+      },
+    });
+    expect(createReqRes.statusCode).toBe(201);
+    const requestId = createReqRes.json<{ id: string }>().id;
+
+    // 3. Generate Underwriting Quote (POST /v1/protection/quotes)
+    // Job Value = $8,000.00 (800,000 cents) for Comprehensive ($100k coverage)
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/v1/protection/quotes",
+      headers: auth("customer@example.test"),
+      payload: {
+        serviceRequestId: requestId,
+        productSlug: "COMPREHENSIVE_PROPERTY_AND_WATER",
+        jobValueCents: 800000,
+      },
+    });
+    expect(quoteRes.statusCode).toBe(201);
+    const quoteData = quoteRes.json<{
+      quote: {
+        id: string;
+        serviceRequestId: string;
+        productId: string;
+        jobValueCents: number;
+        coverageLimitCents: number;
+        deductibleCents: number;
+        grossPremiumCents: number;
+        brokerCommissionCents: number;
+        platformFeeCents: number;
+        taxCents: number;
+        totalPayableCents: number;
+        eligible: boolean;
+        underwritingDecision: string;
+        status: string;
+        expiresAt: string;
+      };
+      product: {
+        name: string;
+        underwriterName: string;
+        brokerName: string;
+        brokerLicenseRef: string;
+      };
+    }>();
+
+    const quote = quoteData.quote;
+    expect(quote.id).toBeDefined();
+    expect(quote.jobValueCents).toBe(800000);
+    expect(quote.coverageLimitCents).toBe(10000000); // $100,000 limit
+    expect(quote.deductibleCents).toBe(50000); // $500 deductible
+    expect(quote.grossPremiumCents).toBe(36000); // 4.5% of $8,000 = $360.00
+    expect(quote.brokerCommissionCents).toBe(5400); // 15% of $360 = $54.00
+    expect(quote.platformFeeCents).toBe(3600); // 10% of $360 = $36.00
+    expect(quote.taxCents).toBe(3168); // 8% tax on ($360 + $36) = $31.68
+    expect(quote.totalPayableCents).toBe(42768); // $427.68 total payable
+    expect(quote.eligible).toBe(true);
+    expect(quote.underwritingDecision).toBe("ELIGIBLE");
+    expect(quote.status).toBe("ISSUED");
+
+    // 4. Negative Underwriting Test: Job Value Exceeds Maximum Ceiling
+    const exceedQuoteRes = await app.inject({
+      method: "POST",
+      url: "/v1/protection/quotes",
+      headers: auth("customer@example.test"),
+      payload: {
+        serviceRequestId: requestId,
+        productSlug: "STANDARD_DEFECT_PROTECTION", // Max $100,000 job value
+        jobValueCents: 15000000, // $150,000
+      },
+    });
+    expect(exceedQuoteRes.statusCode).toBe(201);
+    const exceedQuote = exceedQuoteRes.json<{
+      quote: { eligible: boolean; underwritingDecision: string; declineReasons: string[] };
+    }>().quote;
+    expect(exceedQuote.eligible).toBe(false);
+    expect(exceedQuote.underwritingDecision).toBe(
+      "DECLINED_JOB_VALUE_EXCEEDED",
+    );
+    expect(exceedQuote.declineReasons.length).toBeGreaterThan(0);
+
+    // 5. Binding Attempt Without Acknowledging Statutory Disclosures -> 400 Validation Error
+    const unacknowledgedBindRes = await app.inject({
+      method: "POST",
+      url: "/v1/protection/policies/bind",
+      headers: auth("customer@example.test"),
+      payload: {
+        quoteId: quote.id,
+        acknowledgedDisclosures: false,
+      },
+    });
+    expect(unacknowledgedBindRes.statusCode).toBe(400);
+
+    // 6. Legitimate Policy Binding (POST /v1/protection/policies/bind)
+    const bindRes = await app.inject({
+      method: "POST",
+      url: "/v1/protection/policies/bind",
+      headers: auth("customer@example.test"),
+      payload: {
+        quoteId: quote.id,
+        acknowledgedDisclosures: true,
+        paymentMethodRef: "CARD_ESCROW_VISA_4242",
+      },
+    });
+    expect(bindRes.statusCode).toBe(201);
+    const bindData = bindRes.json<{
+      policy: {
+        id: string;
+        certificateNumber: string;
+        status: string;
+        coverageLimitCents: number;
+        deductibleCents: number;
+        grossPremiumCents: number;
+        totalPaidCents: number;
+        effectiveStartDate: string;
+        effectiveEndDate: string;
+        cancellationDeadline: string;
+        policyChecksum: string;
+        underwriterPolicyRef: string;
+        brokerLicenseRef: string;
+      };
+      certificate: {
+        certificateNumber: string;
+        policyChecksum: string;
+        underwriter: { name: string; policyRef: string };
+        licensedBroker: { name: string; licenseRef: string };
+        coverage: { limitCents: number; deductibleCents: number; durationMonths: number };
+        statutoryDisclosures: string[];
+      };
+    }>();
+
+    const policy = bindData.policy;
+    expect(policy.id).toBeDefined();
+    expect(policy.certificateNumber).toMatch(/^SH-POL-2026-ON-\d+$/);
+    expect(policy.status).toBe("BOUND_ACTIVE");
+    expect(policy.coverageLimitCents).toBe(10000000);
+    expect(policy.deductibleCents).toBe(50000);
+    expect(policy.grossPremiumCents).toBe(36000);
+    expect(policy.totalPaidCents).toBe(42768);
+    expect(policy.policyChecksum.length).toBe(64);
+    expect(policy.brokerLicenseRef).toBe("RIBO-ON-LIC-39102-CORP");
+
+    expect(bindData.certificate.coverage.durationMonths).toBe(24);
+    expect(bindData.certificate.statutoryDisclosures.length).toBeGreaterThan(0);
+
+    // 7. Re-binding Same Quote Fails (409 ALREADY_BOUND)
+    const duplicateBindRes = await app.inject({
+      method: "POST",
+      url: "/v1/protection/policies/bind",
+      headers: auth("customer@example.test"),
+      payload: {
+        quoteId: quote.id,
+        acknowledgedDisclosures: true,
+      },
+    });
+    expect(duplicateBindRes.statusCode).toBe(409);
+
+    // 8. Coverage Certificate Verification & Tenant Isolation (GET /v1/protection/policies/:id/certificate)
+    // 8a. Tenant Isolation: Non-ops unauthorized caller cannot view certificate -> 403
+    const rivalCertRes = await app.inject({
+      method: "GET",
+      url: `/v1/protection/policies/${policy.id}/certificate`,
+      headers: auth("technician@example.test"),
+    });
+    expect(rivalCertRes.statusCode).toBe(403);
+    expect(rivalCertRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 8b. Insured Customer Retrieves Verified Certificate
+    const certRes = await app.inject({
+      method: "GET",
+      url: `/v1/protection/policies/${policy.id}/certificate`,
+      headers: auth("customer@example.test"),
+    });
+    expect(certRes.statusCode).toBe(200);
+    const certJson = certRes.json<{
+      certificate: {
+        certificateNumber: string;
+        policyChecksum: string;
+        insuredCustomer: { name: string };
+        coverage: { limitCents: number; deductibleCents: number };
+      };
+      tamperEvident: {
+        verified: boolean;
+        recordedChecksum: string;
+        computedChecksum: string;
+      };
+    }>();
+    expect(certJson.tamperEvident.verified).toBe(true);
+    expect(certJson.tamperEvident.recordedChecksum).toBe(
+      certJson.tamperEvident.computedChecksum,
+    );
+    expect(certJson.certificate.certificateNumber).toBe(policy.certificateNumber);
+
+    // 9. Statutory 10-Day Cooling-Off Cancellation & Full Premium Refund
+    // Prepare a second policy specifically to test statutory cancellation
+    const cancelQuoteRes = await app.inject({
+      method: "POST",
+      url: "/v1/protection/quotes",
+      headers: auth("customer@example.test"),
+      payload: {
+        serviceRequestId: requestId,
+        productSlug: "STANDARD_DEFECT_PROTECTION",
+        jobValueCents: 300000, // $3,000
+      },
+    });
+    expect(cancelQuoteRes.statusCode).toBe(201);
+    const cancelQuoteId = cancelQuoteRes.json<{ quote: { id: string } }>().quote.id;
+
+    const cancelBindRes = await app.inject({
+      method: "POST",
+      url: "/v1/protection/policies/bind",
+      headers: auth("customer@example.test"),
+      payload: {
+        quoteId: cancelQuoteId,
+        acknowledgedDisclosures: true,
+      },
+    });
+    expect(cancelBindRes.statusCode).toBe(201);
+    const policyToCancelId = cancelBindRes.json<{ policy: { id: string; totalPaidCents: number } }>().policy.id;
+
+    const cancelRes = await app.inject({
+      method: "POST",
+      url: `/v1/protection/policies/${policyToCancelId}/cancel`,
+      headers: auth("customer@example.test"),
+      payload: {
+        reason: "Customer opted out within statutory 10-day cooling-off window prior to job start.",
+      },
+    });
+    expect(cancelRes.statusCode).toBe(200);
+    const cancelJson = cancelRes.json<{
+      policy: { status: string; cancelledAt: string; cancellationReason: string };
+      refund: { refundedAmountCents: number; status: string };
+    }>();
+    expect(cancelJson.policy.status).toBe("CANCELLED_REFUNDED");
+    expect(cancelJson.policy.cancelledAt).toBeDefined();
+    expect(cancelJson.refund.status).toBe("REFUNDED");
+    expect(cancelJson.refund.refundedAmountCents).toBeGreaterThan(0);
+
+    // 10. Homeowner Defect Claim Filing (POST /v1/protection/policies/:id/claims)
+    const incidentDate = new Date().toISOString();
+    const claimRes = await app.inject({
+      method: "POST",
+      url: `/v1/protection/policies/${policy.id}/claims`,
+      headers: auth("customer@example.test"),
+      payload: {
+        incidentDate,
+        incidentDescription:
+          "Severe water escape and consequential drywall damage resulting from failed pipe joint crimp on domestic supply.",
+        claimedAmountCents: 420000, // $4,200.00 loss
+        evidenceUrls: [
+          "https://storage.skilledhire.ca/claims/water-damage-basement.jpg",
+          "https://storage.skilledhire.ca/claims/mitigation-drying-invoice.pdf",
+        ],
+      },
+    });
+    expect(claimRes.statusCode).toBe(201);
+    const claimData = claimRes.json<{
+      claim: {
+        id: string;
+        claimNumber: string;
+        status: string;
+        claimedAmountCents: number;
+        adjudicatedAmountCents: number;
+        netPayoutCents: number;
+      };
+    }>().claim;
+
+    expect(claimData.id).toBeDefined();
+    expect(claimData.claimNumber).toMatch(/^CLM-2026-ON-\d+$/);
+    expect(claimData.status).toBe("SUBMITTED");
+    expect(claimData.claimedAmountCents).toBe(420000);
+
+    // 10b. Tenant Isolation: Rival non-ops actor cannot view claim -> 403
+    const rivalClaimRes = await app.inject({
+      method: "GET",
+      url: `/v1/protection/claims/${claimData.id}`,
+      headers: auth("technician@example.test"),
+    });
+    expect(rivalClaimRes.statusCode).toBe(403);
+    expect(rivalClaimRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    // 11. Claims Adjuster Adjudication & Payout (POST /v1/protection/claims/:id/adjudicate)
+    // 11a. Non-ops caller is forbidden
+    const nonOpsAdjudicateRes = await app.inject({
+      method: "POST",
+      url: `/v1/protection/claims/${claimData.id}/adjudicate`,
+      headers: auth("customer@example.test"),
+      payload: {
+        decision: "APPROVED",
+        adjudicationNotes: "Unauthorized customer self-approval attempt",
+      },
+    });
+    expect(nonOpsAdjudicateRes.statusCode).toBe(403);
+
+    // 11b. Authorized Claims Adjuster Approves with Deductible Subtraction
+    // Approved: $4,000.00 (400,000 cents). Deductible applied: $500.00 (50,000 cents).
+    // Net Payout: $3,500.00 (350,000 cents).
+    const adjudicateRes = await app.inject({
+      method: "POST",
+      url: `/v1/protection/claims/${claimData.id}/adjudicate`,
+      headers: auth("admin@example.test"),
+      payload: {
+        decision: "APPROVED",
+        approvedAmountCents: 400000,
+        deductibleCents: 50000,
+        adjudicationNotes:
+          "Inspection confirmed fitting defect caused consequential water damage. Approved full restoration minus statutory policy deductible.",
+      },
+    });
+    expect(adjudicateRes.statusCode).toBe(200);
+    const adjudicateJson = adjudicateRes.json<{
+      claim: {
+        status: string;
+        adjudicatedAmountCents: number;
+        deductibleAppliedCents: number;
+        netPayoutCents: number;
+        paidAt: string;
+      };
+    }>();
+
+    expect(adjudicateJson.claim.status).toBe("PAID");
+    expect(adjudicateJson.claim.adjudicatedAmountCents).toBe(400000);
+    expect(adjudicateJson.claim.deductibleAppliedCents).toBe(50000);
+    expect(adjudicateJson.claim.netPayoutCents).toBe(350000);
+    expect(adjudicateJson.claim.paidAt).toBeDefined();
+
+    // 12. Financial Reconciliation & Broker Commission Audit Ledger (GET /v1/protection/reconciliation)
+    // 12a. Non-ops forbidden
+    const nonOpsReconRes = await app.inject({
+      method: "GET",
+      url: "/v1/protection/reconciliation",
+      headers: auth("customer@example.test"),
+    });
+    expect(nonOpsReconRes.statusCode).toBe(403);
+
+    // 12b. Operations / Finance Auditor Retrieves Full Reconciliation Ledger
+    const reconRes = await app.inject({
+      method: "GET",
+      url: "/v1/protection/reconciliation",
+      headers: auth("admin@example.test"),
+    });
+    expect(reconRes.statusCode).toBe(200);
+    const reconJson = reconRes.json<{
+      entries: Array<{
+        id: string;
+        transactionType: string;
+        amountCents: number;
+        direction: string;
+        sourceAccount: string;
+        destinationAccount: string;
+      }>;
+      summary: {
+        totalGrossPremiumsCollectedCents: number;
+        totalBrokerCommissionsPayableCents: number;
+        totalPlatformFeesEarnedCents: number;
+        totalInsurerRemittancesCents: number;
+        totalClaimsPaidCents: number;
+        totalRefundsProcessedCents: number;
+        netEscrowReserveBalanceCents: number;
+      };
+    }>();
+
+    expect(reconJson.entries.length).toBeGreaterThanOrEqual(6);
+    expect(
+      reconJson.entries.some((e) => e.transactionType === "PREMIUM_COLLECTION"),
+    ).toBe(true);
+    expect(
+      reconJson.entries.some(
+        (e) => e.transactionType === "BROKER_COMMISSION_PAYABLE",
+      ),
+    ).toBe(true);
+    expect(
+      reconJson.entries.some((e) => e.transactionType === "PLATFORM_FEE_EARNED"),
+    ).toBe(true);
+    expect(
+      reconJson.entries.some(
+        (e) => e.transactionType === "INSURER_PREMIUM_REMITTANCE",
+      ),
+    ).toBe(true);
+    expect(
+      reconJson.entries.some((e) => e.transactionType === "PREMIUM_REFUND"),
+    ).toBe(true);
+    expect(
+      reconJson.entries.some((e) => e.transactionType === "CLAIM_PAYOUT"),
+    ).toBe(true);
+
+    expect(reconJson.summary.totalGrossPremiumsCollectedCents).toBeGreaterThan(0);
+    expect(reconJson.summary.totalBrokerCommissionsPayableCents).toBeGreaterThan(0);
+    expect(reconJson.summary.totalClaimsPaidCents).toBe(350000); // exactly $3,500.00
+    expect(reconJson.summary.totalRefundsProcessedCents).toBeGreaterThan(0);
+  });
 });
+
 
 

@@ -549,6 +549,81 @@ export const queryAgreementStatusSchema = z.object({
   userId: uuid.optional(),
 });
 
+// Customer Protection Product & Coverage Eligibility (#62)
+export const createProtectionProductSchema = z.object({
+  slug: z.string().min(3).max(100),
+  name: z.string().min(3).max(200),
+  version: z.string().min(1).max(20).default("1.0.0"),
+  jurisdiction: z.string().min(1).max(10).default("ON"),
+  underwriterName: z.string().min(3).max(200),
+  underwriterPolicyRef: z.string().min(3).max(100),
+  brokerName: z.string().min(3).max(200),
+  brokerLicenseRef: z.string().min(3).max(100),
+  coverageLimitCents: z.number().int().positive(),
+  deductibleCents: z.number().int().nonnegative(),
+  durationMonths: z.number().int().positive().default(12),
+  baseRateBps: z.number().int().positive().default(250),
+  minPremiumCents: z.number().int().positive().default(4900),
+  brokerCommissionBps: z.number().int().nonnegative().default(1500),
+  platformFeeBps: z.number().int().nonnegative().default(1000),
+  taxRateBps: z.number().int().nonnegative().default(800),
+  termsMarkdown: z.string().min(20),
+  disclaimers: z.array(z.string()).default([]),
+  allowedVerticalIds: z.array(z.string()).default([]),
+  maxJobValueCents: z.number().int().positive().default(50000000),
+  active: z.boolean().default(true),
+});
+
+export const quoteProtectionSchema = z.object({
+  serviceRequestId: uuid,
+  productSlug: z.string().optional(),
+  productId: uuid.optional(),
+  jobValueCents: z.number().int().positive().optional(),
+});
+
+export const bindProtectionPolicySchema = z.object({
+  quoteId: uuid,
+  acknowledgedDisclosures: z.boolean().refine((val) => val === true, {
+    message: "Must acknowledge statutory broker and coverage disclosures",
+  }),
+  paymentMethodRef: z.string().min(3).max(100).optional(),
+});
+
+export const cancelProtectionPolicySchema = z.object({
+  reason: z.string().min(5).max(500),
+});
+
+export const createProtectionClaimSchema = z.object({
+  incidentDate: z.string().datetime(),
+  incidentDescription: z.string().min(10).max(3000),
+  claimedAmountCents: z.number().int().positive(),
+  evidenceUrls: z.array(z.string().url()).min(1),
+});
+
+export const adjudicateProtectionClaimSchema = z.object({
+  decision: z.enum(["APPROVED", "PARTIALLY_APPROVED", "DECLINED"]),
+  approvedAmountCents: z.number().int().nonnegative().optional(),
+  deductibleCents: z.number().int().nonnegative().optional(),
+  adjudicationNotes: z.string().min(5).max(2000),
+  declineReasonCode: z
+    .enum([
+      "PRE_EXISTING_DEFECT",
+      "WEAR_AND_TEAR",
+      "UNAUTHORIZED_MODIFICATION",
+      "CLAIM_EXCEEDS_POLICY_PERIOD",
+      "OUTSIDE_COVERAGE_SCOPE",
+      "INSUFFICIENT_EVIDENCE",
+    ])
+    .optional(),
+});
+
+export const queryProtectionReconciliationSchema = z.object({
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  policyId: uuid.optional(),
+});
+
+
 
 
 
