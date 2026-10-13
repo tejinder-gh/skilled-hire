@@ -17,6 +17,7 @@ import { permitsRoutes } from "./permits.routes.js";
 import { riskRoutes } from "./risk.routes.js";
 import { legalRoutes } from "./legal.routes.js";
 import { insuranceRoutes } from "./insurance.routes.js";
+import { documentationRoutes } from "./documentation.routes.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(authRoutes);
@@ -29,6 +30,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(riskRoutes);
   await app.register(legalRoutes);
   await app.register(insuranceRoutes);
+  await app.register(documentationRoutes);
   await app.register(propertiesRoutes);
 
   await app.register(requestRoutes);
