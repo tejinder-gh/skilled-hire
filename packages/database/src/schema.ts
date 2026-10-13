@@ -544,6 +544,15 @@ export const serviceRecords = pgTable("service_records", {
   regulatorySignOffStatus: text("regulatory_sign_off_status")
     .notNull()
     .default("NOT_APPLICABLE"),
+  documentationPackageId: uuid("documentation_package_id").references(
+    (): AnyPgColumn => jobDocumentationPackages.id,
+    { onDelete: "set null" },
+  ),
+  riskTier: text("risk_tier").default("LOW"),
+  qaAuditStatus: text("qa_audit_status").notNull().default("NOT_SAMPLED"),
+  safetySignOffStatus: text("safety_sign_off_status")
+    .notNull()
+    .default("NOT_REQUIRED"),
   completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -2082,6 +2091,118 @@ export const protectionFinancialLedgerRelations = relations(
     claim: one(protectionClaims, {
       fields: [protectionFinancialLedger.claimId],
       references: [protectionClaims.id],
+    }),
+  }),
+);
+
+// 18. Risk-based Job Documentation, Inspections & Incident Escalation (#63)
+export const jobDocumentationPackages = pgTable("job_documentation_packages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  jobId: uuid("job_id")
+    .notNull()
+    .unique()
+    .references((): AnyPgColumn => jobs.id, { onDelete: "cascade" }),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references((): AnyPgColumn => serviceRequests.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  technicianId: uuid("technician_id").references(() => technicians.id, {
+    onDelete: "set null",
+  }),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id, { onDelete: "restrict" }),
+  riskTier: text("risk_tier").notNull().default("LOW"),
+  status: text("status").notNull().default("IN_PROGRESS"),
+  beforePhotos: jsonb("before_photos").notNull().default([]),
+  inProgressPhotos: jsonb("in_progress_photos").notNull().default([]),
+  afterPhotos: jsonb("after_photos").notNull().default([]),
+  workerIdentityConfirmed: boolean("worker_identity_confirmed")
+    .notNull()
+    .default(false),
+  workerIdentityNotes: text("worker_identity_notes"),
+  riskChecklist: jsonb("risk_checklist").notNull().default([]),
+  customerSignoff: jsonb("customer_signoff").notNull().default({}),
+  permitId: uuid("permit_id").references(() => electricalPermits.id, {
+    onDelete: "set null",
+  }),
+  permitVerified: boolean("permit_verified").notNull().default(false),
+  qaAuditId: uuid("qa_audit_id").references(() => qualityAudits.id, {
+    onDelete: "set null",
+  }),
+  qaAuditRequired: boolean("qa_audit_required").notNull().default(false),
+  qaAuditStatus: text("qa_audit_status").notNull().default("NOT_REQUIRED"),
+  incidentEscalationId: uuid("incident_escalation_id").references(
+    () => safetyIncidents.id,
+    { onDelete: "set null" },
+  ),
+  incidentEscalated: boolean("incident_escalated").notNull().default(false),
+  deficiencies: jsonb("deficiencies").notNull().default([]),
+  exceptionAuditLog: jsonb("exception_audit_log").notNull().default([]),
+  submittedByUserId: uuid("submitted_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  reviewNotes: text("review_notes"),
+  propertyPassportLinked: boolean("property_passport_linked")
+    .notNull()
+    .default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const jobDocumentationPackagesRelations = relations(
+  jobDocumentationPackages,
+  ({ one }) => ({
+    job: one(jobs, {
+      fields: [jobDocumentationPackages.jobId],
+      references: [jobs.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [jobDocumentationPackages.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+    contractor: one(contractors, {
+      fields: [jobDocumentationPackages.contractorId],
+      references: [contractors.id],
+    }),
+    technician: one(technicians, {
+      fields: [jobDocumentationPackages.technicianId],
+      references: [technicians.id],
+    }),
+    property: one(properties, {
+      fields: [jobDocumentationPackages.propertyId],
+      references: [properties.id],
+    }),
+    permit: one(electricalPermits, {
+      fields: [jobDocumentationPackages.permitId],
+      references: [electricalPermits.id],
+    }),
+    qaAudit: one(qualityAudits, {
+      fields: [jobDocumentationPackages.qaAuditId],
+      references: [qualityAudits.id],
+    }),
+    incidentEscalation: one(safetyIncidents, {
+      fields: [jobDocumentationPackages.incidentEscalationId],
+      references: [safetyIncidents.id],
+    }),
+    submittedByUser: one(users, {
+      fields: [jobDocumentationPackages.submittedByUserId],
+      references: [users.id],
+    }),
+    reviewedByUser: one(users, {
+      fields: [jobDocumentationPackages.reviewedByUserId],
+      references: [users.id],
     }),
   }),
 );

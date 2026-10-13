@@ -21,6 +21,7 @@ export * from "./permits.js";
 export * from "./risk.js";
 export * from "./legal.js";
 export * from "./insurance.js";
+export * from "./risk-documentation.js";
 
 export function validateVerticalConfig(config: VerticalConfig): void {
   const categoryIds = new Set(

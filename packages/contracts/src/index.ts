@@ -1143,6 +1143,7 @@ export interface RiskEvaluationResult {
 
 export * from "./legal.js";
 export * from "./insurance.js";
+export * from "./risk-documentation.js";
 
 
 

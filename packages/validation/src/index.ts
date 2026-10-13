@@ -623,6 +623,75 @@ export const queryProtectionReconciliationSchema = z.object({
   policyId: uuid.optional(),
 });
 
+// 18. Risk-based Job Documentation, Inspections & Incident Escalation (#63)
+export const evidencePhotoSchema = z.object({
+  url: z.string().url(),
+  caption: z.string().max(500).optional(),
+  timestamp: z.string().optional(),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+  phase: z.enum(["BEFORE", "IN_PROGRESS", "AFTER"]),
+});
+
+export const riskChecklistItemSchema = z.object({
+  key: z.string().min(1).max(100),
+  label: z.string().min(1).max(200),
+  confirmed: z.boolean(),
+  notes: z.string().max(500).optional(),
+  criticalHazard: z.boolean().optional(),
+});
+
+export const submitJobDocumentationSchema = z.object({
+  beforePhotos: z.array(evidencePhotoSchema).default([]),
+  inProgressPhotos: z.array(evidencePhotoSchema).default([]),
+  afterPhotos: z.array(evidencePhotoSchema).default([]),
+  workerIdentityConfirmed: z.boolean().default(false),
+  workerIdentityNotes: z.string().max(1000).optional(),
+  riskChecklist: z.array(riskChecklistItemSchema).default([]),
+  permitId: uuid.optional(),
+});
+
+export const customerSignoffSchema = z.object({
+  customerName: z.string().min(1).max(100),
+  feedback: z.string().max(1000).optional(),
+  signatureDigest: z.string().min(10).max(128).optional(),
+});
+
+export const reviewJobDocumentationSchema = z.object({
+  status: z.enum(["VERIFIED_COMPLIANT", "DEFICIENT"]),
+  reviewNotes: z.string().min(3).max(2000),
+  deficiencies: z
+    .array(
+      z.object({
+        code: z.string().min(1).max(50),
+        severity: z.enum(["LOW", "MODERATE", "HIGH", "CRITICAL"]),
+        description: z.string().min(3).max(500),
+        rectified: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+});
+
+export const exceptionApprovalSchema = z.object({
+  reason: z.string().min(5).max(1000),
+  conditions: z.array(z.string()).default([]),
+});
+
+export const qaSampleJobSchema = z.object({
+  triggerType: z
+    .enum([
+      "HIGH_RISK_TRADE",
+      "RANDOM_SPOT_CHECK",
+      "INCIDENT_REMEDIATION",
+      "REPEAT_DEFECT_FLAG",
+      "CUSTOMER_DISPUTE",
+    ])
+    .default("HIGH_RISK_TRADE"),
+  inspectorUserId: uuid.optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+
 
 
 
