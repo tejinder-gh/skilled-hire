@@ -16,6 +16,7 @@ import {
   unique,
   uniqueIndex,
   uuid,
+  varchar,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
@@ -2771,6 +2772,52 @@ export const customerRewardCreditsRelations = relations(
       references: [jobs.id],
     }),
   }),
+);
+
+export const marketplaceOperationalAlerts = pgTable(
+  "marketplace_operational_alerts",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    alertType: varchar("alert_type", { length: 64 }).notNull(),
+    severity: varchar("severity", { length: 32 }).notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("ACTIVE"),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    verticalSlug: varchar("vertical_slug", { length: 64 }),
+    neighbourhood: varchar("neighbourhood", { length: 128 }),
+    metricsPayload: jsonb("metrics_payload").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    acknowledgedByUserId: uuid("acknowledged_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedByUserId: uuid("resolved_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+    resolutionNotes: text("resolution_notes"),
+  },
+);
+
+export const marketplaceAnalyticsSnapshots = pgTable(
+  "marketplace_analytics_snapshots",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    snapshotTime: timestamp("snapshot_time", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    timeWindow: varchar("time_window", { length: 32 }).notNull(),
+    verticalSlug: varchar("vertical_slug", { length: 64 }),
+    neighbourhood: varchar("neighbourhood", { length: 128 }),
+    metrics: jsonb("metrics").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
 );
 
 
