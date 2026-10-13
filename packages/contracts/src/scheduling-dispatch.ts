@@ -197,3 +197,58 @@ export interface TechnicianAvailabilityCalendarDTO {
   scheduledJobs: TechnicianCalendarJobSlot[];
   activeHolds: DispatchSlotHoldDTO[];
 }
+
+export interface SlotAvailabilityQuery {
+  vertical?: string | undefined;
+  region?: string | undefined;
+  postalCode?: string | undefined;
+  fsa?: string | undefined;
+  slot?: string | undefined;
+  slotStartsAt?: string | undefined;
+  slotEndsAt?: string | undefined;
+  urgency?: "STANDARD" | "EMERGENCY" | undefined;
+}
+
+export interface InstantSlotReservationInput {
+  verticalSlug: string;
+  postalCode: string;
+  slotStartsAt: string;
+  slotEndsAt: string;
+  serviceRequestId?: string | undefined;
+  urgency?: "STANDARD" | "EMERGENCY" | undefined;
+}
+
+export interface InstantSlotReservationResult {
+  success: boolean;
+  holdId?: string | undefined;
+  holdToken?: string | undefined;
+  technicianId?: string | undefined;
+  technicianName?: string | undefined;
+  contractorId?: string | undefined;
+  slotStartsAt?: string | undefined;
+  slotEndsAt?: string | undefined;
+  holdExpiresAt?: string | undefined;
+  expiresInSeconds?: number | undefined;
+  status: "HELD" | "UNAVAILABLE" | "EXPIRED";
+  reason?: string | undefined;
+}
+
+export interface ConfirmSlotReservationInput {
+  holdId?: string | undefined;
+  holdToken?: string | undefined;
+  serviceRequestId?: string | undefined;
+  customerId?: string | undefined;
+  propertyId?: string | undefined;
+  notes?: string | undefined;
+}
+
+export interface ConfirmSlotReservationResult {
+  success: boolean;
+  jobId?: string | undefined;
+  serviceRequestId?: string | undefined;
+  technicianId?: string | undefined;
+  scheduledStartsAt?: string | undefined;
+  scheduledEndsAt?: string | undefined;
+  status: "CONFIRMED" | "HOLD_EXPIRED" | "NOT_FOUND";
+  reason?: string | undefined;
+}

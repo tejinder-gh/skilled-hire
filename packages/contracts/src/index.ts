@@ -398,34 +398,51 @@ export interface AlternativeSlot {
   guaranteed: boolean;
   demandLevel: "LOW" | "NORMAL" | "HIGH";
   badge: string;
+  startsAt?: string | undefined;
+  endsAt?: string | undefined;
+  availableCapacity?: number | undefined;
+  confidence?: "HIGH" | "LIMITED" | "NONE" | undefined;
 }
 
 export interface SlotAvailabilityResponse {
   verticalSlug: string;
   verticalName: string;
   region: string;
+  postalFsa?: string | undefined;
   queriedSlot: string;
+  slotStartsAt?: string | undefined;
+  slotEndsAt?: string | undefined;
   available: boolean;
-  status: "AVAILABLE" | "BUSIER_THAN_USUAL";
+  status: "AVAILABLE" | "BUSIER_THAN_USUAL" | "NO_CAPACITY";
   headline: string;
   reason: string;
+  availableCapacity?: number | undefined;
+  availabilityConfidence?: "HIGH" | "LIMITED" | "NONE" | undefined;
+  holdExpiresAt?: string | undefined;
+  activeHoldId?: string | undefined;
+  holdToken?: string | undefined;
   metrics?: {
     activeCertifiedTechnicians: number;
     dispatchedCount: number;
     capacitySaturationBps: number;
     estimatedWaitMinutes: number;
+    eligibleTechniciansInFsa?: number | undefined;
+    openSlotCount?: number | undefined;
   };
   alternativeSlots?: AlternativeSlot[];
   emergencyOption?: {
     available: boolean;
+    evidenceSupported?: boolean | undefined;
     title: string;
     badge: string;
     description: string;
     calloutFeeCents: number;
     slaMinutes: number;
+    availableTechniciansCount?: number | undefined;
   };
   standbyWaitlist?: {
     available: boolean;
+    evidenceSupported?: boolean | undefined;
     title: string;
     badge: string;
     description: string;

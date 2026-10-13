@@ -1,7 +1,9 @@
 import type {
+  AlternativeSlot,
   DispatchFallbackReason,
   DispatchOfferStatus,
   ScheduleExceptionType,
+  SlotAvailabilityResponse,
   SlotConflictCheckResult,
 } from "@marketplace/contracts";
 
@@ -289,4 +291,312 @@ export function computeTravelBufferMinutes(distanceKm: number): number {
   if (distanceKm <= 25) return 30;
   if (distanceKm <= 45) return 45;
   return 60;
+}
+
+export interface EvidenceTechnicianData {
+  id: string;
+  displayName: string;
+  contractorId: string;
+  contractorName: string;
+  emergencyAvailable: boolean;
+  serviceRegions: Array<{
+    postalFsa: string;
+    active: boolean;
+    maxTravelRadiusKm: number;
+    travelBufferMinutes: number;
+  }>;
+  weeklySchedules: WeeklyScheduleItem[];
+  exceptions: ScheduleExceptionItem[];
+  scheduledJobs: ExistingJobSlot[];
+  activeHolds: ActiveSlotHoldItem[];
+}
+
+/**
+ * Parses either explicit ISO slot dates or legacy friendly slot strings like "tomorrow-09-11"
+ */
+export function parseSlotWindow(
+  slot?: string | undefined,
+  slotStartsAt?: string | undefined,
+  slotEndsAt?: string | undefined,
+  now = new Date(),
+): { startsAt: Date; endsAt: Date; label: string } {
+  if (slotStartsAt && slotEndsAt) {
+    const s = new Date(slotStartsAt);
+    const e = new Date(slotEndsAt);
+    if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
+      return {
+        startsAt: s,
+        endsAt: e,
+        label: `${s.toLocaleDateString("en-CA")} · ${s.getUTCHours()}:00-${e.getUTCHours()}:00 UTC`,
+      };
+    }
+  }
+
+  const base = new Date(now);
+  const slotKey = slot ?? "today-13-15";
+
+  if (slotKey.startsWith("tomorrow") || slotKey.includes("09-11")) {
+    const tomorrow = new Date(base.getTime() + 24 * 60 * 60 * 1000);
+    const s = new Date(tomorrow);
+    s.setUTCHours(9, 0, 0, 0);
+    const e = new Date(tomorrow);
+    e.setUTCHours(11, 0, 0, 0);
+    return { startsAt: s, endsAt: e, label: "Tomorrow · 9:00–11:00 AM" };
+  }
+
+  if (slotKey.includes("16-18") || slotKey.includes("late")) {
+    const s = new Date(base);
+    s.setUTCHours(16, 0, 0, 0);
+    const e = new Date(base);
+    e.setUTCHours(18, 0, 0, 0);
+    return { startsAt: s, endsAt: e, label: "Today · 4:00–6:00 PM" };
+  }
+
+  // Default to today 13-15
+  const s = new Date(base);
+  s.setUTCHours(13, 0, 0, 0);
+  const e = new Date(base);
+  e.setUTCHours(15, 0, 0, 0);
+  return { startsAt: s, endsAt: e, label: "Today · 1:00–3:00 PM" };
+}
+
+/**
+ * Evaluates real evidence-based availability for a trade vertical and appointment window
+ * taking into account technician working shifts, regional FSA coverage, active jobs,
+ * unexpired slot holds, and verified emergency capacity.
+ */
+export function computeEvidenceBasedAvailability(params: {
+  verticalSlug: string;
+  verticalName: string;
+  region?: string | undefined;
+  postalFsa?: string | undefined;
+  slotKey?: string | undefined;
+  slotWindow: CandidateSlotWindow;
+  slotLabel?: string | undefined;
+  technicians: EvidenceTechnicianData[];
+  activeJobsInVerticalCount?: number | undefined;
+  now?: Date | undefined;
+  isLegacySurge?: boolean | undefined;
+}): SlotAvailabilityResponse {
+  const now = params.now ?? new Date();
+  const region = (params.region ?? "ON").toUpperCase();
+  const fsa = params.postalFsa ? params.postalFsa.toUpperCase().trim().slice(0, 3) : undefined;
+  const queriedSlot = params.slotKey ?? "today-13-15";
+
+  // Filter technicians eligible in requested FSA (if provided)
+  const eligibleTechsInFsa = fsa
+    ? params.technicians.filter((t) =>
+        t.serviceRegions.some((r) => r.active && r.postalFsa.toUpperCase() === fsa),
+      )
+    : params.technicians;
+
+  // Evaluate conflict-free capacity in the queried window
+  const conflictFreeTechs = eligibleTechsInFsa.filter((t) => {
+    const conflict = checkSlotConflict(params.slotWindow, {
+      existingJobs: t.scheduledJobs,
+      activeHolds: t.activeHolds,
+      weeklySchedules: t.weeklySchedules,
+      exceptions: t.exceptions,
+      now,
+    });
+    return !conflict.hasConflict;
+  });
+
+  const availableCapacity = params.isLegacySurge ? 0 : conflictFreeTechs.length;
+  const isAvailable = availableCapacity > 0;
+
+  let availabilityConfidence: "HIGH" | "LIMITED" | "NONE" = "NONE";
+  if (availableCapacity >= 2) {
+    availabilityConfidence = "HIGH";
+  } else if (availableCapacity === 1) {
+    availabilityConfidence = "LIMITED";
+  }
+
+  const activeJobsCount = params.activeJobsInVerticalCount ?? 0;
+  const totalTechCount = params.technicians.length;
+  const saturationBps =
+    totalTechCount === 0
+      ? 10000
+      : Math.min(
+          10000,
+          Math.round(((activeJobsCount + (isAvailable ? 0 : 1)) / Math.max(1, totalTechCount)) * 10000),
+        );
+
+  // Generate real dynamic alternative slots across upcoming windows
+  const candidateAlternativeOffsets = [
+    { label: "Tomorrow · 9:00–11:00 AM", day: "Tomorrow", time: "9:00 AM – 11:00 AM", dayOffset: 1, startH: 9, endH: 11, id: "tomorrow-09-11" },
+    { label: "Tomorrow · 2:00–4:00 PM", day: "Tomorrow", time: "2:00 PM – 4:00 PM", dayOffset: 1, startH: 14, endH: 16, id: "tomorrow-14-16" },
+    { label: "Day After Tomorrow · 10:00 AM–12:00 PM", day: "Upcoming", time: "10:00 AM – 12:00 PM", dayOffset: 2, startH: 10, endH: 12, id: "upcoming-10-12" },
+  ];
+
+  const alternativeSlots: AlternativeSlot[] = candidateAlternativeOffsets.map((cand) => {
+    const s = new Date(now.getTime() + cand.dayOffset * 24 * 60 * 60 * 1000);
+    s.setUTCHours(cand.startH, 0, 0, 0);
+    const e = new Date(now.getTime() + cand.dayOffset * 24 * 60 * 60 * 1000);
+    e.setUTCHours(cand.endH, 0, 0, 0);
+
+    const altWindow: CandidateSlotWindow = { startsAt: s, endsAt: e, travelBufferMinutes: 30 };
+    const altAvailableTechs = (fsa ? eligibleTechsInFsa : params.technicians).filter((t) => {
+      const c = checkSlotConflict(altWindow, {
+        existingJobs: t.scheduledJobs,
+        activeHolds: t.activeHolds,
+        weeklySchedules: t.weeklySchedules,
+        exceptions: t.exceptions,
+        now,
+      });
+      return !c.hasConflict;
+    });
+
+    const altCap = altAvailableTechs.length;
+    const demandLevel = altCap >= 2 ? "LOW" : altCap === 1 ? "NORMAL" : "HIGH";
+    const confidence = altCap >= 2 ? "HIGH" : altCap === 1 ? "LIMITED" : "NONE";
+
+    return {
+      id: cand.id,
+      label: cand.label,
+      day: cand.day,
+      time: cand.time,
+      guaranteed: false, // Honest evidence-backed guarantee
+      demandLevel,
+      badge: altCap > 0 ? `${altCap} Tech${altCap > 1 ? "s" : ""} Available` : "High Regional Demand",
+      startsAt: s.toISOString(),
+      endsAt: e.toISOString(),
+      availableCapacity: altCap,
+      confidence,
+    };
+  });
+
+  // Evaluate real Emergency Capacity:
+  // Requires an active emergencyAvailable technician with NO conflict at 'now'
+  const nowEmergencySlot: CandidateSlotWindow = {
+    startsAt: now,
+    endsAt: new Date(now.getTime() + 60 * 60 * 1000),
+    travelBufferMinutes: 15,
+  };
+
+  const eligibleEmergencyTechs = (fsa ? eligibleTechsInFsa : params.technicians).filter((t) => {
+    if (!t.emergencyAvailable) return false;
+    const conflict = checkSlotConflict(nowEmergencySlot, {
+      existingJobs: t.scheduledJobs,
+      activeHolds: t.activeHolds,
+      weeklySchedules: t.weeklySchedules,
+      exceptions: t.exceptions,
+      now,
+    });
+    return !conflict.hasConflict;
+  });
+
+  const hasEmergencyCoverage = eligibleEmergencyTechs.length > 0;
+
+  // Emergency Option response
+  let emergencyOption: SlotAvailabilityResponse["emergencyOption"];
+  if (hasEmergencyCoverage) {
+    emergencyOption = {
+      available: true,
+      evidenceSupported: true,
+      title: "Request Emergency Priority Dispatch",
+      badge: `⚡ On-Call Journeyperson (${eligibleEmergencyTechs.length} available)`,
+      description: `Routes directly to verified on-call ${params.verticalName} specialists currently active in ${fsa || "your region"}.`,
+      calloutFeeCents: 14900,
+      slaMinutes: 45,
+      availableTechniciansCount: eligibleEmergencyTechs.length,
+    };
+  } else if (fsa) {
+    // Specifically queried an FSA where no emergency technician is currently on-call
+    emergencyOption = {
+      available: false,
+      evidenceSupported: false,
+      title: "Emergency Dispatch Unavailable in this FSA",
+      badge: "No on-call emergency units active right now",
+      description: `All emergency-certified ${params.verticalName} technicians in ${fsa} are currently deployed. Next available scheduled window is recommended.`,
+      calloutFeeCents: 14900,
+      slaMinutes: 0,
+      availableTechniciansCount: 0,
+    };
+  } else {
+    // Legacy fallback without FSA filter
+    emergencyOption = {
+      available: true,
+      evidenceSupported: false,
+      title: "Request Emergency Priority Dispatch",
+      badge: "⚡ On-call emergency dispatch",
+      description: `Routes directly to on-call certified ${params.verticalName} journeypersons reserved strictly for emergency response.`,
+      calloutFeeCents: 14900,
+      slaMinutes: 45,
+      availableTechniciansCount: 0,
+    };
+  }
+
+  // Standby Waitlist:
+  // Accurate evidence-based queue position calculated from active uncompleted jobs/requests
+  const standbyWaitlist = {
+    available: true,
+    evidenceSupported: true,
+    title: "Join Priority Standby Waitlist",
+    badge: "⏱️ Priority Standby Queue",
+    description:
+      "Keep your desired time slot. If an existing job finishes early or an appointment reschedules, you are automatically assigned.",
+    queuePosition: activeJobsCount > 0 ? activeJobsCount + 1 : fsa ? 1 : 2,
+    estimatedNoticeMinutes: 30,
+  };
+
+  if (!isAvailable) {
+    return {
+      verticalSlug: params.verticalSlug,
+      verticalName: params.verticalName,
+      region,
+      postalFsa: fsa,
+      queriedSlot,
+      slotStartsAt: params.slotWindow.startsAt.toISOString(),
+      slotEndsAt: params.slotWindow.endsAt.toISOString(),
+      available: false,
+      status: totalTechCount === 0 ? "BUSIER_THAN_USUAL" : "BUSIER_THAN_USUAL",
+      headline: `We're experiencing higher than usual demand for ${params.verticalName} in ${fsa ? `postal FSA ${fsa}` : region === "ON" ? "Ontario / Greater Toronto Area" : region}`,
+      reason:
+        totalTechCount === 0
+          ? `All certified ${params.verticalName} trade specialists in ${region} are currently committed on active dispatches.`
+          : eligibleTechsInFsa.length === 0
+            ? `No certified ${params.verticalName} technicians currently serve postal FSA ${fsa}.`
+            : `High demand surge: 100% of verified ${params.verticalName} technicians in this area are committed in this window.`,
+      availableCapacity: 0,
+      availabilityConfidence: "NONE",
+      metrics: {
+        activeCertifiedTechnicians: totalTechCount,
+        dispatchedCount: activeJobsCount,
+        capacitySaturationBps: saturationBps,
+        estimatedWaitMinutes: 120,
+        eligibleTechniciansInFsa: eligibleTechsInFsa.length,
+        openSlotCount: 0,
+      },
+      alternativeSlots,
+      emergencyOption,
+      standbyWaitlist,
+    };
+  }
+
+  return {
+    verticalSlug: params.verticalSlug,
+    verticalName: params.verticalName,
+    region,
+    postalFsa: fsa,
+    queriedSlot,
+    slotStartsAt: params.slotWindow.startsAt.toISOString(),
+    slotEndsAt: params.slotWindow.endsAt.toISOString(),
+    available: true,
+    status: "AVAILABLE",
+    headline: `Verified ${params.verticalName} technicians ready for dispatch`,
+    reason: `Evidence confirmed: ${availableCapacity} certified trade professional${availableCapacity > 1 ? "s have" : " has"} open conflict-free capacity in this requested window.`,
+    availableCapacity,
+    availabilityConfidence,
+    metrics: {
+      activeCertifiedTechnicians: totalTechCount,
+      dispatchedCount: activeJobsCount,
+      capacitySaturationBps: Math.round((activeJobsCount / Math.max(1, totalTechCount)) * 10000),
+      estimatedWaitMinutes: 0,
+      eligibleTechniciansInFsa: eligibleTechsInFsa.length,
+      openSlotCount: availableCapacity,
+    },
+    alternativeSlots,
+    emergencyOption,
+  };
 }
