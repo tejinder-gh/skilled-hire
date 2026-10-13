@@ -1016,6 +1016,69 @@ export const providerApplicationsQuerySchema = z.object({
   search: z.string().optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Technician Scheduling & Dispatch Conflict Validation
+// ---------------------------------------------------------------------------
+
+export const createTechnicianScheduleSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  timezone: z.string().default("America/Toronto"),
+  active: z.boolean().default(true),
+});
+
+export const createScheduleExceptionSchema = z.object({
+  exceptionType: z.enum([
+    "TIME_OFF",
+    "UNAVAILABLE",
+    "OVERTIME",
+    "CUSTOM_HOURS",
+  ]),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  allDay: z.boolean().default(true),
+  reason: z.string().max(500).optional(),
+});
+
+export const createServiceRegionSchema = z.object({
+  postalFsa: z.string().regex(/^[A-Za-z]\d[A-Za-z]$/),
+  maxTravelRadiusKm: z.number().int().positive().default(25),
+  travelBufferMinutes: z.number().int().positive().default(30),
+});
+
+export const acquireSlotHoldSchema = z.object({
+  serviceRequestId: uuid,
+  technicianId: uuid,
+  slotStartsAt: z.string().datetime(),
+  slotEndsAt: z.string().datetime(),
+  travelBufferMinutes: z.number().int().min(0).max(120).default(30),
+});
+
+export const generateDispatchOffersSchema = z.object({
+  serviceRequestId: uuid.optional(),
+  slotStartsAt: z.string().datetime(),
+  slotEndsAt: z.string().datetime(),
+  maxOffers: z.number().int().min(1).max(10).default(3),
+  offerTtlMinutes: z.number().int().min(1).max(120).default(15),
+});
+
+export const respondDispatchOfferSchema = z.object({
+  action: z.enum(["ACCEPT", "DECLINE"]),
+  declineReason: z.string().max(64).optional(),
+  declineNotes: z.string().max(500).optional(),
+  responseNotes: z.string().max(500).optional(),
+});
+
+export const triageFallbackQueueSchema = z.object({
+  action: z.enum(["MANUAL_ASSIGN", "RE_DISPATCH", "CANCEL"]),
+  technicianId: uuid.optional(),
+  overrideReason: z.string().max(500).optional(),
+  resolutionNotes: z.string().max(500).optional(),
+});
+
 
 
 

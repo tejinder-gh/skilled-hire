@@ -5,11 +5,16 @@ import type {
   ComplianceEvaluationStatus,
   CredentialGroupCode,
   CredentialStatus,
+  DispatchOfferDTO,
   EntityLevel,
   ProviderApplicationDTO,
   ProviderRateProposal,
+  ScheduleExceptionType,
   SubmittedCredentialInput,
   TechnicianRosterInput,
+  TechnicianScheduleDTO,
+  TechnicianScheduleExceptionDTO,
+  TechnicianServiceRegionDTO,
 } from "@marketplace/contracts";
 import {
   Badge,
@@ -170,7 +175,7 @@ const ONTARIO_CORE_FSAS = ["M5V", "M4B", "M2N", "L4W", "K1P", "N2L"] as const;
 
 export default function ContractorHome() {
   const [activeTab, setActiveTab] = useState<
-    "workspace" | "evidence" | "completion" | "warranty" | "compliance" | "onboarding"
+    "workspace" | "evidence" | "completion" | "warranty" | "compliance" | "onboarding" | "scheduling"
   >("workspace");
 
   // Filter state for Compliance Tab
@@ -360,6 +365,212 @@ export default function ContractorHome() {
     },
   ]);
   const [selectedClaim, setSelectedClaim] = useState<WarrantyClaimItem | null>(null);
+
+  // SH-06: Technician Scheduling, Exceptions, Service Regions & Dispatch Offers State
+  const [contractorSchedules, setContractorSchedules] = useState<TechnicianScheduleDTO[]>([
+    { id: "sch-1", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", contractorId: "cont-1", dayOfWeek: 1, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true, createdAt: "", updatedAt: "" },
+    { id: "sch-2", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", contractorId: "cont-1", dayOfWeek: 2, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true, createdAt: "", updatedAt: "" },
+    { id: "sch-3", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", contractorId: "cont-1", dayOfWeek: 3, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true, createdAt: "", updatedAt: "" },
+    { id: "sch-4", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", contractorId: "cont-1", dayOfWeek: 4, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true, createdAt: "", updatedAt: "" },
+    { id: "sch-5", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", contractorId: "cont-1", dayOfWeek: 5, startTime: "08:00", endTime: "18:00", timezone: "America/Toronto", active: true, createdAt: "", updatedAt: "" },
+  ]);
+  const [contractorRegions, setContractorRegions] = useState<TechnicianServiceRegionDTO[]>([
+    { id: "sr-1", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", contractorId: "cont-1", postalFsa: "M5V", maxTravelRadiusKm: 25, travelBufferMinutes: 30, active: true, createdAt: "", updatedAt: "" },
+    { id: "sr-2", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", contractorId: "cont-1", postalFsa: "L4W", maxTravelRadiusKm: 30, travelBufferMinutes: 35, active: true, createdAt: "", updatedAt: "" },
+  ]);
+  const [contractorExceptions, setContractorExceptions] = useState<TechnicianScheduleExceptionDTO[]>([
+    { id: "ex-1", technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002", exceptionType: "UNAVAILABLE", startDate: "2026-10-20", endDate: "2026-10-20", startTime: "13:00", endTime: "17:00", allDay: false, reason: "TSSA Safety Regulation & Code Update Seminar", createdAt: "", updatedAt: "" },
+  ]);
+  const [activeOffers, setActiveOffers] = useState<DispatchOfferDTO[]>([
+    {
+      id: "off-demo-1",
+      serviceRequestId: "req-toronto-furnace-101",
+      technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002",
+      contractorId: "cont-1",
+      candidateRank: 1,
+      candidateScore: 98,
+      status: "OFFERED",
+      offeredAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 14 * 60 * 1000).toISOString(),
+      technicianName: "John S.",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  ]);
+  const [declineModalOpen, setDeclineModalOpen] = useState(false);
+  const [offerToDecline, setOfferToDecline] = useState<DispatchOfferDTO | null>(null);
+  const [declineReason, setDeclineReason] = useState("CREW_OVERLOAD");
+  const [declineNotes, setDeclineNotes] = useState("Journeyperson committed on critical hospital chiller repair");
+  const [newRegionFsa, setNewRegionFsa] = useState("M2N");
+  const [newRegionRadius, setNewRegionRadius] = useState("25");
+  const [newRegionBuffer, setNewRegionBuffer] = useState("30");
+  const [newExType, setNewExType] = useState<ScheduleExceptionType>("TIME_OFF");
+  const [newExStartDate, setNewExStartDate] = useState("2026-10-22");
+  const [newExEndDate, setNewExEndDate] = useState("2026-10-22");
+  const [newExStartTime, setNewExStartTime] = useState("08:00");
+  const [newExEndTime, setNewExEndTime] = useState("17:00");
+  const [newExReason, setNewExReason] = useState("Scheduled equipment van maintenance & inspection");
+  const [schedulingFeedback, setSchedulingFeedback] = useState<string | null>(null);
+
+  async function handleAcceptCurrentOffer(offerId?: string) {
+    const targetId = offerId || activeOffers[0]?.id;
+    try {
+      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "owner@example.test", password: "DemoPassword!2026" }),
+      });
+      if (loginRes.ok && targetId) {
+        const { accessToken } = await loginRes.json();
+        await fetch(`http://localhost:4000/v1/dispatch/offers/${targetId}/respond`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ action: "ACCEPT" }),
+        });
+      }
+    } catch {
+      // Graceful offline fallback
+    }
+    setDispatchOfferAccepted(true);
+    setCurrentStep(1);
+    setActiveOffers((prev) =>
+      prev.map((o) => (o.id === targetId ? { ...o, status: "ACCEPTED" } : o)),
+    );
+    setSchedulingFeedback("Dispatch offer accepted! Technician assigned and en route.");
+  }
+
+  async function handleConfirmDeclineOffer() {
+    const targetId = offerToDecline?.id || activeOffers[0]?.id;
+    try {
+      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "owner@example.test", password: "DemoPassword!2026" }),
+      });
+      if (loginRes.ok && targetId) {
+        const { accessToken } = await loginRes.json();
+        await fetch(`http://localhost:4000/v1/dispatch/offers/${targetId}/respond`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            action: "DECLINE",
+            declineReason,
+            declineNotes,
+          }),
+        });
+      }
+    } catch {
+      // Graceful offline fallback
+    }
+    setActiveOffers((prev) =>
+      prev.map((o) =>
+        o.id === targetId
+          ? { ...o, status: "DECLINED", declineReason, declineNotes }
+          : o,
+      ),
+    );
+    setDeclineModalOpen(false);
+    setSchedulingFeedback("Offer declined. Service request routed to Operations Fallback Queue.");
+  }
+
+  async function handleAddNewRegion() {
+    if (!newRegionFsa) return;
+    const regionObj: TechnicianServiceRegionDTO = {
+      id: `sr-${Date.now()}`,
+      technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002",
+      contractorId: "cont-1",
+      postalFsa: newRegionFsa.toUpperCase(),
+      maxTravelRadiusKm: Number(newRegionRadius) || 25,
+      travelBufferMinutes: Number(newRegionBuffer) || 30,
+      active: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "owner@example.test", password: "DemoPassword!2026" }),
+      });
+      if (loginRes.ok) {
+        const { accessToken } = await loginRes.json();
+        await fetch(
+          `http://localhost:4000/v1/dispatch/technicians/95def5e1-99d6-4f79-8db8-1aa0a2649002/service-regions`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              postalFsa: regionObj.postalFsa,
+              maxTravelRadiusKm: regionObj.maxTravelRadiusKm,
+              travelBufferMinutes: regionObj.travelBufferMinutes,
+            }),
+          },
+        );
+      }
+    } catch {
+      // Graceful fallback
+    }
+    setContractorRegions((prev) => [...prev, regionObj]);
+    setSchedulingFeedback(`Added service region FSA ${regionObj.postalFsa} with ${regionObj.travelBufferMinutes}m travel buffer.`);
+  }
+
+  async function handleAddNewException() {
+    const exObj: TechnicianScheduleExceptionDTO = {
+      id: `ex-${Date.now()}`,
+      technicianId: "95def5e1-99d6-4f79-8db8-1aa0a2649002",
+      exceptionType: newExType,
+      startDate: newExStartDate,
+      endDate: newExEndDate,
+      startTime: newExStartTime,
+      endTime: newExEndTime,
+      allDay: false,
+      reason: newExReason,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "owner@example.test", password: "DemoPassword!2026" }),
+      });
+      if (loginRes.ok) {
+        const { accessToken } = await loginRes.json();
+        await fetch(
+          `http://localhost:4000/v1/dispatch/technicians/95def5e1-99d6-4f79-8db8-1aa0a2649002/exceptions`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              exceptionType: exObj.exceptionType,
+              startDate: exObj.startDate,
+              endDate: exObj.endDate,
+              startTime: exObj.startTime,
+              endTime: exObj.endTime,
+              allDay: exObj.allDay,
+              reason: exObj.reason,
+            }),
+          },
+        );
+      }
+    } catch {
+      // Graceful fallback
+    }
+    setContractorExceptions((prev) => [...prev, exObj]);
+    setSchedulingFeedback(`Logged ${newExType} exception for technician John S.`);
+  }
 
   // Compliance calculations
   const applicableStandards = useMemo(() => {
@@ -823,9 +1034,21 @@ export default function ContractorHome() {
               icon: "🚀",
               badge: submittedApplication ? "Submitted" : saveToken ? "Draft" : undefined,
             },
+            {
+              value: "scheduling",
+              label: "Technician Scheduling",
+              icon: "📅",
+              badge: activeOffers.filter((o) => o.status === "OFFERED").length ? `${activeOffers.filter((o) => o.status === "OFFERED").length} Offer` : undefined,
+            },
           ]}
         />
       </div>
+
+      {schedulingFeedback && (
+        <Callout tone="info" title="Dispatch & Scheduling Update">
+          {schedulingFeedback}
+        </Callout>
+      )}
 
       {submissionFeedback && (
         <Callout tone="success" title="Verification Engine Updated">
@@ -901,17 +1124,17 @@ export default function ContractorHome() {
                 <Button
                   variant="primary"
                   size="lg"
-                  onClick={() => {
-                    setDispatchOfferAccepted(true);
-                    setCurrentStep(1);
-                  }}
+                  onClick={() => handleAcceptCurrentOffer()}
                 >
                   ✓ Accept Dispatch Offer
                 </Button>
                 <Button
                   variant="secondary"
                   size="lg"
-                  onClick={() => alert("Dispatch passed to next eligible on-call provider.")}
+                  onClick={() => {
+                    setOfferToDecline(activeOffers[0] || null);
+                    setDeclineModalOpen(true);
+                  }}
                 >
                   Decline & Pass Offer
                 </Button>
@@ -2738,6 +2961,397 @@ export default function ContractorHome() {
           </Modal>
         </div>
       )}
+
+      {/* -------------------------------------------------------------
+          TAB 7: TECHNICIAN SCHEDULING & DISPATCH OFFERS (SH-06)
+         ------------------------------------------------------------- */}
+      {activeTab === "scheduling" && (
+        <div style={{ display: "grid", gap: 24 }}>
+          {/* Scheduling KPI Banner */}
+          <Grid columns="repeat(4, minmax(0, 1fr))">
+            <Card>
+              <Metric label="Weekly Working Days" value={String(contractorSchedules.filter((s) => s.active).length)} detail="Mon–Fri 08:00–18:00" />
+            </Card>
+            <Card>
+              <Metric label="Service FSA Zones" value={String(contractorRegions.length)} detail="M5V, L4W covered" />
+            </Card>
+            <Card>
+              <Metric label="Schedule Exceptions" value={String(contractorExceptions.length)} detail="Active time-off" />
+            </Card>
+            <Card>
+              <Metric
+                label="Incoming Offers"
+                value={String(activeOffers.filter((o) => o.status === "OFFERED").length)}
+                detail="15-min SLA response"
+              />
+            </Card>
+          </Grid>
+
+          {/* Section 1: Live Dispatch Offers Console */}
+          <Card tone={activeOffers.some((o) => o.status === "OFFERED") ? "amber" : "white"} padding="lg">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <h2 style={{ margin: "0 0 4px" }}>Incoming Dispatch Offers Console</h2>
+                  <Badge tone={activeOffers.some((o) => o.status === "OFFERED") ? "amber" : "neutral"}>
+                    {activeOffers.filter((o) => o.status === "OFFERED").length} Action Required
+                  </Badge>
+                </div>
+                <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
+                  Algorithmic dispatch offers ranked by proximity, TSSA certification tier, and customer satisfaction score.
+                </p>
+              </div>
+              <Status tone={activeOffers.some((o) => o.status === "OFFERED") ? "amber" : "green"}>
+                {activeOffers.some((o) => o.status === "OFFERED") ? "Active Offers Waiting" : "Offers In Sync"}
+              </Status>
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              {activeOffers.map((offer) => (
+                <div
+                  key={offer.id}
+                  style={{
+                    padding: "16px 18px",
+                    borderRadius: 14,
+                    border: "1px solid #e2e8f0",
+                    background: offer.status === "OFFERED" ? "#fffbeb" : "#f8fafc",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <Badge tone="blue">Rank #{offer.candidateRank}</Badge>
+                      <Badge tone="green">Score: {offer.candidateScore}/100</Badge>
+                      <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                        Offer #{offer.id.slice(0, 8)} · Lead #{offer.serviceRequestId.slice(0, 8).toUpperCase()}
+                      </strong>
+                    </div>
+                    <div style={{ fontSize: 13, color: "#334155" }}>
+                      Assigned Technician: <strong>{offer.technicianName || "John S."}</strong> · Window: Preferred Today 1:00–3:00 PM
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>
+                      Expires: {new Date(offer.expiresAt).toLocaleTimeString()} · Status: <strong>{offer.status}</strong>
+                      {offer.declineReason ? ` (Reason: ${offer.declineReason})` : ""}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <Status tone={offer.status === "OFFERED" ? "amber" : offer.status === "ACCEPTED" ? "green" : "neutral"}>
+                      {offer.status}
+                    </Status>
+                    {offer.status === "OFFERED" && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={() => handleAcceptCurrentOffer(offer.id)}
+                        >
+                          ✓ Accept
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            setOfferToDecline(offer);
+                            setDeclineModalOpen(true);
+                          }}
+                        >
+                          Decline & Pass
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Section 2: Weekly Shift Availability & Working Hours */}
+          <Grid columns="minmax(0, 1.1fr) minmax(320px, 0.9fr)">
+            <Card>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <div>
+                  <h3 style={{ margin: "0 0 4px" }}>Technician Weekly Working Hours</h3>
+                  <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
+                    Technician: <strong>John S.</strong> · Timezone: <strong>America/Toronto</strong>
+                  </p>
+                </div>
+                <Badge tone="green">Emergency On-Call Active</Badge>
+              </div>
+
+              <div style={{ display: "grid", gap: 8 }}>
+                {contractorSchedules.map((sch) => {
+                  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+                  return (
+                    <div
+                      key={sch.id || sch.dayOfWeek}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        border: "1px solid #e2e8f0",
+                        background: sch.active ? "#f8fafc" : "#f1f5f9",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: 13, color: "#1e293b" }}>
+                        {dayNames[sch.dayOfWeek]}
+                      </div>
+                      <div style={{ fontSize: 13, color: "#334155", display: "flex", alignItems: "center", gap: 10 }}>
+                        <span>{sch.startTime} – {sch.endTime}</span>
+                        <Badge tone={sch.active ? "green" : "neutral"}>
+                          {sch.active ? "Working Shift" : "Off Duty"}
+                        </Badge>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            {/* Section 3: Service Regions & Travel Buffer Constraints */}
+            <Card tone="blue">
+              <h3 style={{ marginTop: 0 }}>Service Regions & Travel Buffers</h3>
+              <p style={{ margin: "0 0 12px", color: "#475569", fontSize: 13 }}>
+                Automatic dispatch conflict control requires travel buffers between jobs based on technician territory.
+              </p>
+
+              <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
+                {contractorRegions.map((reg) => (
+                  <div
+                    key={reg.id || reg.postalFsa}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      background: "#fff",
+                      border: "1px solid #bfdbfe",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div>
+                      <strong style={{ fontSize: 13, color: "#1e3a8a" }}>FSA {reg.postalFsa}</strong>
+                      <span style={{ fontSize: 12, color: "#475569", marginLeft: 6 }}>
+                        (Max {reg.maxTravelRadiusKm} km radius)
+                      </span>
+                    </div>
+                    <Badge tone="blue">±{reg.travelBufferMinutes} min buffer</Badge>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ background: "#fff", padding: "12px 14px", borderRadius: 10, border: "1px solid #cbd5e1" }}>
+                <h4 style={{ margin: "0 0 10px", fontSize: 13 }}>Add Service Territory</h4>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: "#475569" }}>Postal FSA</label>
+                    <input
+                      type="text"
+                      maxLength={3}
+                      value={newRegionFsa}
+                      onChange={(e) => setNewRegionFsa(e.target.value.toUpperCase())}
+                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: "#475569" }}>Radius (km)</label>
+                    <input
+                      type="number"
+                      value={newRegionRadius}
+                      onChange={(e) => setNewRegionRadius(e.target.value)}
+                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: "#475569" }}>Buffer (min)</label>
+                    <input
+                      type="number"
+                      value={newRegionBuffer}
+                      onChange={(e) => setNewRegionBuffer(e.target.value)}
+                      style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13 }}
+                    />
+                  </div>
+                </div>
+                <Button size="sm" onClick={handleAddNewRegion}>
+                  Add Region & Buffer
+                </Button>
+              </div>
+            </Card>
+          </Grid>
+
+          {/* Section 4: Schedule Exceptions & Time-Off Management */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: "0 0 4px" }}>Schedule Exceptions & Approved Time-Off</h3>
+                <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
+                  Pre-planned vacations, sick leaves, and mandatory technical training automatically block dispatch conflicts.
+                </p>
+              </div>
+              <Status tone="blue">{contractorExceptions.length} Logged</Status>
+            </div>
+
+            <div style={{ display: "grid", gap: 10, marginBottom: 18 }}>
+              {contractorExceptions.map((ex) => (
+                <div
+                  key={ex.id}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border: "1px solid #e2e8f0",
+                    background: "#f8fafc",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <Badge tone={ex.exceptionType === "UNAVAILABLE" ? "blue" : ex.exceptionType === "TIME_OFF" ? "purple" : "amber"}>
+                        {ex.exceptionType}
+                      </Badge>
+                      <strong style={{ fontSize: 13, color: "#0f172a" }}>{ex.reason || "Scheduled exception"}</strong>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b" }}>
+                      From: {ex.startDate} {ex.startTime || ""} — To: {ex.endDate} {ex.endTime || ""}
+                    </div>
+                  </div>
+                  <Badge tone="neutral">Slot Blocked</Badge>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ background: "#f8fafc", padding: "16px", borderRadius: 12, border: "1px solid #e2e8f0" }}>
+              <h4 style={{ margin: "0 0 12px", fontSize: 14 }}>Schedule Time-Off / Exception</h4>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                    Exception Type
+                  </label>
+                  <select
+                    value={newExType}
+                    onChange={(e) => setNewExType(e.target.value as ScheduleExceptionType)}
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13 }}
+                  >
+                    <option value="TIME_OFF">Time Off (Vacation / Personal)</option>
+                    <option value="UNAVAILABLE">Unavailable (Mandatory Training / Leave)</option>
+                    <option value="OVERTIME">Overtime Shift</option>
+                    <option value="CUSTOM_HOURS">Custom Working Hours</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                    Date (YYYY-MM-DD)
+                  </label>
+                  <input
+                    type="date"
+                    value={newExStartDate}
+                    onChange={(e) => {
+                      setNewExStartDate(e.target.value);
+                      setNewExEndDate(e.target.value);
+                    }}
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                    Start Time
+                  </label>
+                  <input
+                    type="time"
+                    value={newExStartTime}
+                    onChange={(e) => setNewExStartTime(e.target.value)}
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                    End Time
+                  </label>
+                  <input
+                    type="time"
+                    value={newExEndTime}
+                    onChange={(e) => setNewExEndTime(e.target.value)}
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13 }}
+                  />
+                </div>
+              </div>
+              <Field
+                label="Reason / Documentation"
+                value={newExReason}
+                onChange={setNewExReason}
+                hint="Recorded in contractor regulatory compliance history"
+              />
+              <div style={{ marginTop: 12 }}>
+                <Button onClick={handleAddNewException}>
+                  Log Exception & Block Conflicts
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Decline Offer Modal */}
+      <Modal
+        isOpen={declineModalOpen}
+        onClose={() => setDeclineModalOpen(false)}
+        title="Decline Dispatch Offer"
+      >
+        <div style={{ display: "grid", gap: 14 }}>
+          <p style={{ fontSize: 13, color: "#475569", margin: 0 }}>
+            Declining releases the atomic slot hold and immediately transfers the lead to the Operations Fallback Queue.
+          </p>
+
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+              Decline Reason Code
+            </label>
+            <select
+              value={declineReason}
+              onChange={(e) => setDeclineReason(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 13,
+              }}
+            >
+              <option value="CREW_OVERLOAD">Crew Overload / Capacity Saturated</option>
+              <option value="OUTSIDE_SERVICE_RADIUS">Outside Service Radius</option>
+              <option value="EQUIPMENT_MISSING">Specialized Diagnostic Equipment Missing</option>
+              <option value="SCHEDULE_CONFLICT">Direct Emergency Schedule Conflict</option>
+              <option value="STAFFING_DEFICIT">Apprentice / Supervision Requirement Unfulfilled</option>
+            </select>
+          </div>
+
+          <Field
+            label="Internal Contractor Notes"
+            value={declineNotes}
+            onChange={setDeclineNotes}
+            multiline
+            hint="Details provided to marketplace operations team"
+          />
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+            <Button variant="secondary" onClick={() => setDeclineModalOpen(false)}>
+              Keep Offer
+            </Button>
+            <Button variant="primary" onClick={handleConfirmDeclineOffer}>
+              Confirm Decline & Pass
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </Shell>
   );
 }

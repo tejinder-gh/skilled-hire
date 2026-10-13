@@ -30,13 +30,33 @@ import {
   legalAgreements,
   agreementSignatures,
   isNull,
+  gt,
+  technicianSchedules,
+  technicianScheduleExceptions,
+  technicianServiceRegions,
+  dispatchSlotHolds,
+  dispatchOffers,
+  dispatchFallbackQueue,
+  users,
 } from "@marketplace/database";
 import {
   evaluateRegulatoryEligibility,
   resolveRegulatoryPolicy,
   evaluatePreDispatchEligibility,
+  checkSlotConflict,
+  rankCandidatesForSlot,
+  computeTravelBufferMinutes,
 } from "@marketplace/vertical-engine";
-import { evaluatePreDispatchSchema } from "@marketplace/validation";
+import {
+  evaluatePreDispatchSchema,
+  createTechnicianScheduleSchema,
+  createScheduleExceptionSchema,
+  createServiceRegionSchema,
+  acquireSlotHoldSchema,
+  generateDispatchOffersSchema,
+  respondDispatchOfferSchema,
+  triageFallbackQueueSchema,
+} from "@marketplace/validation";
 import { actor, authenticate, parse, uuid } from "../common/auth.js";
 import { audit } from "../common/events.js";
 
@@ -1149,6 +1169,1321 @@ export const dispatchRoutes: FastifyPluginAsync = async (app) => {
         status: "ASSIGNED",
         evidenceSnapshot: assigned.evidenceSnapshot,
       });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // TECHNICIAN SCHEDULING, EXCEPTIONS & SERVICE REGIONS (SH-06)
+  // -------------------------------------------------------------------------
+
+  app.get(
+    "/v1/dispatch/technicians/:technicianId/calendar",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { technicianId } = parse(
+        z.object({ technicianId: uuid }),
+        request.params,
+      );
+
+      const [tech] = await db
+        .select({
+          id: technicians.id,
+          displayName: technicians.displayName,
+          contractorId: technicians.contractorId,
+          contractorName: contractors.name,
+        })
+        .from(technicians)
+        .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
+        .where(eq(technicians.id, technicianId))
+        .limit(1);
+
+      if (!tech) {
+        return reply.code(404).send({
+          code: "NOT_FOUND",
+          message: "Technician not found",
+        });
+      }
+
+      // Weekly schedules
+      const schedules = await db
+        .select()
+        .from(technicianSchedules)
+        .where(eq(technicianSchedules.technicianId, technicianId));
+
+      // Exceptions
+      const exceptions = await db
+        .select()
+        .from(technicianScheduleExceptions)
+        .where(eq(technicianScheduleExceptions.technicianId, technicianId))
+        .orderBy(desc(technicianScheduleExceptions.startDate));
+
+      // Service Regions
+      const regions = await db
+        .select()
+        .from(technicianServiceRegions)
+        .where(eq(technicianServiceRegions.technicianId, technicianId));
+
+      // Scheduled Jobs
+      const now = new Date();
+      const scheduledJobs = await db
+        .select({
+          id: jobs.id,
+          serviceRequestId: jobs.serviceRequestId,
+          scheduledStartsAt: jobs.scheduledStartsAt,
+          scheduledEndsAt: jobs.scheduledEndsAt,
+          travelBufferMinutes: jobs.travelBufferMinutes,
+          status: jobs.status,
+          addressLine1: properties.addressLine1,
+          postalCode: properties.postalCode,
+        })
+        .from(jobs)
+        .innerJoin(serviceRequests, eq(serviceRequests.id, jobs.serviceRequestId))
+        .innerJoin(properties, eq(properties.id, serviceRequests.propertyId))
+        .where(
+          and(
+            eq(jobs.technicianId, technicianId),
+            sql`${jobs.status} NOT IN ('CANCELLED', 'CLOSED')`,
+          ),
+        );
+
+      // Active Holds
+      const activeHolds = await db
+        .select()
+        .from(dispatchSlotHolds)
+        .where(
+          and(
+            eq(dispatchSlotHolds.technicianId, technicianId),
+            eq(dispatchSlotHolds.status, "HELD"),
+            gt(dispatchSlotHolds.holdExpiresAt, now),
+          ),
+        );
+
+      return reply.code(200).send({
+        technicianId: tech.id,
+        technicianName: tech.displayName,
+        contractorId: tech.contractorId,
+        contractorName: tech.contractorName,
+        weeklySchedule: schedules.map((s) => ({
+          id: s.id,
+          technicianId: s.technicianId,
+          contractorId: s.contractorId,
+          dayOfWeek: s.dayOfWeek,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          timezone: s.timezone,
+          active: s.active,
+          createdAt: s.createdAt.toISOString(),
+          updatedAt: s.updatedAt.toISOString(),
+        })),
+        exceptions: exceptions.map((e) => ({
+          id: e.id,
+          technicianId: e.technicianId,
+          exceptionType: e.exceptionType as any,
+          startDate: e.startDate,
+          endDate: e.endDate,
+          startTime: e.startTime ?? null,
+          endTime: e.endTime ?? null,
+          allDay: e.allDay,
+          reason: e.reason ?? null,
+          approvedByUserId: e.approvedByUserId ?? null,
+          createdAt: e.createdAt.toISOString(),
+          updatedAt: e.updatedAt.toISOString(),
+        })),
+        serviceRegions: regions.map((r) => ({
+          id: r.id,
+          technicianId: r.technicianId,
+          contractorId: r.contractorId,
+          postalFsa: r.postalFsa,
+          maxTravelRadiusKm: r.maxTravelRadiusKm,
+          travelBufferMinutes: r.travelBufferMinutes,
+          active: r.active,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+        scheduledJobs: scheduledJobs.map((j) => ({
+          id: j.id,
+          serviceRequestId: j.serviceRequestId,
+          startsAt: (j.scheduledStartsAt ?? now).toISOString(),
+          endsAt: (j.scheduledEndsAt ?? new Date(now.getTime() + 7200000)).toISOString(),
+          status: j.status,
+          customerAddress: `${j.addressLine1}, ${j.postalCode}`,
+          travelBufferMinutes: j.travelBufferMinutes ?? 30,
+        })),
+        activeHolds: activeHolds.map((h) => ({
+          id: h.id,
+          serviceRequestId: h.serviceRequestId,
+          technicianId: h.technicianId,
+          contractorId: h.contractorId,
+          slotStartsAt: h.slotStartsAt.toISOString(),
+          slotEndsAt: h.slotEndsAt.toISOString(),
+          travelBufferMinutes: h.travelBufferMinutes,
+          bufferedStartsAt: h.bufferedStartsAt.toISOString(),
+          bufferedEndsAt: h.bufferedEndsAt.toISOString(),
+          status: h.status as any,
+          holdExpiresAt: h.holdExpiresAt.toISOString(),
+          heldByUserId: h.heldByUserId ?? null,
+          createdAt: h.createdAt.toISOString(),
+          updatedAt: h.updatedAt.toISOString(),
+        })),
+      });
+    },
+  );
+
+  app.put(
+    "/v1/dispatch/technicians/:technicianId/schedules",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { technicianId } = parse(
+        z.object({ technicianId: uuid }),
+        request.params,
+      );
+      const body = parse(
+        z.object({
+          schedules: z.array(createTechnicianScheduleSchema),
+        }),
+        request.body,
+      );
+
+      const [tech] = await db
+        .select({ id: technicians.id, contractorId: technicians.contractorId })
+        .from(technicians)
+        .where(eq(technicians.id, technicianId))
+        .limit(1);
+
+      if (!tech) {
+        return reply.code(404).send({
+          code: "NOT_FOUND",
+          message: "Technician not found",
+        });
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(technicianSchedules)
+          .where(eq(technicianSchedules.technicianId, technicianId));
+
+        if (body.schedules.length > 0) {
+          await tx.insert(technicianSchedules).values(
+            body.schedules.map((s) => ({
+              technicianId,
+              contractorId: tech.contractorId,
+              dayOfWeek: s.dayOfWeek,
+              startTime: s.startTime,
+              endTime: s.endTime,
+              timezone: s.timezone,
+              active: s.active,
+            })),
+          );
+        }
+      });
+
+      const updated = await db
+        .select()
+        .from(technicianSchedules)
+        .where(eq(technicianSchedules.technicianId, technicianId));
+
+      return reply.code(200).send({
+        technicianId,
+        schedules: updated,
+      });
+    },
+  );
+
+  app.post(
+    "/v1/dispatch/technicians/:technicianId/exceptions",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { technicianId } = parse(
+        z.object({ technicianId: uuid }),
+        request.params,
+      );
+      const body = parse(createScheduleExceptionSchema, request.body);
+
+      const [tech] = await db
+        .select({ id: technicians.id })
+        .from(technicians)
+        .where(eq(technicians.id, technicianId))
+        .limit(1);
+
+      if (!tech) {
+        return reply.code(404).send({ code: "NOT_FOUND", message: "Technician not found" });
+      }
+
+      const [created] = await db
+        .insert(technicianScheduleExceptions)
+        .values({
+          technicianId,
+          exceptionType: body.exceptionType,
+          startDate: body.startDate,
+          endDate: body.endDate,
+          startTime: body.startTime ?? null,
+          endTime: body.endTime ?? null,
+          allDay: body.allDay,
+          reason: body.reason ?? null,
+          approvedByUserId: actor(request).id,
+        })
+        .returning();
+
+      return reply.code(201).send(created);
+    },
+  );
+
+  app.delete(
+    "/v1/dispatch/technicians/:technicianId/exceptions/:exceptionId",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { technicianId, exceptionId } = parse(
+        z.object({ technicianId: uuid, exceptionId: uuid }),
+        request.params,
+      );
+
+      await db
+        .delete(technicianScheduleExceptions)
+        .where(
+          and(
+            eq(technicianScheduleExceptions.id, exceptionId),
+            eq(technicianScheduleExceptions.technicianId, technicianId),
+          ),
+        );
+
+      return reply.code(200).send({ deleted: true });
+    },
+  );
+
+  app.post(
+    "/v1/dispatch/technicians/:technicianId/service-regions",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { technicianId } = parse(
+        z.object({ technicianId: uuid }),
+        request.params,
+      );
+      const body = parse(createServiceRegionSchema, request.body);
+
+      const [tech] = await db
+        .select({ id: technicians.id, contractorId: technicians.contractorId })
+        .from(technicians)
+        .where(eq(technicians.id, technicianId))
+        .limit(1);
+
+      if (!tech) {
+        return reply.code(404).send({ code: "NOT_FOUND", message: "Technician not found" });
+      }
+
+      const [region] = await db
+        .insert(technicianServiceRegions)
+        .values({
+          technicianId,
+          contractorId: tech.contractorId,
+          postalFsa: body.postalFsa.toUpperCase(),
+          maxTravelRadiusKm: body.maxTravelRadiusKm,
+          travelBufferMinutes: body.travelBufferMinutes,
+          active: true,
+        })
+        .onConflictDoUpdate({
+          target: [technicianServiceRegions.technicianId, technicianServiceRegions.postalFsa],
+          set: {
+            maxTravelRadiusKm: body.maxTravelRadiusKm,
+            travelBufferMinutes: body.travelBufferMinutes,
+            active: true,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+
+      return reply.code(201).send(region);
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // ATOMIC SLOT HOLDS & OVERLAP PROTECTION (SH-06)
+  // -------------------------------------------------------------------------
+
+  app.post(
+    "/v1/dispatch/slots/hold",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const body = parse(acquireSlotHoldSchema, request.body);
+
+      const [tech] = await db
+        .select({
+          id: technicians.id,
+          contractorId: technicians.contractorId,
+          active: technicians.active,
+        })
+        .from(technicians)
+        .where(eq(technicians.id, body.technicianId))
+        .limit(1);
+
+      if (!tech || !tech.active) {
+        return reply.code(404).send({
+          code: "NOT_FOUND",
+          message: "Active technician not found",
+        });
+      }
+
+      const slotStartsAt = new Date(body.slotStartsAt);
+      const slotEndsAt = new Date(body.slotEndsAt);
+      const travelBufferMinutes = body.travelBufferMinutes ?? 30;
+
+      const holdResult = await db.transaction(async (tx) => {
+        // Lock technician row to serialize concurrent holds
+        await tx
+          .select({ id: technicians.id })
+          .from(technicians)
+          .where(eq(technicians.id, body.technicianId))
+          .for("update");
+
+        // 1. Fetch active jobs
+        const existingJobs = await tx
+          .select({
+            id: jobs.id,
+            startsAt: jobs.scheduledStartsAt,
+            endsAt: jobs.scheduledEndsAt,
+            travelBufferMinutes: jobs.travelBufferMinutes,
+            status: jobs.status,
+          })
+          .from(jobs)
+          .where(
+            and(
+              eq(jobs.technicianId, body.technicianId),
+              sql`${jobs.status} NOT IN ('CANCELLED', 'COMPLETED', 'CLOSED')`,
+            ),
+          );
+
+        // 2. Fetch active holds
+        const now = new Date();
+        const activeHolds = await tx
+          .select({
+            id: dispatchSlotHolds.id,
+            bufferedStartsAt: dispatchSlotHolds.bufferedStartsAt,
+            bufferedEndsAt: dispatchSlotHolds.bufferedEndsAt,
+            holdExpiresAt: dispatchSlotHolds.holdExpiresAt,
+          })
+          .from(dispatchSlotHolds)
+          .where(
+            and(
+              eq(dispatchSlotHolds.technicianId, body.technicianId),
+              eq(dispatchSlotHolds.status, "HELD"),
+              gt(dispatchSlotHolds.holdExpiresAt, now),
+            ),
+          );
+
+        // 3. Weekly schedules & exceptions
+        const schedules = await tx
+          .select({
+            dayOfWeek: technicianSchedules.dayOfWeek,
+            startTime: technicianSchedules.startTime,
+            endTime: technicianSchedules.endTime,
+            active: technicianSchedules.active,
+          })
+          .from(technicianSchedules)
+          .where(eq(technicianSchedules.technicianId, body.technicianId));
+
+        const exceptions = await tx
+          .select({
+            exceptionType: technicianScheduleExceptions.exceptionType,
+            startDate: technicianScheduleExceptions.startDate,
+            endDate: technicianScheduleExceptions.endDate,
+            startTime: technicianScheduleExceptions.startTime,
+            endTime: technicianScheduleExceptions.endTime,
+            allDay: technicianScheduleExceptions.allDay,
+            reason: technicianScheduleExceptions.reason,
+          })
+          .from(technicianScheduleExceptions)
+          .where(eq(technicianScheduleExceptions.technicianId, body.technicianId));
+
+        // Perform conflict check
+        const conflict = checkSlotConflict(
+          {
+            startsAt: slotStartsAt,
+            endsAt: slotEndsAt,
+            travelBufferMinutes,
+          },
+          {
+            existingJobs: existingJobs
+              .filter((j) => j.startsAt && j.endsAt)
+              .map((j) => ({
+                id: j.id,
+                startsAt: j.startsAt!,
+                endsAt: j.endsAt!,
+                travelBufferMinutes: j.travelBufferMinutes ?? 30,
+                status: j.status,
+              })),
+            activeHolds,
+            weeklySchedules: schedules,
+            exceptions,
+            now,
+          },
+        );
+
+        if (conflict.hasConflict) {
+          const err = new Error(conflict.conflictDetails || "Slot conflict detected");
+          (err as any).statusCode = 409;
+          (err as any).code = "SLOT_CONFLICT";
+          (err as any).details = conflict;
+          throw err;
+        }
+
+        const bufferedStartsAt = new Date(
+          slotStartsAt.getTime() - travelBufferMinutes * 60 * 1000,
+        );
+        const bufferedEndsAt = new Date(
+          slotEndsAt.getTime() + travelBufferMinutes * 60 * 1000,
+        );
+        const holdExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+
+        const [createdHold] = await tx
+          .insert(dispatchSlotHolds)
+          .values({
+            serviceRequestId: body.serviceRequestId,
+            technicianId: body.technicianId,
+            contractorId: tech.contractorId,
+            slotStartsAt,
+            slotEndsAt,
+            travelBufferMinutes,
+            bufferedStartsAt,
+            bufferedEndsAt,
+            status: "HELD",
+            holdExpiresAt,
+            heldByUserId: actor(request).id,
+          })
+          .returning();
+
+        return createdHold;
+      });
+
+      await audit(
+        actor(request).id,
+        "SLOT_HOLD_ACQUIRED",
+        "SERVICE_REQUEST",
+        body.serviceRequestId,
+        null,
+        { holdId: holdResult?.id, technicianId: body.technicianId },
+      );
+
+      return reply.code(201).send(holdResult);
+    },
+  );
+
+  app.post(
+    "/v1/dispatch/slots/:holdId/release",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { holdId } = parse(z.object({ holdId: uuid }), request.params);
+
+      const [updated] = await db
+        .update(dispatchSlotHolds)
+        .set({ status: "RELEASED", updatedAt: new Date() })
+        .where(eq(dispatchSlotHolds.id, holdId))
+        .returning();
+
+      if (!updated) {
+        return reply.code(404).send({ code: "NOT_FOUND", message: "Hold not found" });
+      }
+
+      return reply.code(200).send({ released: true, holdId });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // DISPATCH OFFERS & FALLBACK CASCADE (SH-06)
+  // -------------------------------------------------------------------------
+
+  app.post(
+    "/v1/dispatch/:requestId/offers/generate",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { requestId } = parse(z.object({ requestId: uuid }), request.params);
+      const rawBody = typeof request.body === "object" && request.body !== null ? request.body : {};
+      const body = parse(generateDispatchOffersSchema, { ...rawBody, serviceRequestId: requestId });
+
+      const [service] = await db
+        .select({
+          id: serviceRequests.id,
+          verticalId: serviceRequests.verticalId,
+          region: properties.region,
+          postalCode: properties.postalCode,
+          urgency: serviceRequests.urgency,
+          verticalSlug: verticals.slug,
+        })
+        .from(serviceRequests)
+        .innerJoin(properties, eq(properties.id, serviceRequests.propertyId))
+        .innerJoin(verticals, eq(verticals.id, serviceRequests.verticalId))
+        .where(eq(serviceRequests.id, requestId))
+        .limit(1);
+
+      if (!service) {
+        return reply.code(404).send({ code: "NOT_FOUND", message: "Service request not found" });
+      }
+
+      const slotStartsAt = new Date(body.slotStartsAt);
+      const slotEndsAt = new Date(body.slotEndsAt);
+      const travelBufferMinutes = computeTravelBufferMinutes(15);
+      const now = new Date();
+
+      // Find active certified technicians in region
+      const techRows = await db
+        .select({
+          id: technicians.id,
+          displayName: technicians.displayName,
+          contractorId: technicians.contractorId,
+          contractorName: contractors.name,
+          ratingBps: contractors.ratingBps,
+          completionRateBps: contractors.completionRateBps,
+          avgResponseMinutes: contractors.avgResponseMinutes,
+          workload: technicians.workload,
+        })
+        .from(technicians)
+        .innerJoin(contractors, eq(contractors.id, technicians.contractorId))
+        .where(
+          and(
+            eq(technicians.active, true),
+            eq(contractors.status, "VERIFIED"),
+            sql`${contractors.verticalIds} ? ${service.verticalId}`,
+          ),
+        );
+
+      const candidateEvals: Array<{
+        technicianId: string;
+        technicianName: string;
+        contractorId: string;
+        contractorName: string;
+        ratingBps: number;
+        completionRateBps: number;
+        avgResponseMinutes: number;
+        distanceKm: number;
+        currentWorkload: number;
+        conflict: any;
+      }> = [];
+
+      for (const t of techRows) {
+        const [activeJobs, activeHolds, schedules, exceptions] = await Promise.all([
+          db
+            .select({
+              id: jobs.id,
+              startsAt: jobs.scheduledStartsAt,
+              endsAt: jobs.scheduledEndsAt,
+              travelBufferMinutes: jobs.travelBufferMinutes,
+              status: jobs.status,
+            })
+            .from(jobs)
+            .where(
+              and(
+                eq(jobs.technicianId, t.id),
+                sql`${jobs.status} NOT IN ('CANCELLED', 'COMPLETED', 'CLOSED')`,
+              ),
+            ),
+          db
+            .select({
+              id: dispatchSlotHolds.id,
+              bufferedStartsAt: dispatchSlotHolds.bufferedStartsAt,
+              bufferedEndsAt: dispatchSlotHolds.bufferedEndsAt,
+              holdExpiresAt: dispatchSlotHolds.holdExpiresAt,
+            })
+            .from(dispatchSlotHolds)
+            .where(
+              and(
+                eq(dispatchSlotHolds.technicianId, t.id),
+                eq(dispatchSlotHolds.status, "HELD"),
+                gt(dispatchSlotHolds.holdExpiresAt, now),
+              ),
+            ),
+          db
+            .select({
+              dayOfWeek: technicianSchedules.dayOfWeek,
+              startTime: technicianSchedules.startTime,
+              endTime: technicianSchedules.endTime,
+              active: technicianSchedules.active,
+            })
+            .from(technicianSchedules)
+            .where(eq(technicianSchedules.technicianId, t.id)),
+          db
+            .select({
+              exceptionType: technicianScheduleExceptions.exceptionType,
+              startDate: technicianScheduleExceptions.startDate,
+              endDate: technicianScheduleExceptions.endDate,
+              startTime: technicianScheduleExceptions.startTime,
+              endTime: technicianScheduleExceptions.endTime,
+              allDay: technicianScheduleExceptions.allDay,
+              reason: technicianScheduleExceptions.reason,
+            })
+            .from(technicianScheduleExceptions)
+            .where(eq(technicianScheduleExceptions.technicianId, t.id)),
+        ]);
+
+        const conflict = checkSlotConflict(
+          {
+            startsAt: slotStartsAt,
+            endsAt: slotEndsAt,
+            travelBufferMinutes,
+          },
+          {
+            existingJobs: activeJobs
+              .filter((j) => j.startsAt && j.endsAt)
+              .map((j) => ({
+                id: j.id,
+                startsAt: j.startsAt!,
+                endsAt: j.endsAt!,
+                travelBufferMinutes: j.travelBufferMinutes ?? 30,
+                status: j.status,
+              })),
+            activeHolds,
+            weeklySchedules: schedules,
+            exceptions,
+            now,
+          },
+        );
+
+        candidateEvals.push({
+          technicianId: t.id,
+          technicianName: t.displayName,
+          contractorId: t.contractorId,
+          contractorName: t.contractorName,
+          ratingBps: t.ratingBps,
+          completionRateBps: t.completionRateBps,
+          avgResponseMinutes: t.avgResponseMinutes,
+          distanceKm: 8.5,
+          currentWorkload: t.workload,
+          conflict,
+        });
+      }
+
+      const ranked = rankCandidatesForSlot(candidateEvals);
+
+      if (ranked.length === 0) {
+        // Enqueue into Fallback Queue
+        const [fallbackItem] = await db
+          .insert(dispatchFallbackQueue)
+          .values({
+            serviceRequestId: requestId,
+            failedOfferCount: 0,
+            reason: "NO_ELIGIBLE_CANDIDATES",
+            status: "PENDING_TRIAGE",
+          })
+          .onConflictDoUpdate({
+            target: [dispatchFallbackQueue.serviceRequestId],
+            set: {
+              reason: "NO_ELIGIBLE_CANDIDATES",
+              status: "PENDING_TRIAGE",
+              updatedAt: new Date(),
+            },
+          })
+          .returning();
+
+        return reply.code(200).send({
+          offers: [],
+          fallbackQueue: {
+            enrolled: true,
+            id: fallbackItem?.id,
+            reason: "NO_ELIGIBLE_CANDIDATES",
+          },
+        });
+      }
+
+      // Top candidate offer creation
+      const topCandidate = ranked[0]!;
+      const offerTtlMinutes = body.offerTtlMinutes ?? 15;
+      const offerExpiresAt = new Date(Date.now() + offerTtlMinutes * 60 * 1000);
+
+      const offerResult = await db.transaction(async (tx) => {
+        const bufferedStartsAt = new Date(
+          slotStartsAt.getTime() - travelBufferMinutes * 60 * 1000,
+        );
+        const bufferedEndsAt = new Date(
+          slotEndsAt.getTime() + travelBufferMinutes * 60 * 1000,
+        );
+
+        const [slotHold] = await tx
+          .insert(dispatchSlotHolds)
+          .values({
+            serviceRequestId: requestId,
+            technicianId: topCandidate.technicianId,
+            contractorId: topCandidate.contractorId,
+            slotStartsAt,
+            slotEndsAt,
+            travelBufferMinutes,
+            bufferedStartsAt,
+            bufferedEndsAt,
+            status: "HELD",
+            holdExpiresAt: offerExpiresAt,
+            heldByUserId: actor(request).id,
+          })
+          .returning();
+
+        const [offer] = await tx
+          .insert(dispatchOffers)
+          .values({
+            serviceRequestId: requestId,
+            technicianId: topCandidate.technicianId,
+            contractorId: topCandidate.contractorId,
+            slotHoldId: slotHold?.id,
+            candidateRank: 1,
+            candidateScore: topCandidate.score,
+            status: "OFFERED",
+            expiresAt: offerExpiresAt,
+          })
+          .returning();
+
+        return { offer, slotHold };
+      });
+
+      await audit(
+        actor(request).id,
+        "DISPATCH_OFFER_GENERATED",
+        "SERVICE_REQUEST",
+        requestId,
+        null,
+        {
+          offerId: offerResult.offer?.id,
+          technicianId: topCandidate.technicianId,
+          score: topCandidate.score,
+        },
+      );
+
+      return reply.code(201).send({
+        offer: {
+          ...offerResult.offer,
+          technicianName: topCandidate.technicianName,
+          contractorName: topCandidate.contractorName,
+        },
+        slotHold: offerResult.slotHold,
+        totalEligibleCandidates: ranked.length,
+      });
+    },
+  );
+
+  app.get(
+    "/v1/dispatch/:requestId/offers",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { requestId } = parse(z.object({ requestId: uuid }), request.params);
+
+      const offers = await db
+        .select({
+          id: dispatchOffers.id,
+          serviceRequestId: dispatchOffers.serviceRequestId,
+          technicianId: dispatchOffers.technicianId,
+          technicianName: technicians.displayName,
+          contractorId: dispatchOffers.contractorId,
+          contractorName: contractors.name,
+          slotHoldId: dispatchOffers.slotHoldId,
+          candidateRank: dispatchOffers.candidateRank,
+          candidateScore: dispatchOffers.candidateScore,
+          status: dispatchOffers.status,
+          offeredAt: dispatchOffers.offeredAt,
+          expiresAt: dispatchOffers.expiresAt,
+          respondedAt: dispatchOffers.respondedAt,
+          declineReason: dispatchOffers.declineReason,
+          declineNotes: dispatchOffers.declineNotes,
+          createdAt: dispatchOffers.createdAt,
+          updatedAt: dispatchOffers.updatedAt,
+        })
+        .from(dispatchOffers)
+        .innerJoin(technicians, eq(technicians.id, dispatchOffers.technicianId))
+        .innerJoin(contractors, eq(contractors.id, dispatchOffers.contractorId))
+        .where(eq(dispatchOffers.serviceRequestId, requestId))
+        .orderBy(desc(dispatchOffers.createdAt));
+
+      return reply.code(200).send({ offers });
+    },
+  );
+
+  app.get(
+    "/v1/dispatch/offers/incoming",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const now = new Date();
+
+      // Find active offers for contractor or technician
+      const offers = await db
+        .select({
+          id: dispatchOffers.id,
+          serviceRequestId: dispatchOffers.serviceRequestId,
+          technicianId: dispatchOffers.technicianId,
+          technicianName: technicians.displayName,
+          contractorId: dispatchOffers.contractorId,
+          contractorName: contractors.name,
+          slotHoldId: dispatchOffers.slotHoldId,
+          status: dispatchOffers.status,
+          offeredAt: dispatchOffers.offeredAt,
+          expiresAt: dispatchOffers.expiresAt,
+          description: serviceRequests.description,
+          urgency: serviceRequests.urgency,
+          postalCode: properties.postalCode,
+          region: properties.region,
+          slotStartsAt: dispatchSlotHolds.slotStartsAt,
+          slotEndsAt: dispatchSlotHolds.slotEndsAt,
+        })
+        .from(dispatchOffers)
+        .innerJoin(technicians, eq(technicians.id, dispatchOffers.technicianId))
+        .innerJoin(contractors, eq(contractors.id, dispatchOffers.contractorId))
+        .innerJoin(serviceRequests, eq(serviceRequests.id, dispatchOffers.serviceRequestId))
+        .innerJoin(properties, eq(properties.id, serviceRequests.propertyId))
+        .leftJoin(dispatchSlotHolds, eq(dispatchSlotHolds.id, dispatchOffers.slotHoldId))
+        .where(
+          and(
+            eq(dispatchOffers.status, "OFFERED"),
+            gt(dispatchOffers.expiresAt, now),
+          ),
+        )
+        .orderBy(desc(dispatchOffers.createdAt));
+
+      return reply.code(200).send({ offers });
+    },
+  );
+
+  app.post(
+    "/v1/dispatch/offers/:offerId/respond",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { offerId } = parse(z.object({ offerId: uuid }), request.params);
+      const body = parse(respondDispatchOfferSchema, request.body);
+
+      const result = await db.transaction(async (tx) => {
+        const [offer] = await tx
+          .select()
+          .from(dispatchOffers)
+          .where(eq(dispatchOffers.id, offerId))
+          .for("update");
+
+        if (!offer) {
+          throw new Error("NOT_FOUND");
+        }
+
+        if (offer.status !== "OFFERED") {
+          const err = new Error(`Offer is no longer active (status: ${offer.status})`);
+          (err as any).statusCode = 409;
+          throw err;
+        }
+
+        const now = new Date();
+        if (offer.expiresAt.getTime() <= now.getTime()) {
+          await tx
+            .update(dispatchOffers)
+            .set({ status: "TIMED_OUT", updatedAt: now })
+            .where(eq(dispatchOffers.id, offerId));
+
+          if (offer.slotHoldId) {
+            await tx
+              .update(dispatchSlotHolds)
+              .set({ status: "EXPIRED", updatedAt: now })
+              .where(eq(dispatchSlotHolds.id, offer.slotHoldId));
+          }
+
+          const err = new Error("Offer has expired.");
+          (err as any).statusCode = 410;
+          (err as any).code = "OFFER_EXPIRED";
+          throw err;
+        }
+
+        if (body.action === "ACCEPT") {
+          // 1. Confirm hold
+          let slotStartsAt: Date | null = null;
+          let slotEndsAt: Date | null = null;
+          let travelBuffer = 30;
+
+          if (offer.slotHoldId) {
+            const [hold] = await tx
+              .update(dispatchSlotHolds)
+              .set({ status: "CONFIRMED", updatedAt: now })
+              .where(eq(dispatchSlotHolds.id, offer.slotHoldId))
+              .returning();
+            if (hold) {
+              slotStartsAt = hold.slotStartsAt;
+              slotEndsAt = hold.slotEndsAt;
+              travelBuffer = hold.travelBufferMinutes;
+            }
+          }
+
+          // 2. Mark offer ACCEPTED
+          const [acceptedOffer] = await tx
+            .update(dispatchOffers)
+            .set({
+              status: "ACCEPTED",
+              respondedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(dispatchOffers.id, offerId))
+            .returning();
+
+          // 3. Create or update jobs
+          const [existingJob] = await tx
+            .select({ id: jobs.id })
+            .from(jobs)
+            .where(eq(jobs.serviceRequestId, offer.serviceRequestId))
+            .limit(1);
+
+          let jobId = existingJob?.id;
+          if (!existingJob) {
+            const [newJob] = await tx
+              .insert(jobs)
+              .values({
+                serviceRequestId: offer.serviceRequestId,
+                contractorId: offer.contractorId,
+                technicianId: offer.technicianId,
+                status: "ASSIGNED",
+                scheduledStartsAt: slotStartsAt,
+                scheduledEndsAt: slotEndsAt,
+                travelBufferMinutes: travelBuffer,
+              })
+              .returning();
+            jobId = newJob?.id;
+          } else {
+            await tx
+              .update(jobs)
+              .set({
+                contractorId: offer.contractorId,
+                technicianId: offer.technicianId,
+                status: "ASSIGNED",
+                scheduledStartsAt: slotStartsAt,
+                scheduledEndsAt: slotEndsAt,
+                travelBufferMinutes: travelBuffer,
+                updatedAt: now,
+              })
+              .where(eq(jobs.id, existingJob.id));
+          }
+
+          // 4. Update service request
+          await tx
+            .update(serviceRequests)
+            .set({ status: "ASSIGNED", updatedAt: now })
+            .where(eq(serviceRequests.id, offer.serviceRequestId));
+
+          return {
+            status: "ACCEPTED",
+            offer: acceptedOffer,
+            jobId,
+            scheduledStartsAt: slotStartsAt?.toISOString(),
+            scheduledEndsAt: slotEndsAt?.toISOString(),
+          };
+        } else {
+          // DECLINE
+          if (offer.slotHoldId) {
+            await tx
+              .update(dispatchSlotHolds)
+              .set({ status: "RELEASED", updatedAt: now })
+              .where(eq(dispatchSlotHolds.id, offer.slotHoldId));
+          }
+
+          const [declinedOffer] = await tx
+            .update(dispatchOffers)
+            .set({
+              status: "DECLINED",
+              declineReason: body.declineReason ?? "NOT_AVAILABLE",
+              declineNotes: body.declineNotes ?? null,
+              respondedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(dispatchOffers.id, offerId))
+            .returning();
+
+          // Update fallback queue
+          await tx
+            .insert(dispatchFallbackQueue)
+            .values({
+              serviceRequestId: offer.serviceRequestId,
+              failedOfferCount: 1,
+              reason: "DECLINED_BY_ALL",
+              status: "PENDING_TRIAGE",
+            })
+            .onConflictDoUpdate({
+              target: [dispatchFallbackQueue.serviceRequestId],
+              set: {
+                failedOfferCount: sql`${dispatchFallbackQueue.failedOfferCount} + 1`,
+                reason: "DECLINED_BY_ALL",
+                status: "PENDING_TRIAGE",
+                updatedAt: now,
+              },
+            });
+
+          return {
+            status: "DECLINED",
+            offer: declinedOffer,
+          };
+        }
+      });
+
+      await audit(
+        actor(request).id,
+        body.action === "ACCEPT" ? "DISPATCH_OFFER_ACCEPTED" : "DISPATCH_OFFER_DECLINED",
+        "DISPATCH_OFFER",
+        offerId,
+        null,
+        { action: body.action, reason: body.declineReason },
+      );
+
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.post(
+    "/v1/dispatch/offers/:offerId/timeout",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { offerId } = parse(z.object({ offerId: uuid }), request.params);
+
+      const timedOut = await db.transaction(async (tx) => {
+        const [offer] = await tx
+          .select()
+          .from(dispatchOffers)
+          .where(eq(dispatchOffers.id, offerId))
+          .for("update");
+
+        if (!offer || offer.status !== "OFFERED") {
+          return null;
+        }
+
+        const now = new Date();
+        const [updated] = await tx
+          .update(dispatchOffers)
+          .set({ status: "TIMED_OUT", updatedAt: now })
+          .where(eq(dispatchOffers.id, offerId))
+          .returning();
+
+        if (offer.slotHoldId) {
+          await tx
+            .update(dispatchSlotHolds)
+            .set({ status: "EXPIRED", updatedAt: now })
+            .where(eq(dispatchSlotHolds.id, offer.slotHoldId));
+        }
+
+        await tx
+          .insert(dispatchFallbackQueue)
+          .values({
+            serviceRequestId: offer.serviceRequestId,
+            failedOfferCount: 1,
+            reason: "TIMED_OUT",
+            status: "PENDING_TRIAGE",
+          })
+          .onConflictDoUpdate({
+            target: [dispatchFallbackQueue.serviceRequestId],
+            set: {
+              failedOfferCount: sql`${dispatchFallbackQueue.failedOfferCount} + 1`,
+              reason: "TIMED_OUT",
+              status: "PENDING_TRIAGE",
+              updatedAt: now,
+            },
+          });
+
+        return updated;
+      });
+
+      if (!timedOut) {
+        return reply.code(404).send({ code: "NOT_FOUND", message: "Active offer not found" });
+      }
+
+      return reply.code(200).send({ status: "TIMED_OUT", offerId });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // OPERATIONS FALLBACK QUEUE TRIAGE (SH-06)
+  // -------------------------------------------------------------------------
+
+  app.get(
+    "/v1/dispatch/fallback-queue",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(
+        actor(request),
+        "OPERATIONS_AGENT",
+        "DISPATCHER",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
+
+      const items = await db
+        .select({
+          id: dispatchFallbackQueue.id,
+          serviceRequestId: dispatchFallbackQueue.serviceRequestId,
+          failedOfferCount: dispatchFallbackQueue.failedOfferCount,
+          reason: dispatchFallbackQueue.reason,
+          status: dispatchFallbackQueue.status,
+          assignedTechnicianId: dispatchFallbackQueue.assignedTechnicianId,
+          triagedByUserId: dispatchFallbackQueue.triagedByUserId,
+          triagedAt: dispatchFallbackQueue.triagedAt,
+          resolutionNotes: dispatchFallbackQueue.resolutionNotes,
+          createdAt: dispatchFallbackQueue.createdAt,
+          updatedAt: dispatchFallbackQueue.updatedAt,
+          description: serviceRequests.description,
+          urgency: serviceRequests.urgency,
+          postalCode: properties.postalCode,
+          region: properties.region,
+          verticalName: verticals.name,
+          preferredStartsAt: serviceRequests.preferredStartsAt,
+          preferredEndsAt: serviceRequests.preferredEndsAt,
+        })
+        .from(dispatchFallbackQueue)
+        .innerJoin(
+          serviceRequests,
+          eq(serviceRequests.id, dispatchFallbackQueue.serviceRequestId),
+        )
+        .innerJoin(properties, eq(properties.id, serviceRequests.propertyId))
+        .innerJoin(verticals, eq(verticals.id, serviceRequests.verticalId))
+        .where(
+          or(
+            eq(dispatchFallbackQueue.status, "PENDING_TRIAGE"),
+            eq(dispatchFallbackQueue.status, "RE_DISPATCHED"),
+          ),
+        )
+        .orderBy(desc(dispatchFallbackQueue.createdAt));
+
+      return reply.code(200).send({
+        queue: items.map((i) => ({
+          id: i.id,
+          serviceRequestId: i.serviceRequestId,
+          failedOfferCount: i.failedOfferCount,
+          reason: i.reason as any,
+          status: i.status as any,
+          assignedTechnicianId: i.assignedTechnicianId ?? null,
+          triagedByUserId: i.triagedByUserId ?? null,
+          triagedAt: i.triagedAt ? i.triagedAt.toISOString() : null,
+          resolutionNotes: i.resolutionNotes ?? null,
+          createdAt: i.createdAt.toISOString(),
+          updatedAt: i.updatedAt.toISOString(),
+          serviceRequest: {
+            id: i.serviceRequestId,
+            description: i.description,
+            urgency: i.urgency,
+            postalCode: i.postalCode,
+            region: i.region,
+            verticalName: i.verticalName,
+            preferredStartsAt: i.preferredStartsAt ? i.preferredStartsAt.toISOString() : null,
+            preferredEndsAt: i.preferredEndsAt ? i.preferredEndsAt.toISOString() : null,
+          },
+        })),
+      });
+    },
+  );
+
+  app.post(
+    "/v1/dispatch/fallback-queue/:requestId/triage",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(
+        actor(request),
+        "OPERATIONS_AGENT",
+        "DISPATCHER",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
+      const { requestId } = parse(z.object({ requestId: uuid }), request.params);
+      const body = parse(triageFallbackQueueSchema, request.body);
+      const now = new Date();
+
+      const triaged = await db.transaction(async (tx) => {
+        if (body.action === "MANUAL_ASSIGN") {
+          if (!body.technicianId) {
+            const err = new Error("technicianId is required for manual assignment");
+            (err as any).statusCode = 400;
+            throw err;
+          }
+
+          const [tech] = await tx
+            .select({ id: technicians.id, contractorId: technicians.contractorId })
+            .from(technicians)
+            .where(eq(technicians.id, body.technicianId))
+            .limit(1);
+
+          if (!tech) {
+            throw new Error("Technician not found");
+          }
+
+          // Assign job
+          const [existingJob] = await tx
+            .select({ id: jobs.id })
+            .from(jobs)
+            .where(eq(jobs.serviceRequestId, requestId))
+            .limit(1);
+
+          if (!existingJob) {
+            await tx.insert(jobs).values({
+              serviceRequestId: requestId,
+              contractorId: tech.contractorId,
+              technicianId: tech.id,
+              status: "ASSIGNED",
+              scheduledStartsAt: now,
+              scheduledEndsAt: new Date(now.getTime() + 7200000),
+            });
+          } else {
+            await tx
+              .update(jobs)
+              .set({
+                contractorId: tech.contractorId,
+                technicianId: tech.id,
+                status: "ASSIGNED",
+                updatedAt: now,
+              })
+              .where(eq(jobs.id, existingJob.id));
+          }
+
+          await tx
+            .update(serviceRequests)
+            .set({ status: "ASSIGNED", updatedAt: now })
+            .where(eq(serviceRequests.id, requestId));
+
+          const [updatedQueue] = await tx
+            .update(dispatchFallbackQueue)
+            .set({
+              status: "MANUALLY_ASSIGNED",
+              assignedTechnicianId: tech.id,
+              triagedByUserId: actor(request).id,
+              triagedAt: now,
+              resolutionNotes: body.resolutionNotes ?? body.overrideReason ?? "Manual ops override",
+              updatedAt: now,
+            })
+            .where(eq(dispatchFallbackQueue.serviceRequestId, requestId))
+            .returning();
+
+          return updatedQueue;
+        } else if (body.action === "CANCEL") {
+          await tx
+            .update(serviceRequests)
+            .set({ status: "CANCELLED", updatedAt: now })
+            .where(eq(serviceRequests.id, requestId));
+
+          const [updatedQueue] = await tx
+            .update(dispatchFallbackQueue)
+            .set({
+              status: "CANCELLED",
+              triagedByUserId: actor(request).id,
+              triagedAt: now,
+              resolutionNotes: body.resolutionNotes ?? "Cancelled by Operations",
+              updatedAt: now,
+            })
+            .where(eq(dispatchFallbackQueue.serviceRequestId, requestId))
+            .returning();
+
+          return updatedQueue;
+        } else {
+          // RE_DISPATCH
+          const [updatedQueue] = await tx
+            .update(dispatchFallbackQueue)
+            .set({
+              status: "RE_DISPATCHED",
+              triagedByUserId: actor(request).id,
+              triagedAt: now,
+              resolutionNotes: body.resolutionNotes ?? "Re-dispatch queued",
+              updatedAt: now,
+            })
+            .where(eq(dispatchFallbackQueue.serviceRequestId, requestId))
+            .returning();
+
+          return updatedQueue;
+        }
+      });
+
+      await audit(
+        actor(request).id,
+        "FALLBACK_QUEUE_TRIAGED",
+        "SERVICE_REQUEST",
+        requestId,
+        null,
+        { action: body.action, resolutionNotes: body.resolutionNotes },
+      );
+
+      return reply.code(200).send(triaged);
     },
   );
 };
