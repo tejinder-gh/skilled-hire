@@ -937,6 +937,86 @@ export const createOperationalAlertSchema = z.object({
   metricsPayload: z.record(z.unknown()).optional(),
 });
 
+// Multi-Service Provider Onboarding & Supply CRM (#41, #6)
+export const providerRateProposalSchema = z.object({
+  verticalSlug: z.string().min(1),
+  hourlyRateCents: z.number().int().min(1000).max(100000),
+  diagnosticFeeCents: z.number().int().min(0).max(50000),
+  emergencyRateMultiplierBps: z.number().int().min(10000).max(30000).optional(),
+});
+
+export const technicianRosterInputSchema = z.object({
+  fullName: z.string().min(2).max(120),
+  email: z.string().email(),
+  phone: z.string().min(7).max(30),
+  tradeLicenseCode: z.string().min(1).max(50),
+  licenseNumber: z.string().min(1).max(80),
+  licenseExpiry: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Format must be YYYY-MM-DD"),
+  isEmergencyAvailable: z.boolean().optional(),
+});
+
+export const providerDraftApplicationSchema = z.object({
+  prospectEmail: z.string().email(),
+  businessName: z.string().min(2).max(200),
+  businessNumber: z.string().max(50).optional(),
+  businessType: z
+    .enum(["CORPORATION", "SOLE_PROPRIETORSHIP", "PARTNERSHIP"])
+    .optional(),
+  phone: z.string().min(7).max(30),
+  postalCodes: z.array(z.string().min(2).max(10)).optional(),
+  selectedVerticals: z.array(z.string()).optional(),
+  serviceRatesProposal: z.array(providerRateProposalSchema).optional(),
+  weeklyCapacity: z.number().int().min(1).max(500).optional(),
+  draftStep: z.number().int().min(1).max(10).optional(),
+  draftPayload: z.record(z.unknown()).optional(),
+  saveToken: z.string().optional(),
+});
+
+export const providerSubmitApplicationSchema = z.object({
+  saveToken: z.string().min(8),
+  businessNumber: z.string().min(3).max(50),
+  businessType: z.enum(["CORPORATION", "SOLE_PROPRIETORSHIP", "PARTNERSHIP"]),
+  postalCodes: z.array(z.string().min(2).max(10)).min(1),
+  selectedVerticals: z.array(z.string().min(2)).min(1),
+  serviceRatesProposal: z.array(providerRateProposalSchema).min(1),
+  weeklyCapacity: z.number().int().min(1).max(500),
+  technicians: z.array(technicianRosterInputSchema).min(1),
+  consentAccepted: z.literal(true),
+  applicantUserId: z.string().uuid().optional(),
+});
+
+export const serviceGeographyDecisionSchema = z.object({
+  verticalSlug: z.string().min(1),
+  territoryCode: z.string().min(1),
+  status: z.enum(["APPROVED", "CONDITIONALLY_APPROVED", "REJECTED"]),
+  reason: z.string().max(1000).optional(),
+});
+
+export const providerApplicationReviewSchema = z.object({
+  decision: z.enum(["APPROVED", "REJECTED", "NEEDS_MORE_INFO"]),
+  reviewNotes: z.string().max(2000).optional(),
+  serviceGeographyDecisions: z.array(serviceGeographyDecisionSchema).default([]),
+  convertAndProvision: z.boolean().optional(),
+});
+
+export const providerApplicationsQuerySchema = z.object({
+  status: z
+    .enum([
+      "PROSPECT",
+      "SUBMITTED",
+      "UNDER_REVIEW",
+      "APPROVED",
+      "REJECTED",
+      "SUSPENDED",
+      "ALL",
+    ])
+    .default("ALL"),
+  verticalSlug: z.string().optional(),
+  territoryCode: z.string().optional(),
+  search: z.string().optional(),
+});
+
+
 
 
 

@@ -2820,5 +2820,140 @@ export const marketplaceAnalyticsSnapshots = pgTable(
   },
 );
 
+// 21. Multi-Service Provider Onboarding & Supply CRM (#41, #6)
+export const providerOnboardingApplications = pgTable(
+  "provider_onboarding_applications",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    prospectEmail: text("prospect_email").notNull(),
+    businessName: text("business_name").notNull(),
+    businessNumber: text("business_number"),
+    businessType: text("business_type").notNull().default("CORPORATION"),
+    phone: text("phone").notNull(),
+    postalCodes: jsonb("postal_codes").notNull().default([]),
+    selectedVerticals: jsonb("selected_verticals").notNull().default([]),
+    serviceRatesProposal: jsonb("service_rates_proposal").notNull().default([]),
+    weeklyCapacity: integer("weekly_capacity").notNull().default(10),
+    technicianCount: integer("technician_count").notNull().default(1),
+    status: varchar("status", { length: 32 }).notNull().default("PROSPECT"),
+    saveToken: varchar("save_token", { length: 64 }).notNull().unique(),
+    draftStep: integer("draft_step").notNull().default(1),
+    draftPayload: jsonb("draft_payload").notNull().default({}),
+    consentAccepted: boolean("consent_accepted").notNull().default(false),
+    consentAcceptedAt: timestamp("consent_accepted_at", { withTimezone: true }),
+    applicantUserId: uuid("applicant_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    convertedContractorId: uuid("converted_contractor_id").references(
+      () => contractors.id,
+      { onDelete: "set null" },
+    ),
+    reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewNotes: text("review_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const providerServiceGeographyApprovals = pgTable(
+  "provider_service_geography_approvals",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    applicationId: varchar("application_id", { length: 64 })
+      .notNull()
+      .references(() => providerOnboardingApplications.id, {
+        onDelete: "cascade",
+      }),
+    contractorId: uuid("contractor_id").references(() => contractors.id, {
+      onDelete: "cascade",
+    }),
+    verticalSlug: varchar("vertical_slug", { length: 64 }).notNull(),
+    territoryCode: varchar("territory_code", { length: 32 }).notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("PENDING"),
+    decisionReason: text("decision_reason"),
+    reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const providerTechnicianRosters = pgTable(
+  "provider_technician_roster",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    applicationId: varchar("application_id", { length: 64 })
+      .notNull()
+      .references(() => providerOnboardingApplications.id, {
+        onDelete: "cascade",
+      }),
+    fullName: text("full_name").notNull(),
+    email: text("email").notNull(),
+    phone: text("phone").notNull(),
+    tradeLicenseCode: text("trade_license_code").notNull(),
+    licenseNumber: text("license_number").notNull(),
+    licenseExpiry: date("license_expiry").notNull(),
+    backgroundCheckStatus: varchar("background_check_status", { length: 32 })
+      .notNull()
+      .default("PENDING"),
+    isEmergencyAvailable: boolean("is_emergency_available")
+      .notNull()
+      .default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const providerOnboardingApplicationsRelations = relations(
+  providerOnboardingApplications,
+  ({ many, one }) => ({
+    approvals: many(providerServiceGeographyApprovals),
+    technicians: many(providerTechnicianRosters),
+    applicantUser: one(users, {
+      fields: [providerOnboardingApplications.applicantUserId],
+      references: [users.id],
+    }),
+    convertedContractor: one(contractors, {
+      fields: [providerOnboardingApplications.convertedContractorId],
+      references: [contractors.id],
+    }),
+  }),
+);
+
+export const providerServiceGeographyApprovalsRelations = relations(
+  providerServiceGeographyApprovals,
+  ({ one }) => ({
+    application: one(providerOnboardingApplications, {
+      fields: [providerServiceGeographyApprovals.applicationId],
+      references: [providerOnboardingApplications.id],
+    }),
+    contractor: one(contractors, {
+      fields: [providerServiceGeographyApprovals.contractorId],
+      references: [contractors.id],
+    }),
+  }),
+);
+
+export const providerTechnicianRostersRelations = relations(
+  providerTechnicianRosters,
+  ({ one }) => ({
+    application: one(providerOnboardingApplications, {
+      fields: [providerTechnicianRosters.applicationId],
+      references: [providerOnboardingApplications.id],
+    }),
+  }),
+);
+
+
 
 
