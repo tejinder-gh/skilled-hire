@@ -2392,4 +2392,238 @@ export const propertyOwnershipTransfersRelations = relations(
   }),
 );
 
+// 20. Configurable Workmanship Warranties, Job Snapshots & Claims (#48, #49)
+export const warrantyPolicies = pgTable("warranty_policies", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  policyCode: text("policy_code").notNull().unique(),
+  version: text("version").notNull().default("1.0.0"),
+  verticalId: uuid("vertical_id").references(() => verticals.id, {
+    onDelete: "set null",
+  }),
+  categoryId: uuid("category_id").references(() => serviceCategories.id, {
+    onDelete: "set null",
+  }),
+  jurisdiction: text("jurisdiction").notNull().default("ON"),
+  durationMonths: integer("duration_months").notNull().default(12),
+  responseSlaHours: integer("response_sla_hours").notNull().default(48),
+  emergencySlaHours: integer("emergency_sla_hours").notNull().default(24),
+  coveredDefects: jsonb("covered_defects").notNull().default([]),
+  exclusions: jsonb("exclusions").notNull().default([]),
+  statutoryTerms: text("statutory_terms").notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const jobWarrantySnapshots = pgTable("job_warranty_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  certificateNumber: text("certificate_number").notNull().unique(),
+  jobId: uuid("job_id")
+    .notNull()
+    .unique()
+    .references((): AnyPgColumn => jobs.id, { onDelete: "cascade" }),
+  policyId: uuid("policy_id").references(() => warrantyPolicies.id, {
+    onDelete: "set null",
+  }),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  warrantyType: text("warranty_type").notNull().default("STANDARD_WORKMANSHIP"),
+  startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  durationMonths: integer("duration_months").notNull(),
+  coveredDefects: jsonb("covered_defects").notNull().default([]),
+  exclusions: jsonb("exclusions").notNull().default([]),
+  responseSlaHours: integer("response_sla_hours").notNull().default(48),
+  contractorAcknowledged: boolean("contractor_acknowledged")
+    .notNull()
+    .default(true),
+  contractorAcknowledgedAt: timestamp("contractor_acknowledged_at", {
+    withTimezone: true,
+  })
+    .notNull()
+    .defaultNow(),
+  homeownerCertificateUrl: text("homeowner_certificate_url"),
+  termsDigest: text("terms_digest").notNull(),
+  status: text("status").notNull().default("ACTIVE"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const warrantyClaims = pgTable("warranty_claims", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  claimNumber: text("claim_number").notNull().unique(),
+  warrantyId: uuid("warranty_id")
+    .notNull()
+    .references(() => jobWarrantySnapshots.id, { onDelete: "restrict" }),
+  jobId: uuid("job_id")
+    .notNull()
+    .references((): AnyPgColumn => jobs.id, { onDelete: "restrict" }),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id, { onDelete: "restrict" }),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  evidencePhotos: jsonb("evidence_photos").notNull().default([]),
+  urgency: text("urgency").notNull().default("STANDARD"),
+  status: text("status").notNull().default("FILED"),
+  triageNotes: text("triage_notes"),
+  slaDeadline: timestamp("sla_deadline", { withTimezone: true }).notNull(),
+  originalContractorAccepted: boolean("original_contractor_accepted"),
+  contractorResponseNotes: text("contractor_response_notes"),
+  contractorRespondedAt: timestamp("contractor_responded_at", {
+    withTimezone: true,
+  }),
+  callbackJobId: uuid("callback_job_id").references((): AnyPgColumn => jobs.id, {
+    onDelete: "set null",
+  }),
+  remediationCompletedAt: timestamp("remediation_completed_at", {
+    withTimezone: true,
+  }),
+  remediationNotes: text("remediation_notes"),
+  disputeReason: text("dispute_reason"),
+  disputedAt: timestamp("disputed_at", { withTimezone: true }),
+  fallbackContractorId: uuid("fallback_contractor_id").references(
+    () => contractors.id,
+    { onDelete: "set null" },
+  ),
+  recoveryAmountCents: bigint("recovery_amount_cents", { mode: "number" })
+    .notNull()
+    .default(0),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const warrantyRecoveryLedger = pgTable("warranty_recovery_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  claimId: uuid("claim_id")
+    .notNull()
+    .references(() => warrantyClaims.id, { onDelete: "cascade" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+  status: text("status").notNull().default("PENDING"),
+  reason: text("reason").notNull(),
+  recoveredAt: timestamp("recovered_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const warrantyPoliciesRelations = relations(
+  warrantyPolicies,
+  ({ one }) => ({
+    vertical: one(verticals, {
+      fields: [warrantyPolicies.verticalId],
+      references: [verticals.id],
+    }),
+    category: one(serviceCategories, {
+      fields: [warrantyPolicies.categoryId],
+      references: [serviceCategories.id],
+    }),
+  }),
+);
+
+export const jobWarrantySnapshotsRelations = relations(
+  jobWarrantySnapshots,
+  ({ one, many }) => ({
+    job: one(jobs, {
+      fields: [jobWarrantySnapshots.jobId],
+      references: [jobs.id],
+    }),
+    policy: one(warrantyPolicies, {
+      fields: [jobWarrantySnapshots.policyId],
+      references: [warrantyPolicies.id],
+    }),
+    property: one(properties, {
+      fields: [jobWarrantySnapshots.propertyId],
+      references: [properties.id],
+    }),
+    contractor: one(contractors, {
+      fields: [jobWarrantySnapshots.contractorId],
+      references: [contractors.id],
+    }),
+    customer: one(users, {
+      fields: [jobWarrantySnapshots.customerId],
+      references: [users.id],
+    }),
+    claims: many(warrantyClaims),
+  }),
+);
+
+export const warrantyClaimsRelations = relations(
+  warrantyClaims,
+  ({ one, many }) => ({
+    warranty: one(jobWarrantySnapshots, {
+      fields: [warrantyClaims.warrantyId],
+      references: [jobWarrantySnapshots.id],
+    }),
+    job: one(jobs, {
+      fields: [warrantyClaims.jobId],
+      references: [jobs.id],
+    }),
+    property: one(properties, {
+      fields: [warrantyClaims.propertyId],
+      references: [properties.id],
+    }),
+    customer: one(users, {
+      fields: [warrantyClaims.customerId],
+      references: [users.id],
+    }),
+    contractor: one(contractors, {
+      fields: [warrantyClaims.contractorId],
+      references: [contractors.id],
+    }),
+    callbackJob: one(jobs, {
+      fields: [warrantyClaims.callbackJobId],
+      references: [jobs.id],
+    }),
+    fallbackContractor: one(contractors, {
+      fields: [warrantyClaims.fallbackContractorId],
+      references: [contractors.id],
+    }),
+    recoveryEntries: many(warrantyRecoveryLedger),
+  }),
+);
+
+export const warrantyRecoveryLedgerRelations = relations(
+  warrantyRecoveryLedger,
+  ({ one }) => ({
+    claim: one(warrantyClaims, {
+      fields: [warrantyRecoveryLedger.claimId],
+      references: [warrantyClaims.id],
+    }),
+    contractor: one(contractors, {
+      fields: [warrantyRecoveryLedger.contractorId],
+      references: [contractors.id],
+    }),
+  }),
+);
+
+
 

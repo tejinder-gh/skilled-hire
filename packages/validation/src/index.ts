@@ -795,6 +795,78 @@ export const acceptPropertyTransferSchema = z.object({
   verificationToken: z.string().min(10).max(100),
 });
 
+// 21. Workmanship Warranty & Claims (Issues #48, #49)
+export const createWarrantyPolicySchema = z.object({
+  policyCode: z.string().min(2).max(50),
+  version: z.string().min(1).max(20).default("1.0.0"),
+  verticalId: uuid.optional(),
+  categoryId: uuid.optional(),
+  jurisdiction: z.string().min(2).max(10).default("ON"),
+  durationMonths: z.number().int().min(1).max(120).default(12),
+  responseSlaHours: z.number().int().min(1).max(168).default(48),
+  emergencySlaHours: z.number().int().min(1).max(72).default(24),
+  coveredDefects: z.array(z.string().min(1).max(200)).default([]),
+  exclusions: z.array(z.string().min(1).max(200)).default([]),
+  statutoryTerms: z.string().min(1).max(5000),
+  active: z.boolean().default(true),
+});
+
+export const createWarrantySnapshotSchema = z.object({
+  jobId: uuid,
+  policyId: uuid.optional(),
+  warrantyType: z
+    .enum(["STANDARD_WORKMANSHIP", "PREMIUM_EXTENDED", "STATUTORY_MANDATORY"])
+    .default("STANDARD_WORKMANSHIP"),
+  durationMonths: z.number().int().min(1).max(120).optional(),
+  startsAt: z.string().optional(),
+  coveredDefects: z.array(z.string()).optional(),
+  exclusions: z.array(z.string()).optional(),
+  contractorAcknowledged: z.boolean().default(true),
+});
+
+export const fileWarrantyClaimSchema = z.object({
+  title: z.string().min(3).max(200),
+  description: z.string().min(10).max(3000),
+  evidencePhotos: z.array(z.string().url()).default([]),
+  urgency: z
+    .enum([
+      "STANDARD",
+      "URGENT_NO_HEAT",
+      "URGENT_WATER_LEAK",
+      "EMERGENCY_SAFETY_HAZARD",
+    ])
+    .default("STANDARD"),
+});
+
+export const respondWarrantyClaimSchema = z.object({
+  accepted: z.boolean(),
+  contractorResponseNotes: z.string().max(2000).optional(),
+  scheduledCallbackAt: z.string().optional(),
+});
+
+export const disputeWarrantyClaimSchema = z.object({
+  reason: z.string().min(5).max(2000),
+});
+
+export const remediateWarrantyClaimSchema = z.object({
+  notes: z.string().min(5).max(2000),
+  remediationCompletedAt: z.string().optional(),
+});
+
+export const recordWarrantyRecoverySchema = z.object({
+  contractorId: uuid,
+  amountCents: z.number().int().min(1),
+  reason: z.string().min(3).max(500),
+  status: z
+    .enum([
+      "PENDING",
+      "RECOVERED_FROM_PAYOUT",
+      "MANUAL_INVOICE_SENT",
+      "WRITTEN_OFF",
+    ])
+    .default("PENDING"),
+});
+
 
 
 

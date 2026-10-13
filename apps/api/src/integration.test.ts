@@ -40,6 +40,10 @@ import {
   protectionClaims,
   protectionFinancialLedger,
   jobDocumentationPackages,
+  warrantyPolicies,
+  jobWarrantySnapshots,
+  warrantyClaims,
+  warrantyRecoveryLedger,
   serviceRequests,
   eq,
   ne,
@@ -6013,6 +6017,313 @@ describeSuite("Skilled Hire lifecycle", () => {
         .set({ customerId: originalCustomer.id })
         .where(eq(properties.id, propRow.id));
     }
+  });
+
+  it("17. Workmanship warranty snapshots, claims lifecycle, triage, contractor right-to-cure, dispute escalation, and recovery ledger (#48, #49)", async () => {
+    // 1. Fetch completed job and verify participants
+    const [completedJob] = await db
+      .select({
+        id: jobs.id,
+        contractorId: jobs.contractorId,
+        serviceRequestId: jobs.serviceRequestId,
+      })
+      .from(jobs)
+      .where(eq(jobs.status, "COMPLETED"))
+      .limit(1);
+    expect(completedJob).toBeDefined();
+
+    const [jobReq] = await db
+      .select({
+        customerId: serviceRequests.customerId,
+        propertyId: serviceRequests.propertyId,
+      })
+      .from(serviceRequests)
+      .where(eq(serviceRequests.id, completedJob!.serviceRequestId))
+      .limit(1);
+    expect(jobReq).toBeDefined();
+
+    // Clean up any existing warranty data for this job to ensure idempotency across test runs
+    const [existingSnapshot] = await db
+      .select({ id: jobWarrantySnapshots.id })
+      .from(jobWarrantySnapshots)
+      .where(eq(jobWarrantySnapshots.jobId, completedJob!.id))
+      .limit(1);
+
+    if (existingSnapshot) {
+      await db
+        .delete(jobWarrantySnapshots)
+        .where(eq(jobWarrantySnapshots.id, existingSnapshot.id));
+    }
+
+    // 2. Admin creates a standard Ontario warranty policy (POST /v1/warranties/policies)
+    const policyCode = `POL-ON-${Date.now()}`;
+    const createPolicyRes = await app.inject({
+      method: "POST",
+      url: "/v1/warranties/policies",
+      headers: auth("admin@example.test"),
+      payload: {
+        policyCode,
+        version: "1.0.0",
+        jurisdiction: "ON",
+        durationMonths: 12,
+        responseSlaHours: 48,
+        emergencySlaHours: 24,
+        coveredDefects: [
+          "Defective workmanship on equipment joints",
+          "Improper fastening or pipe sealing failure",
+          "Electrical circuit and wiring termination errors",
+        ],
+        exclusions: [
+          "Normal wear and tear",
+          "Tampering or unauthorized third-party modifications",
+          "Extreme weather and flooding",
+        ],
+        statutoryTerms:
+          "Ontario Consumer Protection Act 2002 statutory warranty terms",
+        active: true,
+      },
+    });
+    expect(createPolicyRes.statusCode).toBe(201);
+    const createdPolicy = createPolicyRes.json<{
+      id: string;
+      policyCode: string;
+    }>();
+    expect(createdPolicy.policyCode).toBe(policyCode);
+
+    // List policies (GET /v1/warranties/policies)
+    const listPoliciesRes = await app.inject({
+      method: "GET",
+      url: "/v1/warranties/policies",
+      headers: auth("admin@example.test"),
+    });
+    expect(listPoliciesRes.statusCode).toBe(200);
+    expect(
+      listPoliciesRes
+        .json<any[]>()
+        .some((p) => p.policyCode === policyCode),
+    ).toBe(true);
+
+    // 3. Snapshot warranty on completed job (POST /v1/jobs/:id/warranty/snapshot)
+    const snapshotRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${completedJob!.id}/warranty/snapshot`,
+      headers: auth("owner@example.test"),
+      payload: {
+        policyId: createdPolicy.id,
+        durationMonths: 12,
+        warrantyType: "STANDARD_WORKMANSHIP",
+        contractorAcknowledged: true,
+      },
+    });
+    expect(snapshotRes.statusCode).toBe(201);
+    const snapshot = snapshotRes.json<{
+      id: string;
+      certificateNumber: string;
+      termsDigest: string;
+      durationMonths: number;
+      startsAt: string;
+      expiresAt: string;
+      status: string;
+    }>();
+
+    expect(snapshot.certificateNumber).toMatch(/^WAR-\d{4}-[0-9A-F]{8}$/);
+    expect(snapshot.termsDigest).toHaveLength(64);
+    expect(snapshot.durationMonths).toBe(12);
+    expect(snapshot.status).toBe("ACTIVE");
+
+    // Calling snapshot again returns 200 with existing snapshot (idempotency)
+    const reSnapshotRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${completedJob!.id}/warranty/snapshot`,
+      headers: auth("owner@example.test"),
+      payload: {},
+    });
+    expect(reSnapshotRes.statusCode).toBe(200);
+    expect(reSnapshotRes.json<{ id: string }>().id).toBe(snapshot.id);
+
+    // Homeowner and contractor can fetch warranty (GET /v1/jobs/:id/warranty)
+    const getWarrantyCustRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${completedJob!.id}/warranty`,
+      headers: auth("customer@example.test"),
+    });
+    expect(getWarrantyCustRes.statusCode).toBe(200);
+    expect(getWarrantyCustRes.json<{ id: string }>().id).toBe(snapshot.id);
+
+    // Cross-tenant customer isolation test
+    const crossCustRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${completedJob!.id}/warranty`,
+      headers: auth("homebuyer@example.test"),
+    });
+    expect(crossCustRes.statusCode).toBe(403);
+
+    // 4. Homeowner files standard warranty claim with evidence photos (POST /v1/warranties/:id/claims)
+    const standardClaimRes = await app.inject({
+      method: "POST",
+      url: `/v1/warranties/${snapshot.id}/claims`,
+      headers: auth("customer@example.test"),
+      payload: {
+        title: "Improper fastening on pipe joint",
+        description:
+          "Small drip observed at newly installed pipe fitting. Requesting workmanship callback.",
+        evidencePhotos: ["https://cdn.example.test/evidence/photo1.jpg"],
+        urgency: "STANDARD",
+      },
+    });
+    expect(standardClaimRes.statusCode).toBe(201);
+    const standardClaim = standardClaimRes.json<{
+      id: string;
+      claimNumber: string;
+      status: string;
+      urgency: string;
+      slaDeadline: string;
+    }>();
+
+    expect(standardClaim.claimNumber).toMatch(/^CLM-\d{4}-[0-9A-F]{8}$/);
+    expect(standardClaim.status).toBe("TRIAGED_COVERED");
+    expect(standardClaim.urgency).toBe("STANDARD");
+
+    // 5. Homeowner files emergency claim (no heat / frozen pipes) -> triaged to emergency 24h SLA
+    const emergencyClaimRes = await app.inject({
+      method: "POST",
+      url: `/v1/warranties/${snapshot.id}/claims`,
+      headers: auth("customer@example.test"),
+      payload: {
+        title: "No heat in home after HVAC installation",
+        description:
+          "Outdoor temperature is below freezing and unit stopped. Freezing conditions inside.",
+        evidencePhotos: [
+          "https://cdn.example.test/evidence/emergency_thermostat.jpg",
+        ],
+        urgency: "STANDARD", // Engine auto-detects emergency text
+      },
+    });
+    expect(emergencyClaimRes.statusCode).toBe(201);
+    const emergencyClaim = emergencyClaimRes.json<{
+      id: string;
+      urgency: string;
+      status: string;
+    }>();
+    expect(emergencyClaim.urgency).toBe("URGENT_NO_HEAT");
+    expect(emergencyClaim.status).toBe("TRIAGED_COVERED");
+
+    // 6. Homeowner files excluded condition claim -> triaged to TRIAGED_EXCLUDED
+    const excludedClaimRes = await app.inject({
+      method: "POST",
+      url: `/v1/warranties/${snapshot.id}/claims`,
+      headers: auth("customer@example.test"),
+      payload: {
+        title: "Damaged component after unauthorized third-party modifications",
+        description:
+          "Third party attempted tampering or unauthorized third-party modifications on the valve.",
+        evidencePhotos: ["https://cdn.example.test/evidence/tamper.jpg"],
+        urgency: "STANDARD",
+      },
+    });
+    expect(excludedClaimRes.statusCode).toBe(201);
+    expect(excludedClaimRes.json<{ status: string }>().status).toBe(
+      "TRIAGED_EXCLUDED",
+    );
+
+    // 7. Contractor Right-to-Cure: original contractor responds and schedules callback (POST /v1/warranty-claims/:id/respond)
+    const respondRes = await app.inject({
+      method: "POST",
+      url: `/v1/warranty-claims/${standardClaim.id}/respond`,
+      headers: auth("owner@example.test"),
+      payload: {
+        accepted: true,
+        contractorResponseNotes:
+          "Assigned technician dispatched for warranty inspection and cure.",
+        scheduledCallbackAt: "2026-10-16T10:00:00.000Z",
+      },
+    });
+    expect(respondRes.statusCode).toBe(200);
+    const respondedJson = respondRes.json<{
+      originalContractorAccepted: boolean;
+      status: string;
+    }>();
+    expect(respondedJson.originalContractorAccepted).toBe(true);
+    expect(respondedJson.status).toBe("REMEDIATION_SCHEDULED");
+
+    // 8. Contractor completes callback remediation (POST /v1/warranty-claims/:id/remediate)
+    const remediateRes = await app.inject({
+      method: "POST",
+      url: `/v1/warranty-claims/${standardClaim.id}/remediate`,
+      headers: auth("owner@example.test"),
+      payload: {
+        notes:
+          "Re-fastened pipe collar and verified joint seal integrity under pressure.",
+        remediationCompletedAt: "2026-10-16T12:00:00.000Z",
+      },
+    });
+    expect(remediateRes.statusCode).toBe(200);
+    expect(remediateRes.json<{ status: string }>().status).toBe("REMEDIATED");
+
+    // 9. Contractor refuses/disputes liability on emergency claim -> Escalated dispute (POST /v1/warranty-claims/:id/dispute)
+    const disputeRes = await app.inject({
+      method: "POST",
+      url: `/v1/warranty-claims/${emergencyClaim.id}/dispute`,
+      headers: auth("owner@example.test"),
+      payload: {
+        reason:
+          "Contractor asserts issue is thermostat battery failure not covered by workmanship warranty.",
+      },
+    });
+    expect(disputeRes.statusCode).toBe(200);
+    const disputedJson = disputeRes.json<{
+      status: string;
+      originalContractorAccepted: boolean;
+      disputeReason: string;
+    }>();
+    expect(disputedJson.status).toBe("ESCALATED_DISPUTE");
+    expect(disputedJson.originalContractorAccepted).toBe(false);
+    expect(disputedJson.disputeReason).toContain("thermostat battery failure");
+
+    // 10. Operations records remediation recovery ledger entry against contractor (POST /v1/warranty-claims/:id/recover)
+    const recoverRes = await app.inject({
+      method: "POST",
+      url: `/v1/warranty-claims/${emergencyClaim.id}/recover`,
+      headers: auth("admin@example.test"),
+      payload: {
+        contractorId: completedJob!.contractorId,
+        amountCents: 45000,
+        reason:
+          "Recovery assessment for emergency fallback technician dispatch following original contractor dispute.",
+        status: "PENDING",
+      },
+    });
+    expect(recoverRes.statusCode).toBe(201);
+    const ledgerEntry = recoverRes.json<{
+      id: string;
+      amountCents: number;
+      contractorId: string;
+      status: string;
+    }>();
+    expect(ledgerEntry.amountCents).toBe(45000);
+    expect(ledgerEntry.status).toBe("PENDING");
+
+    // Query recovery ledger for claim (GET /v1/warranty-claims/:id/recovery)
+    const getRecoveryRes = await app.inject({
+      method: "GET",
+      url: `/v1/warranty-claims/${emergencyClaim.id}/recovery`,
+      headers: auth("admin@example.test"),
+    });
+    expect(getRecoveryRes.statusCode).toBe(200);
+    const recoveryList = getRecoveryRes.json<any[]>();
+    expect(recoveryList.length).toBeGreaterThanOrEqual(1);
+    expect(recoveryList.some((e) => e.amountCents === 45000)).toBe(true);
+
+    // Verify claim recoveryAmountCents was updated
+    const getClaimRes = await app.inject({
+      method: "GET",
+      url: `/v1/warranty-claims/${emergencyClaim.id}`,
+      headers: auth("admin@example.test"),
+    });
+    expect(getClaimRes.statusCode).toBe(200);
+    expect(
+      getClaimRes.json<{ recoveryAmountCents: number }>().recoveryAmountCents,
+    ).toBe(45000);
   });
 });
 
