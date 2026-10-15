@@ -4361,6 +4361,156 @@ export const bookingDraftsRelations = relations(bookingDrafts, ({ one }) => ({
   }),
 }));
 
+// 30. Job Messaging & Masked Communications (#15, SH-14)
+export const jobConversations = pgTable(
+  "job_conversations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    status: varchar("status", { length: 32 }).notNull().default("ACTIVE"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("uq_job_conversations_job_id").on(table.jobId),
+    index("idx_job_conversations_job").on(table.jobId),
+  ],
+);
+
+export const jobConversationsRelations = relations(
+  jobConversations,
+  ({ one, many }) => ({
+    job: one(jobs, {
+      fields: [jobConversations.jobId],
+      references: [jobs.id],
+    }),
+    messages: many(jobMessages),
+    maskedSession: one(maskedCommunicationSessions),
+  }),
+);
+
+export const jobMessages = pgTable(
+  "job_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => jobConversations.id, { onDelete: "cascade" }),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    senderUserId: uuid("sender_user_id")
+      .notNull()
+      .references(() => users.id),
+    senderRole: varchar("sender_role", { length: 32 }).notNull(),
+    content: text("content").notNull(),
+    attachmentKeys: jsonb("attachment_keys").notNull().default([]),
+    status: varchar("status", { length: 32 }).notNull().default("SENT"),
+    moderationStatus: varchar("moderation_status", { length: 32 })
+      .notNull()
+      .default("CLEAN"),
+    moderationReason: text("moderation_reason"),
+    idempotencyKey: varchar("idempotency_key", { length: 128 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    readBy: uuid("read_by").references(() => users.id),
+  },
+  (table) => [
+    index("idx_job_messages_job_created").on(table.jobId, table.createdAt),
+    index("idx_job_messages_conversation").on(
+      table.conversationId,
+      table.createdAt,
+    ),
+    index("idx_job_messages_sender").on(table.senderUserId),
+  ],
+);
+
+export const jobMessagesRelations = relations(jobMessages, ({ one }) => ({
+  conversation: one(jobConversations, {
+    fields: [jobMessages.conversationId],
+    references: [jobConversations.id],
+  }),
+  job: one(jobs, {
+    fields: [jobMessages.jobId],
+    references: [jobs.id],
+  }),
+  senderUser: one(users, {
+    fields: [jobMessages.senderUserId],
+    references: [users.id],
+  }),
+  readByUser: one(users, {
+    fields: [jobMessages.readBy],
+    references: [users.id],
+  }),
+}));
+
+export const maskedCommunicationSessions = pgTable(
+  "masked_communication_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    virtualProxyNumber: varchar("virtual_proxy_number", { length: 32 })
+      .notNull()
+      .default("+16475550199"),
+    sessionExtension: varchar("session_extension", { length: 16 }).notNull(),
+    sessionPin: varchar("session_pin", { length: 16 }).notNull(),
+    customerUserId: uuid("customer_user_id")
+      .notNull()
+      .references(() => users.id),
+    technicianUserId: uuid("technician_user_id")
+      .notNull()
+      .references(() => users.id),
+    isActive: boolean("is_active").notNull().default(true),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    callCount: integer("call_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("uq_masked_communication_sessions_job_id").on(table.jobId),
+    index("idx_masked_comm_job_active").on(table.jobId, table.isActive),
+    index("idx_masked_comm_pin").on(
+      table.virtualProxyNumber,
+      table.sessionExtension,
+      table.sessionPin,
+    ),
+  ],
+);
+
+export const maskedCommunicationSessionsRelations = relations(
+  maskedCommunicationSessions,
+  ({ one }) => ({
+    job: one(jobs, {
+      fields: [maskedCommunicationSessions.jobId],
+      references: [jobs.id],
+    }),
+    customerUser: one(users, {
+      fields: [maskedCommunicationSessions.customerUserId],
+      references: [users.id],
+    }),
+    technicianUser: one(users, {
+      fields: [maskedCommunicationSessions.technicianUserId],
+      references: [users.id],
+    }),
+  }),
+);
+
 
 
 

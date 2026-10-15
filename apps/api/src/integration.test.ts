@@ -85,6 +85,9 @@ import {
   customerServiceCredits,
   contractorDispatchPenalties,
   bookingDrafts,
+  jobConversations,
+  jobMessages,
+  maskedCommunicationSessions,
   eq,
   ne,
   and,
@@ -10408,6 +10411,284 @@ describeSuite("Skilled Hire lifecycle", () => {
       .where(eq(paymentMilestones.id, acceptCoData.milestoneId));
     expect(coMilestone?.triggerName).toBe("CHANGE_ORDER_ACCEPTED");
     expect(Number(coMilestone?.amountCents)).toBe(9240); // 6000 + 2000 + 200 + 1040 = 9240
+  });
+
+  it("enforces job-scoped customer-technician messaging, delivery/read receipts, anti-circumvention content moderation, and masked contact sessions (SH-14 / #15)", async () => {
+    // 1. Setup seed context for HVAC job
+    const [context] = await db
+      .select({
+        vertical_id: verticals.id,
+        category_id: serviceCategories.id,
+        issue_type_id: issueTypes.id,
+        property_id: properties.id,
+      })
+      .from(verticals)
+      .innerJoin(
+        serviceCategories,
+        eq(serviceCategories.verticalId, verticals.id),
+      )
+      .innerJoin(issueTypes, eq(issueTypes.categoryId, serviceCategories.id))
+      .innerJoin(properties, eq(properties.customerId, custUser.id))
+      .where(
+        and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")),
+      )
+      .limit(1);
+    if (!context) throw new Error("Missing seed configuration");
+    const ctx = context;
+
+    const [compliantTech] = await db
+      .select({ id: technicians.id })
+      .from(technicians)
+      .where(
+        and(
+          eq(technicians.active, true),
+          eq(technicians.displayName, "John S."),
+        ),
+      )
+      .limit(1);
+    if (!compliantTech) throw new Error("Missing compliant technician");
+    const tech = compliantTech;
+
+    // Create service request and advance to assignment
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/service-requests",
+      headers: auth("customer@example.test"),
+      payload: {
+        propertyId: ctx.property_id,
+        verticalId: ctx.vertical_id,
+        categoryId: ctx.category_id,
+        issueTypeId: ctx.issue_type_id,
+        urgency: "STANDARD",
+        description: "Condenser fan motor making loud screeching noise and blowing warm air.",
+        attachmentKeys: [],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const reqId = created.json<{ id: string }>().id;
+
+    for (const to of [
+      "QUALIFICATION_PENDING",
+      "QUALIFIED",
+      "SCHEDULING",
+      "SCHEDULED",
+      "CONTRACTOR_SEARCH",
+    ] as const) {
+      const trans = await app.inject({
+        method: "POST",
+        url: `/v1/service-requests/${reqId}/transition`,
+        headers: auth("dispatch@example.test"),
+        payload: { to },
+      });
+      expect(trans.statusCode).toBe(200);
+    }
+
+    const assigned = await app.inject({
+      method: "POST",
+      url: `/v1/dispatch/${reqId}/assign`,
+      headers: auth("dispatch@example.test"),
+      payload: { technicianId: tech.id },
+    });
+    expect(assigned.statusCode).toBe(201);
+    const testJobId = assigned.json<{ jobId: string }>().jobId;
+
+    // 2. Customer sends a standard arrival instruction message
+    const customerMsgRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${testJobId}/messages`,
+      headers: auth("customer@example.test"),
+      payload: {
+        content: "Hi John, the side gate code is #4819. Please text when you arrive as the front doorbell is quiet.",
+        attachmentKeys: ["evidence/side-gate-path.jpg"],
+        idempotencyKey: "idem-msg-cust-001",
+      },
+    });
+    expect(customerMsgRes.statusCode).toBe(201);
+    const custMsg = customerMsgRes.json<{
+      id: string;
+      status: string;
+      moderationStatus: string;
+      moderationReason: string | null;
+      attachmentKeys: string[];
+      deliveredAt: string | null;
+    }>();
+    expect(custMsg.status).toBe("DELIVERED");
+    expect(custMsg.moderationStatus).toBe("APPROVED");
+    expect(custMsg.moderationReason).toBeNull();
+    expect(custMsg.attachmentKeys).toEqual(["evidence/side-gate-path.jpg"]);
+    expect(custMsg.deliveredAt).toBeTruthy();
+
+    // 3. Idempotency test: Re-submitting same idempotency key returns identical message without duplication
+    const duplicateMsgRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${testJobId}/messages`,
+      headers: auth("customer@example.test"),
+      payload: {
+        content: "Hi John, the side gate code is #4819. Please text when you arrive as the front doorbell is quiet.",
+        attachmentKeys: ["evidence/side-gate-path.jpg"],
+        idempotencyKey: "idem-msg-cust-001",
+      },
+    });
+    expect(duplicateMsgRes.statusCode).toBe(200);
+    expect(duplicateMsgRes.json<{ id: string }>().id).toBe(custMsg.id);
+
+    // 4. Technician retrieves conversation and message history
+    const techConvRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${testJobId}/conversation`,
+      headers: auth("technician@example.test"),
+    });
+    expect(techConvRes.statusCode).toBe(200);
+    const convData = techConvRes.json<{
+      id: string;
+      jobId: string;
+      customer: { maskedPhone: string; displayName: string };
+      technician: { maskedPhone: string; displayName: string };
+      maskedSession: {
+        virtualProxyNumber: string;
+        sessionExtension: string;
+        sessionPin: string;
+        emergencyDirectPhone: string;
+      };
+      unreadCount: number;
+      messages: Array<{ id: string; content: string; status: string }>;
+    }>();
+    expect(convData.jobId).toBe(testJobId);
+    expect(convData.unreadCount).toBe(1);
+    expect(convData.customer.maskedPhone).toContain("***");
+    expect(convData.technician.maskedPhone).toContain("***");
+    expect(convData.maskedSession.virtualProxyNumber).toBe("+16475550199");
+    expect(convData.maskedSession.sessionExtension).toMatch(/^\d{4}$/);
+    expect(convData.maskedSession.sessionPin).toMatch(/^\d{4}$/);
+    expect(convData.maskedSession.emergencyDirectPhone).toBe("+1-800-555-SAFE");
+    expect(convData.messages.some((m) => m.id === custMsg.id)).toBe(true);
+
+    // 5. Anti-circumvention content moderation: Flag off-platform payment & direct email solicitation
+    const circumventionMsgRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${testJobId}/messages`,
+      headers: auth("technician@example.test"),
+      payload: {
+        content: "Could you send a $150 deposit directly via Interac e-transfer to my private account tech@directtrade.test or pay in cash?",
+      },
+    });
+    expect(circumventionMsgRes.statusCode).toBe(201);
+    const circumventionMsg = circumventionMsgRes.json<{
+      id: string;
+      status: string;
+      moderationStatus: string;
+      moderationReason: string;
+    }>();
+    expect(circumventionMsg.status).toBe("DELIVERED");
+    expect(circumventionMsg.moderationStatus).toBe("FLAGGED");
+    expect(circumventionMsg.moderationReason).toContain("OFF_PLATFORM_ETRANSFER_DETECTED");
+    expect(circumventionMsg.moderationReason).toContain("DIRECT_EMAIL_SHARED");
+
+    // 6. Technician acknowledges and marks customer messages as read
+    const markReadRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${testJobId}/messages/read`,
+      headers: auth("technician@example.test"),
+      payload: {},
+    });
+    expect(markReadRes.statusCode).toBe(200);
+    expect(markReadRes.json<{ success: boolean; updatedCount: number }>().updatedCount).toBeGreaterThanOrEqual(1);
+
+    // Verify unread count decreases to 0 for technician
+    const postReadConvRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${testJobId}/conversation`,
+      headers: auth("technician@example.test"),
+    });
+    expect(postReadConvRes.json<{ unreadCount: number }>().unreadCount).toBe(0);
+
+    // 7. Masked communication bridge endpoint verification
+    const bridgeRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${testJobId}/masked-bridge`,
+      headers: auth("customer@example.test"),
+    });
+    expect(bridgeRes.statusCode).toBe(200);
+    const bridgeData = bridgeRes.json<{
+      virtualProxyNumber: string;
+      sessionExtension: string;
+      sessionPin: string;
+      emergencyDirectPhone: string;
+      callRecordingConsentNotice: string;
+    }>();
+    expect(bridgeData.virtualProxyNumber).toBe("+16475550199");
+    expect(bridgeData.sessionExtension).toMatch(/^\d{4}$/);
+    expect(bridgeData.sessionPin).toMatch(/^\d{4}$/);
+    expect(bridgeData.emergencyDirectPhone).toBe("+1-800-555-SAFE");
+    expect(bridgeData.callRecordingConsentNotice).toContain("recorded");
+
+    // 8. Cross-tenant isolation: Unrelated user is rejected (403 FORBIDDEN)
+    const [unauthDbUser] = await db
+      .insert(users)
+      .values({
+        email: "unauth-messenger@example.test",
+        passwordHash: await hashPassword("DemoPassword!2026"),
+        displayName: "Unauthorized Counterparty",
+      })
+      .onConflictDoNothing()
+      .returning({ id: users.id });
+    const unauthUserId =
+      unauthDbUser?.id ??
+      (
+        await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.email, "unauth-messenger@example.test"))
+      )[0]!.id;
+    await db
+      .insert(userRoles)
+      .values({ userId: unauthUserId, role: "CUSTOMER" })
+      .onConflictDoNothing();
+    await login("unauth-messenger@example.test");
+
+    const forbiddenSendRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${testJobId}/messages`,
+      headers: auth("unauth-messenger@example.test"),
+      payload: {
+        content: "Trying to snoop into this conversation.",
+      },
+    });
+    expect(forbiddenSendRes.statusCode).toBe(403);
+    expect(forbiddenSendRes.json<{ code: string }>().code).toBe("FORBIDDEN");
+
+    const forbiddenConvRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${testJobId}/conversation`,
+      headers: auth("unauth-messenger@example.test"),
+    });
+    expect(forbiddenConvRes.statusCode).toBe(403);
+
+    const forbiddenBridgeRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${testJobId}/masked-bridge`,
+      headers: auth("unauth-messenger@example.test"),
+    });
+    expect(forbiddenBridgeRes.statusCode).toBe(403);
+
+    // 9. Closed / Cancelled job policy: Fail-closed messaging rejection (409 JOB_MESSAGING_CLOSED)
+    await db
+      .update(jobs)
+      .set({ status: "CLOSED" })
+      .where(eq(jobs.id, testJobId));
+
+    const closedJobSendRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${testJobId}/messages`,
+      headers: auth("customer@example.test"),
+      payload: {
+        content: "Can you come back and do extra work?",
+      },
+    });
+    expect(closedJobSendRes.statusCode).toBe(409);
+    expect(closedJobSendRes.json<{ code: string }>().code).toBe(
+      "JOB_MESSAGING_CLOSED",
+    );
   });
 });
 

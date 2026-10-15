@@ -28,6 +28,7 @@ import { recommendationsRoutes } from "./recommendations.routes.js";
 import { filesRoutes } from "./files.routes.js";
 import { notificationsRoutes } from "./notifications.routes.js";
 import { dispatchExceptionsRoutes } from "./dispatch-exceptions.routes.js";
+import { messagesRoutes } from "./messages.routes.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(authRoutes);
@@ -55,6 +56,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   await app.register(requestRoutes);
   await app.register(jobsRoutes);
+  await app.register(messagesRoutes);
   await app.register(dispatchRoutes);
   await app.register(quotesRoutes);
   await app.register(changeOrdersRoutes);

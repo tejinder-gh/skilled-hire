@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@marketplace/contracts": "workspace:*",
+    "@marketplace/core": "workspace:*",
     "@marketplace/ui": "workspace:*",
     "@marketplace/vertical-engine": "workspace:*",
     "next": "^15.4.0",

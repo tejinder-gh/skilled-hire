@@ -101,4 +101,5 @@ export function rankCandidates(candidates: readonly CandidateInput[], requiredCr
   }).sort((a, b) => b.score - a.score);
 }
 
+export * from "./messaging.js";
 export * from "./files.js";

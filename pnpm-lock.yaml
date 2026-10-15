@@ -152,6 +152,9 @@ importers:
       '@marketplace/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@marketplace/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@marketplace/ui':
         specifier: workspace:*
         version: link:../../packages/ui

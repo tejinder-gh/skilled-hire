@@ -1498,6 +1498,29 @@ export const saveBookingDraftSchema = z.object({
   draftPayload: z.record(z.string(), z.unknown()),
 });
 
+// 30. Job Messaging & Masked Communications (#15, SH-14)
+export const sendMessageSchema = z.object({
+  content: z
+    .string()
+    .trim()
+    .min(1, "Message content cannot be empty")
+    .max(4000, "Message content exceeds 4000 characters limit"),
+  attachmentKeys: z
+    .array(z.string().min(1))
+    .max(5, "Maximum 5 attachments allowed per message")
+    .default([]),
+  idempotencyKey: z.string().min(8).max(128).optional(),
+});
+
+export const markMessagesReadSchema = z.object({
+  messageIds: z.array(uuid).optional(),
+  markAllUpTo: z.string().datetime().optional(),
+});
+
+export const createMaskedSessionSchema = z.object({
+  expiresAt: z.string().datetime().optional(),
+});
+
 
 
 

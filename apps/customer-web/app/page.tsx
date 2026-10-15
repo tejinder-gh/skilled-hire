@@ -26,7 +26,12 @@ import type {
   ServiceRecommendationDTO,
   SlotAvailabilityResponse,
 } from "@marketplace/contracts";
-import { ONTARIO_LABOUR_ONLY_DISCLAIMER } from "@marketplace/contracts";
+import {
+  ONTARIO_LABOUR_ONLY_DISCLAIMER,
+  EMERGENCY_SAFETY_DESK_PHONE,
+  MASKED_COMMUNICATIONS_CONSENT,
+} from "@marketplace/contracts";
+import { screenMessageContent, maskPhoneNumber } from "@marketplace/core/messaging";
 import {
   Badge,
   Button,
@@ -148,6 +153,7 @@ export default function CustomerHome() {
     | "book"
     | "tracking"
     | "quotes"
+    | "messages"
     | "completion"
     | "warranty"
     | "survey"
@@ -155,6 +161,82 @@ export default function CustomerHome() {
     | "payments"
     | "preferences"
   >("book");
+
+  // --- CUSTOMER-TECHNICIAN MESSAGING & MASKED COMMUNICATIONS (SH-14 / #15) ---
+  const [messages, setMessages] = useState<
+    Array<{
+      id: string;
+      senderRole: "CUSTOMER" | "TECHNICIAN" | "OPERATIONS_AGENT";
+      senderDisplayName: string;
+      content: string;
+      attachmentKeys: string[];
+      status: "SENT" | "DELIVERED" | "READ";
+      moderationStatus: "APPROVED" | "FLAGGED" | "CLEAN" | "BLOCKED";
+      moderationReason: string | null;
+      createdAt: string;
+      deliveredAt: string | null;
+      readAt: string | null;
+    }>
+  >([
+    {
+      id: "msg-demo-1",
+      senderRole: "CUSTOMER",
+      senderDisplayName: "Sarah Jenkins",
+      content:
+        "Hello Marcus, I unlocked the side gate. The key code for the basement door is #4819. Please let me know once you arrive.",
+      attachmentKeys: ["evidence/side-gate-path.jpg"],
+      status: "READ",
+      moderationStatus: "APPROVED",
+      moderationReason: null,
+      createdAt: "10:14 AM",
+      deliveredAt: "10:14 AM",
+      readAt: "10:15 AM",
+    },
+    {
+      id: "msg-demo-2",
+      senderRole: "TECHNICIAN",
+      senderDisplayName: "Marcus Vance",
+      content:
+        "Thanks Sarah! I am 12 minutes away in my service van with the diagnostic manifold and replacement run capacitor. Will ring the bell before entering.",
+      attachmentKeys: [],
+      status: "READ",
+      moderationStatus: "APPROVED",
+      moderationReason: null,
+      createdAt: "10:16 AM",
+      deliveredAt: "10:16 AM",
+      readAt: "10:17 AM",
+    },
+  ]);
+  const [messageInput, setMessageInput] = useState("");
+  const [messageAttachments, setMessageAttachments] = useState<string[]>([]);
+  const [isMaskedBridgeModalOpen, setIsMaskedBridgeModalOpen] = useState(false);
+  const [jobMessagingClosed, setJobMessagingClosed] = useState(false);
+  const [moderationAlert, setModerationAlert] = useState<{
+    status: "FLAGGED" | "APPROVED";
+    reasons: string[];
+  } | null>(null);
+
+  const maskedSessionData = useMemo(
+    () => ({
+      virtualProxyNumber: "+1 (647) 555-0199",
+      sessionExtension: "1042",
+      sessionPin: "4819",
+      technicianMaskedPhone: maskPhoneNumber("+16475550192"),
+      customerMaskedPhone: maskPhoneNumber("+14165550198"),
+      emergencyDirectPhone: EMERGENCY_SAFETY_DESK_PHONE,
+      consentNotice: MASKED_COMMUNICATIONS_CONSENT,
+      expiresIn: "48 hours remaining (Active Job Window)",
+    }),
+    [],
+  );
+
+  const unreadMessagesCount = useMemo(
+    () =>
+      messages.filter(
+        (m) => m.senderRole !== "CUSTOMER" && m.status !== "READ",
+      ).length,
+    [messages],
+  );
 
   // --- QUOTE REVIEW, CALL-OUT FEE & LABOUR-ONLY MATERIALS (SH-12 / #13) ---
   const [activeQuote, setActiveQuote] = useState({
@@ -1855,6 +1937,15 @@ export default function CustomerHome() {
                     : "Approved",
             },
             {
+              value: "messages",
+              label: "Messages & Relay",
+              icon: "💬",
+              badge:
+                unreadMessagesCount > 0
+                  ? `${unreadMessagesCount} New`
+                  : "Bridge Ready",
+            },
+            {
               value: "completion",
               label: "Completion & Sign-off",
               icon: "📝",
@@ -2911,15 +3002,18 @@ export default function CustomerHome() {
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setActiveTab("messages")}
+                >
+                  💬 Message Marcus {unreadMessagesCount > 0 ? `(${unreadMessagesCount})` : ""}
+                </Button>
+                <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() =>
-                    alert(
-                      "Connecting secure encrypted phone bridge to technician Marcus...",
-                    )
-                  }
+                  onClick={() => setIsMaskedBridgeModalOpen(true)}
                 >
-                  📞 Call Technician
+                  📞 Encrypted Proxy Call
                 </Button>
                 <Button
                   variant="secondary"
@@ -5663,6 +5757,515 @@ export default function CustomerHome() {
         </div>
       )}
 
+      {/* -------------------------------------------------------------
+          TAB 10: CUSTOMER-TECHNICIAN MESSAGING & MASKED COMMUNICATIONS (SH-14 / #15)
+         ------------------------------------------------------------- */}
+      {activeTab === "messages" && (
+        <div style={{ display: "grid", gap: 20 }}>
+          {/* Top Banner & Quick Controls */}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 16,
+              background: "#ffffff",
+              padding: "16px 20px",
+              borderRadius: 16,
+              border: "1px solid #e2e8f0",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            }}
+          >
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <h2 style={{ fontSize: 22, margin: 0, fontWeight: 800, color: "#0f172a" }}>
+                  Job #REQ-2026-9921 Messaging
+                </h2>
+                <Badge tone={jobMessagingClosed ? "amber" : "green"}>
+                  {jobMessagingClosed ? "Communication Window Closed" : "Live Secure Channel"}
+                </Badge>
+                <Badge tone="blue">Ontario Privacy Protected</Badge>
+              </div>
+              <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                Directly connect with Lead HVAC Technician <strong>Marcus Vance</strong>. Personal phone numbers remain masked.
+              </p>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setIsMaskedBridgeModalOpen(true)}
+              >
+                📞 Virtual Proxy Bridge & PIN
+              </Button>
+              <a
+                href="tel:+18005557233"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 12px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "#dc2626",
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  textDecoration: "none",
+                }}
+              >
+                🚨 Emergency Safety Desk: +1-800-555-SAFE
+              </a>
+              <Button
+                variant="quiet"
+                size="sm"
+                onClick={() => setJobMessagingClosed((prev) => !prev)}
+              >
+                {jobMessagingClosed ? "Reopen Window" : "Test Closed Gate"}
+              </Button>
+            </div>
+          </div>
+
+          {/* Privacy & Anti-Circumvention Policy Callout */}
+          {moderationAlert ? (
+            <Callout
+              tone="warning"
+              title="Marketplace Safety & Anti-Circumvention Alert"
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>
+                  Our real-time safety screen flagged off-platform transaction keywords ({moderationAlert.reasons.join(", ")}). Direct cash deals or e-transfers void your 365-day Skilled Hire workmanship guarantee and statutory Ontario consumer protections.
+                </span>
+                <Button size="sm" variant="quiet" onClick={() => setModerationAlert(null)}>
+                  Dismiss
+                </Button>
+              </div>
+            </Callout>
+          ) : (
+            <div
+              style={{
+                background: "linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)",
+                borderRadius: 12,
+                padding: "12px 18px",
+                border: "1px solid #bfdbfe",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                fontSize: 13,
+                color: "#1e3a8a",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 18 }}>🛡️</span>
+                <span>
+                  <strong>Shielded Communications Active:</strong> All messages and relay calls are encrypted, monitored for fraud and circumvention, and archived for dispute resolution.
+                </span>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#0369a1" }}>
+                Your Relay ID: {maskedSessionData.sessionExtension}
+              </span>
+            </div>
+          )}
+
+          {/* Chat Stream & Composer Card */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                paddingBottom: 12,
+                borderBottom: "1px solid #e2e8f0",
+                marginBottom: 16,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: "50%",
+                    background: "#2563eb",
+                    color: "#ffffff",
+                    display: "grid",
+                    placeItems: "center",
+                    fontWeight: 800,
+                    fontSize: 16,
+                  }}
+                >
+                  MV
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                    Marcus Vance · Lead HVAC Technician (313A)
+                  </h3>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
+                    <span style={{ fontSize: 12, color: "#059669", fontWeight: 700 }}>● Online & En Route</span>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>· Phone: {maskedSessionData.technicianMaskedPhone}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setMessages((prev) =>
+                      prev.map((m) =>
+                        m.senderRole !== "CUSTOMER" && !m.readAt
+                          ? { ...m, status: "READ", readAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }
+                          : m,
+                      ),
+                    );
+                  }}
+                >
+                  ✓✓ Mark All Read
+                </Button>
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  onClick={() => {
+                    const techReplies = [
+                      "Just pulled up onto King Street, parking the van now.",
+                      "I've got the factory OEM Lennox capacitor in hand. Heading to the side gate.",
+                      "Diagnostic manifold is hooked up. Secondary pressure readings look stable.",
+                    ];
+                    const chosen = techReplies[Math.floor(Math.random() * techReplies.length)]!;
+                    const newTechMsg = {
+                      id: `msg-sim-${Date.now()}`,
+                      senderRole: "TECHNICIAN" as const,
+                      senderDisplayName: "Marcus Vance",
+                      content: chosen,
+                      attachmentKeys: [],
+                      status: "DELIVERED" as const,
+                      moderationStatus: "APPROVED" as const,
+                      moderationReason: null,
+                      createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                      deliveredAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                      readAt: null,
+                    };
+                    setMessages((prev) => [...prev, newTechMsg]);
+                  }}
+                >
+                  ⚡ Simulate Tech Reply
+                </Button>
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  onClick={() => {
+                    const flagMsg = {
+                      id: `msg-flag-${Date.now()}`,
+                      senderRole: "TECHNICIAN" as const,
+                      senderDisplayName: "Marcus Vance",
+                      content: "Can you send $150 deposit directly via Interac e-transfer to private@tech.test or cash to skip taxes?",
+                      attachmentKeys: [],
+                      status: "DELIVERED" as const,
+                      moderationStatus: "FLAGGED" as const,
+                      moderationReason: "OFF_PLATFORM_ETRANSFER_DETECTED, DIRECT_EMAIL_SHARED",
+                      createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                      deliveredAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                      readAt: null,
+                    };
+                    setMessages((prev) => [...prev, flagMsg]);
+                    setModerationAlert({
+                      status: "FLAGGED",
+                      reasons: ["OFF_PLATFORM_ETRANSFER_DETECTED", "DIRECT_EMAIL_SHARED"],
+                    });
+                  }}
+                >
+                  ⚠️ Simulate Circumvention Flag
+                </Button>
+              </div>
+            </div>
+
+            {/* Scrollable Message History Stream */}
+            <div
+              style={{
+                minHeight: 320,
+                maxHeight: 460,
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: 16,
+                padding: "8px 4px 16px",
+              }}
+            >
+              {messages.map((m) => {
+                const isCustomer = m.senderRole === "CUSTOMER";
+                return (
+                  <div
+                    key={m.id}
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: isCustomer ? "flex-end" : "flex-start",
+                      maxWidth: "100%",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        marginBottom: 4,
+                        fontSize: 12,
+                        color: "#64748b",
+                      }}
+                    >
+                      <strong style={{ color: isCustomer ? "#2563eb" : "#0f172a" }}>
+                        {m.senderDisplayName}
+                      </strong>
+                      <span>·</span>
+                      <span>{m.createdAt}</span>
+                      {m.moderationStatus === "FLAGGED" && (
+                        <Badge tone="danger">⚠️ Flagged by Safety</Badge>
+                      )}
+                    </div>
+
+                    <div
+                      style={{
+                        maxWidth: "75%",
+                        padding: "12px 16px",
+                        borderRadius: isCustomer ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                        background: isCustomer
+                          ? "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)"
+                          : "#f1f5f9",
+                        color: isCustomer ? "#ffffff" : "#0f172a",
+                        boxShadow: isCustomer
+                          ? "0 2px 4px rgba(37,99,235,0.2)"
+                          : "0 1px 2px rgba(0,0,0,0.05)",
+                        fontSize: 14,
+                        lineHeight: 1.5,
+                        wordBreak: "break-word",
+                        border: m.moderationStatus === "FLAGGED" ? "2px solid #ef4444" : "none",
+                      }}
+                    >
+                      {m.content}
+
+                      {/* Attachments */}
+                      {m.attachmentKeys && m.attachmentKeys.length > 0 && (
+                        <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          {m.attachmentKeys.map((key, i) => (
+                            <div
+                              key={i}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "4px 8px",
+                                borderRadius: 6,
+                                background: isCustomer ? "rgba(255,255,255,0.2)" : "#e2e8f0",
+                                fontSize: 11,
+                                fontWeight: 600,
+                              }}
+                            >
+                              📷 Attachment #{i + 1} ({key.split("/").pop()})
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Delivery & Read Receipts */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        marginTop: 4,
+                        fontSize: 11,
+                        color: "#94a3b8",
+                      }}
+                    >
+                      {isCustomer ? (
+                        m.readAt ? (
+                          <span style={{ color: "#2563eb", fontWeight: 700 }}>
+                            ✓✓ Read {m.readAt}
+                          </span>
+                        ) : m.deliveredAt ? (
+                          <span>✓✓ Delivered</span>
+                        ) : (
+                          <span>✓ Sent</span>
+                        )
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Quick Prompt Suggestion Chips */}
+            {!jobMessagingClosed && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  overflowX: "auto",
+                  padding: "10px 0",
+                  borderTop: "1px solid #f1f5f9",
+                }}
+              >
+                {[
+                  "Side gate code is #4819",
+                  "Please ring front bell upon arrival",
+                  "Dog is secured in the garage",
+                  "Can I see the old damaged part before disposal?",
+                ].map((chip) => (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => setMessageInput(chip)}
+                    style={{
+                      whiteSpace: "nowrap",
+                      padding: "6px 12px",
+                      borderRadius: 16,
+                      background: "#f8fafc",
+                      border: "1px solid #cbd5e1",
+                      fontSize: 12,
+                      color: "#334155",
+                      cursor: "pointer",
+                    }}
+                  >
+                    💬 {chip}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Composer Box */}
+            {jobMessagingClosed ? (
+              <div
+                style={{
+                  background: "#fffbeb",
+                  borderRadius: 12,
+                  padding: 16,
+                  border: "1px solid #fde68a",
+                  textAlign: "center",
+                  color: "#92400e",
+                  fontSize: 13,
+                }}
+              >
+                🔒 <strong>Messaging is closed</strong> for this job because the appointment was completed or cancelled. For follow-up warranty claims, please consult the Warranty & Passport tab or contact customer support.
+              </div>
+            ) : (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!messageInput.trim()) return;
+                  const screening = screenMessageContent(messageInput);
+                  if (screening.status === "FLAGGED") {
+                    setModerationAlert({
+                      status: "FLAGGED",
+                      reasons: screening.reasons,
+                    });
+                  }
+                  const newMsg = {
+                    id: `msg-${Date.now()}`,
+                    senderRole: "CUSTOMER" as const,
+                    senderDisplayName: "Sarah Jenkins",
+                    content: messageInput.trim(),
+                    attachmentKeys: messageAttachments,
+                    status: "DELIVERED" as const,
+                    moderationStatus: screening.status,
+                    moderationReason: screening.reasons.length > 0 ? screening.reasons.join(", ") : null,
+                    createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                    deliveredAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                    readAt: null,
+                  };
+                  setMessages((prev) => [...prev, newMsg]);
+                  setMessageInput("");
+                  setMessageAttachments([]);
+                }}
+                style={{ display: "grid", gap: 10, marginTop: 8 }}
+              >
+                <div style={{ position: "relative" }}>
+                  <textarea
+                    rows={3}
+                    value={messageInput}
+                    onChange={(e) => setMessageInput(e.target.value)}
+                    placeholder="Type an arrival note or question for Marcus Vance (e.g. parking instructions, pet notes, gate code)..."
+                    maxLength={4000}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      borderRadius: 12,
+                      border: "1.5px solid #cbd5e1",
+                      padding: "12px 14px",
+                      fontSize: 14,
+                      lineHeight: 1.5,
+                      fontFamily: "inherit",
+                      outline: "none",
+                      resize: "vertical",
+                    }}
+                  />
+                  <div
+                    style={{
+                      position: "absolute",
+                      bottom: 8,
+                      right: 12,
+                      fontSize: 11,
+                      color: messageInput.length > 3800 ? "#ef4444" : "#94a3b8",
+                    }}
+                  >
+                    {messageInput.length} / 4000
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        const sampleKeys = [
+                          "uploads/messaging/thermostat-screen.jpg",
+                          "uploads/messaging/side-gate-entrance.jpg",
+                          "uploads/messaging/furnace-label.jpg",
+                        ];
+                        const randomKey = sampleKeys[messageAttachments.length % sampleKeys.length]!;
+                        if (messageAttachments.length < 5) {
+                          setMessageAttachments((prev) => [...prev, randomKey]);
+                        } else {
+                          alert("Maximum 5 attachments allowed per message");
+                        }
+                      }}
+                    >
+                      📎 Attach Photo Evidence ({messageAttachments.length}/5)
+                    </Button>
+
+                    {messageAttachments.length > 0 && (
+                      <span style={{ fontSize: 12, color: "#2563eb", fontWeight: 600 }}>
+                        {messageAttachments.length} file(s) attached
+                      </span>
+                    )}
+                  </div>
+
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={!messageInput.trim()}
+                  >
+                    Send Message ✉️
+                  </Button>
+                </div>
+              </form>
+            )}
+          </Card>
+        </div>
+      )}
+
       {/* Checkout / Milestone Pay Modal */}
       <Modal
         isOpen={isCheckoutModalOpen && selectedMilestoneForPay !== null}
@@ -7396,6 +7999,152 @@ export default function CustomerHome() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Masked Contact Bridge & Virtual Relay Modal (SH-14 / #15) */}
+      <Modal
+        isOpen={isMaskedBridgeModalOpen}
+        onClose={() => setIsMaskedBridgeModalOpen(false)}
+        title="Encrypted Virtual Contact Bridge & Direct PIN"
+      >
+        <div style={{ display: "grid", gap: 18 }}>
+          <div
+            style={{
+              background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+              borderRadius: 14,
+              padding: 20,
+              color: "#ffffff",
+              display: "grid",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#93c5fd", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Skilled Hire Virtual Proxy Relay
+              </span>
+              <Badge tone="green">Active Session</Badge>
+            </div>
+
+            <div>
+              <span style={{ fontSize: 13, color: "#cbd5e1" }}>Virtual Proxy Number:</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
+                <span style={{ fontSize: 26, fontWeight: 900, letterSpacing: "0.02em", color: "#60a5fa" }}>
+                  {maskedSessionData.virtualProxyNumber}
+                </span>
+                <a
+                  href={`tel:${maskedSessionData.virtualProxyNumber.replace(/\D/g, "")}`}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: 8,
+                    background: "#2563eb",
+                    color: "#ffffff",
+                    fontWeight: 700,
+                    fontSize: 13,
+                    textDecoration: "none",
+                  }}
+                >
+                  Dial Now 📞
+                </a>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+                background: "rgba(255,255,255,0.06)",
+                padding: "12px 14px",
+                borderRadius: 10,
+              }}
+            >
+              <div>
+                <span style={{ fontSize: 11, color: "#94a3b8" }}>Session Extension:</span>
+                <p style={{ margin: "2px 0 0", fontSize: 20, fontWeight: 800, fontFamily: "monospace", color: "#f8fafc" }}>
+                  {maskedSessionData.sessionExtension}
+                </p>
+              </div>
+              <div>
+                <span style={{ fontSize: 11, color: "#94a3b8" }}>Security PIN:</span>
+                <p style={{ margin: "2px 0 0", fontSize: 20, fontWeight: 800, fontFamily: "monospace", color: "#f8fafc" }}>
+                  {maskedSessionData.sessionPin}
+                </p>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 12, color: "#94a3b8", display: "grid", gap: 4 }}>
+              <div>👤 Your Caller ID Mask: <strong>{maskedSessionData.customerMaskedPhone}</strong></div>
+              <div>🔧 Tech Caller ID Mask: <strong>{maskedSessionData.technicianMaskedPhone}</strong></div>
+              <div>⏳ Window Expiration: <strong>{maskedSessionData.expiresIn}</strong></div>
+            </div>
+          </div>
+
+          {/* Dialing Instructions */}
+          <div
+            style={{
+              background: "#f8fafc",
+              borderRadius: 10,
+              padding: "14px 16px",
+              border: "1px solid #e2e8f0",
+              fontSize: 13,
+              color: "#334155",
+              lineHeight: 1.5,
+            }}
+          >
+            <strong>How It Works:</strong>
+            <ol style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+              <li>Dial {maskedSessionData.virtualProxyNumber} from your registered phone.</li>
+              <li>When prompted by the automated switchboard, enter extension <strong>{maskedSessionData.sessionExtension}</strong>.</li>
+              <li>Enter your 4-digit security PIN <strong>{maskedSessionData.sessionPin}</strong> to connect securely to Marcus Vance.</li>
+            </ol>
+          </div>
+
+          {/* Emergency Safety Hazard Bypass Notice */}
+          <div
+            style={{
+              background: "#fef2f2",
+              borderRadius: 10,
+              padding: "14px 16px",
+              border: "1px solid #fecaca",
+              display: "grid",
+              gap: 6,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 20 }}>🚨</span>
+              <strong style={{ fontSize: 14, color: "#b91c1c" }}>
+                Emergency Safety Hazard Override
+              </strong>
+            </div>
+            <p style={{ margin: 0, fontSize: 12, color: "#7f1d1d", lineHeight: 1.4 }}>
+              If you smell gas (natural gas/propane odour), observe active electrical sparking/arcing, or experience structural water flooding, <strong>do not wait for callback or proxy connection</strong>. Bypass the virtual relay and call our 24/7 Emergency Safety Desk directly:
+            </p>
+            <a
+              href={`tel:${EMERGENCY_SAFETY_DESK_PHONE.replace(/\D/g, "")}`}
+              style={{
+                color: "#b91c1c",
+                fontWeight: 800,
+                fontSize: 15,
+                textDecoration: "underline",
+                marginTop: 2,
+              }}
+            >
+              📞 Direct Emergency Hotline: {EMERGENCY_SAFETY_DESK_PHONE}
+            </a>
+          </div>
+
+          {/* Statutory Consent Notice */}
+          <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.4 }}>
+            {maskedSessionData.consentNotice}
+          </p>
+
+          <Button
+            variant="secondary"
+            onClick={() => setIsMaskedBridgeModalOpen(false)}
+          >
+            Close Bridge Details
+          </Button>
+        </div>
       </Modal>
     </Shell>
   );

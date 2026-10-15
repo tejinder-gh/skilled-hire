@@ -1178,3 +1178,4 @@ export * from "./notifications.js";
 export * from "./dispatch-exceptions.js";
 export * from "./customer-accounts.js";
 export * from "./quote-review.js";
+export * from "./messaging.js";
