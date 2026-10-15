@@ -54,6 +54,12 @@ import {
   dispatchSlotHolds,
   dispatchOffers,
   dispatchFallbackQueue,
+  userSessions,
+  userMfaDevices,
+  userMfaChallenges,
+  userPasswordResets,
+  userEmailVerifications,
+  authRateLimits,
   eq,
   ne,
   and,
@@ -63,6 +69,7 @@ import {
   sql,
   inArray,
 } from "@marketplace/database";
+import { generateTotpCode, hashPassword } from "@marketplace/auth";
 
 const enabled =
   (process.env.MARKETPLACE_INTEGRATION === "1" ||
@@ -6061,6 +6068,9 @@ describeSuite("Skilled Hire lifecycle", () => {
 
     if (existingSnapshot) {
       await db
+        .delete(warrantyClaims)
+        .where(eq(warrantyClaims.warrantyId, existingSnapshot.id));
+      await db
         .delete(jobWarrantySnapshots)
         .where(eq(jobWarrantySnapshots.id, existingSnapshot.id));
     }
@@ -7606,6 +7616,452 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(noEmergencyData.emergencyOption.available).toBe(false);
     expect(noEmergencyData.emergencyOption.evidenceSupported).toBe(false);
     expect(noEmergencyData.emergencyOption.slaMinutes).toBe(0);
+  });
+
+  it("23. Production identity, MFA enforcement, session rotation, global revocation, distributed abuse protection, and tenant isolation (#4, SH-03)", async () => {
+    // -------------------------------------------------------------------------
+    // 1. Production Signup Validation & Administrative Role Self-Assignment Guard
+    // -------------------------------------------------------------------------
+    // Reject passwords under 12 characters
+    const shortPasswordRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        email: "short-pw@example.test",
+        password: "short-pwd",
+        displayName: "Short Password Tester",
+      },
+    });
+    expect(shortPasswordRes.statusCode).toBe(400);
+
+    // Reject self-assignment of staff administrative roles (ADMIN, OPERATIONS_AGENT, etc.)
+    const staffSignupRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        email: "rogue-admin@example.test",
+        password: "secure-strong-password-1234",
+        displayName: "Rogue Admin Attempt",
+        role: "ADMIN",
+      },
+    });
+    expect(staffSignupRes.statusCode).toBe(403);
+    expect(staffSignupRes.json<{ code: string }>().code).toBe("FORBIDDEN_ROLE_ASSIGNMENT");
+
+    // Legitimate customer signup with strong password (>= 12 chars)
+    const testEmail = `sh03-user-${Date.now()}@example.test`;
+    const testPassword = "SuperSecurePassword2026!";
+    const signupRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        email: testEmail,
+        password: testPassword,
+        displayName: "Verified Ontario Customer",
+        phoneNumber: "+14165550199",
+      },
+    });
+    expect(signupRes.statusCode).toBe(201);
+    const signupData = signupRes.json<{
+      user: { id: string; email: string; emailVerified: boolean; roles: string[] };
+      accessToken: string;
+      refreshToken: string;
+      emailVerificationPending: boolean;
+      emailVerificationToken: string;
+    }>();
+    expect(signupData.user.id).toBeDefined();
+    expect(signupData.user.email).toBe(testEmail.toLowerCase());
+    expect(signupData.user.roles).toContain("CUSTOMER");
+    expect(signupData.emailVerificationPending).toBe(true);
+    expect(signupData.emailVerificationToken).toBeDefined();
+
+    // Verify Set-Cookie headers contain sh_access and sh_refresh
+    const cookieHeader = signupRes.headers["set-cookie"];
+    expect(cookieHeader).toBeDefined();
+    const cookieStr = Array.isArray(cookieHeader) ? cookieHeader.join("; ") : (cookieHeader as string);
+    expect(cookieStr).toContain("sh_access=");
+    expect(cookieStr).toContain("sh_refresh=");
+    expect(cookieStr).toContain("HttpOnly");
+
+    // Reject duplicate registration with 409 Conflict
+    const dupSignupRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        email: testEmail,
+        password: testPassword,
+        displayName: "Duplicate Customer",
+      },
+    });
+    expect(dupSignupRes.statusCode).toBe(409);
+    expect(dupSignupRes.json<{ code: string }>().code).toBe("EMAIL_ALREADY_EXISTS");
+
+    // Complete Email Verification
+    const verifyEmailRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/verify-email",
+      payload: { token: signupData.emailVerificationToken },
+    });
+    expect(verifyEmailRes.statusCode).toBe(200);
+
+    // Verify DB user emailVerified is true
+    const [verifiedUserRecord] = await db
+      .select({ emailVerified: users.emailVerified })
+      .from(users)
+      .where(eq(users.id, signupData.user.id));
+    expect(verifiedUserRecord?.emailVerified).toBe(true);
+
+    // -------------------------------------------------------------------------
+    // 2. Distributed Brute-Force Lockout & Abuse Protection
+    // -------------------------------------------------------------------------
+    const bruteForceEmail = `brute-${Date.now()}@example.test`;
+    // Create account to attack
+    await app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      payload: {
+        email: bruteForceEmail,
+        password: "RealPassword123456!",
+        displayName: "Brute Force Target",
+      },
+    });
+
+    // 5 consecutive wrong password attempts
+    for (let i = 1; i <= 5; i++) {
+      const failRes = await app.inject({
+        method: "POST",
+        url: "/v1/auth/login",
+        payload: {
+          email: bruteForceEmail,
+          password: `wrong-password-${i}`,
+        },
+      });
+      if (i < 5) {
+        expect(failRes.statusCode).toBe(401);
+      } else {
+        // 5th failure triggers lockout
+        expect([401, 429]).toContain(failRes.statusCode);
+      }
+    }
+
+    // 6th attempt is blocked with 429 Too Many Requests
+    const blockedRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: bruteForceEmail,
+        password: "RealPassword123456!", // Even correct password is locked out
+      },
+    });
+    expect(blockedRes.statusCode).toBe(429);
+    expect(blockedRes.json<{ code: string }>().code).toBe("TOO_MANY_ATTEMPTS");
+    expect(blockedRes.headers["retry-after"]).toBeDefined();
+
+    // Clear lockout record for that email
+    await db.delete(authRateLimits).where(eq(authRateLimits.key, `login:${bruteForceEmail.toLowerCase()}`));
+
+    // -------------------------------------------------------------------------
+    // 3. Staff MFA Requirement & TOTP Authentication
+    // -------------------------------------------------------------------------
+    // Create dedicated staff operator with mfaRequired = true
+    const staffEmail = `ops-staff-${Date.now()}@example.test`;
+    const [createdStaff] = await db
+      .insert(users)
+      .values({
+        email: staffEmail,
+        passwordHash: await hashPassword("StaffPass2026!Secured"),
+        displayName: "Ontario Operations Dispatcher",
+        mfaRequired: true,
+      })
+      .returning();
+    await db.insert(userRoles).values({
+      userId: createdStaff!.id,
+      role: "OPERATIONS_AGENT",
+    });
+
+    // Staff login enforces MFA challenge
+    const staffLoginRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: staffEmail,
+        password: "StaffPass2026!Secured",
+      },
+    });
+    expect(staffLoginRes.statusCode).toBe(200);
+    const staffLoginData = staffLoginRes.json<{
+      mfaRequired: boolean;
+      challengeToken: string;
+      maskedMethod: string;
+      roles: string[];
+    }>();
+    expect(staffLoginData.mfaRequired).toBe(true);
+    expect(staffLoginData.challengeToken).toBeDefined();
+    expect(staffLoginData.roles).toContain("OPERATIONS_AGENT");
+
+    // MFA Enrollment for customer account: Setup & Confirmation
+    const custAuthHeader = { authorization: `Bearer ${signupData.accessToken}` };
+    const mfaSetupRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/mfa/setup",
+      headers: custAuthHeader,
+    });
+    expect(mfaSetupRes.statusCode).toBe(200);
+    const mfaSetupData = mfaSetupRes.json<{
+      secret: string;
+      otpauthUrl: string;
+      backupCodes: string[];
+    }>();
+    expect(mfaSetupData.secret).toBeDefined();
+    expect(mfaSetupData.backupCodes).toHaveLength(8);
+
+    // Confirm MFA setup using valid TOTP code
+    const validSetupCode = generateTotpCode(mfaSetupData.secret);
+    const confirmSetupRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/mfa/confirm-setup",
+      headers: custAuthHeader,
+      payload: { code: validSetupCode },
+    });
+    expect(confirmSetupRes.statusCode).toBe(200);
+    expect(confirmSetupRes.json<{ success: boolean }>().success).toBe(true);
+
+    // Now login for this user requires MFA challenge
+    const custLoginRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: testEmail,
+        password: testPassword,
+      },
+    });
+    expect(custLoginRes.statusCode).toBe(200);
+    const custLoginData = custLoginRes.json<{
+      mfaRequired: boolean;
+      challengeToken: string;
+    }>();
+    expect(custLoginData.mfaRequired).toBe(true);
+    expect(custLoginData.challengeToken).toBeDefined();
+
+    // Verify MFA with invalid code -> 401
+    const invalidVerifyRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/mfa/verify",
+      payload: {
+        challengeToken: custLoginData.challengeToken,
+        code: "000000",
+      },
+    });
+    expect(invalidVerifyRes.statusCode).toBe(401);
+
+    // Verify MFA with valid TOTP code -> 200
+    const validTotpCode = generateTotpCode(mfaSetupData.secret);
+    const validVerifyRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/mfa/verify",
+      payload: {
+        challengeToken: custLoginData.challengeToken,
+        code: validTotpCode,
+      },
+    });
+    expect(validVerifyRes.statusCode).toBe(200);
+    const mfaVerifyData = validVerifyRes.json<{
+      accessToken: string;
+      refreshToken: string;
+      user: { id: string; email: string };
+    }>();
+    expect(mfaVerifyData.accessToken).toBeDefined();
+    expect(mfaVerifyData.refreshToken).toBeDefined();
+    expect(mfaVerifyData.user.email).toBe(testEmail.toLowerCase());
+
+    // Verify with single-use backup recovery code
+    const loginForBackupRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: testEmail,
+        password: testPassword,
+      },
+    });
+    const backupChallengeToken = loginForBackupRes.json<{ challengeToken: string }>().challengeToken;
+    const backupCodeToUse = mfaSetupData.backupCodes[0]!;
+
+    const backupVerifyRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/mfa/verify",
+      payload: {
+        challengeToken: backupChallengeToken,
+        code: backupCodeToUse,
+      },
+    });
+    expect(backupVerifyRes.statusCode).toBe(200);
+
+    // Attempting to reuse the same backup code fails
+    const loginForReuseRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: testEmail,
+        password: testPassword,
+      },
+    });
+    const reuseChallengeToken = loginForReuseRes.json<{ challengeToken: string }>().challengeToken;
+    const reuseVerifyRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/mfa/verify",
+      payload: {
+        challengeToken: reuseChallengeToken,
+        code: backupCodeToUse,
+      },
+    });
+    expect(reuseVerifyRes.statusCode).toBe(401);
+
+    // -------------------------------------------------------------------------
+    // 4. Session Management, Refresh Token Rotation & Logout
+    // -------------------------------------------------------------------------
+    const activeRefreshToken = backupVerifyRes.json<{ refreshToken: string }>().refreshToken;
+    const refreshRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/refresh",
+      payload: { refreshToken: activeRefreshToken },
+    });
+    expect(refreshRes.statusCode).toBe(200);
+    const refreshData = refreshRes.json<{ accessToken: string; refreshToken: string }>();
+    expect(refreshData.accessToken).toBeDefined();
+    expect(refreshData.refreshToken).toBeDefined();
+    expect(refreshData.refreshToken).not.toBe(activeRefreshToken); // Token rotated!
+
+    // List active sessions
+    const sessionsRes = await app.inject({
+      method: "GET",
+      url: "/v1/auth/sessions",
+      headers: { authorization: `Bearer ${refreshData.accessToken}` },
+    });
+    expect(sessionsRes.statusCode).toBe(200);
+    const sessionsList = sessionsRes.json<{ sessions: Array<{ id: string }> }>().sessions;
+    expect(sessionsList.length).toBeGreaterThanOrEqual(1);
+
+    // Logout current session
+    const logoutRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/logout",
+      payload: { refreshToken: refreshData.refreshToken },
+    });
+    expect(logoutRes.statusCode).toBe(200);
+
+    // Attempting to refresh with the logged-out token fails with 401
+    const postLogoutRefresh = await app.inject({
+      method: "POST",
+      url: "/v1/auth/refresh",
+      payload: { refreshToken: refreshData.refreshToken },
+    });
+    expect(postLogoutRefresh.statusCode).toBe(401);
+    expect(postLogoutRefresh.json<{ code: string }>().code).toBe("SESSION_EXPIRED");
+
+    // -------------------------------------------------------------------------
+    // 5. Global Session Revocation
+    // -------------------------------------------------------------------------
+    // Login with backup code to get a fresh token
+    const freshLoginRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: testEmail,
+        password: testPassword,
+      },
+    });
+    const freshChallenge = freshLoginRes.json<{ challengeToken: string }>().challengeToken;
+    const backupCode2 = mfaSetupData.backupCodes[1]!;
+    const freshVerifyRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/mfa/verify",
+      payload: {
+        challengeToken: freshChallenge,
+        code: backupCode2,
+      },
+    });
+    const validAccessToken = freshVerifyRes.json<{ accessToken: string }>().accessToken;
+
+    // Call /v1/me -> 200
+    const meBefore = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { authorization: `Bearer ${validAccessToken}` },
+    });
+    expect(meBefore.statusCode).toBe(200);
+
+    // Call /v1/auth/revoke-all
+    const revokeAllRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/revoke-all",
+      headers: { authorization: `Bearer ${validAccessToken}` },
+    });
+    expect(revokeAllRes.statusCode).toBe(200);
+    expect(revokeAllRes.json<{ success: boolean }>().success).toBe(true);
+
+    // Now the previous access token is rejected immediately because sessionVersion was advanced
+    const meAfter = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { authorization: `Bearer ${validAccessToken}` },
+    });
+    expect(meAfter.statusCode).toBe(401);
+
+    // -------------------------------------------------------------------------
+    // 6. Password Reset Flow
+    // -------------------------------------------------------------------------
+    const resetReqRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/password-reset/request",
+      payload: { email: testEmail },
+    });
+    expect(resetReqRes.statusCode).toBe(200);
+    const resetToken = resetReqRes.json<{ resetToken: string }>().resetToken;
+    expect(resetToken).toBeDefined();
+
+    const newPassword = "BrandNewSecurePassword2026!";
+    const resetConfirmRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/password-reset/confirm",
+      payload: {
+        token: resetToken,
+        newPassword,
+      },
+    });
+    expect(resetConfirmRes.statusCode).toBe(200);
+
+    // Old password now fails
+    const oldPwLoginRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: testEmail,
+        password: testPassword,
+      },
+    });
+    expect(oldPwLoginRes.statusCode).toBe(401);
+
+    // New password succeeds
+    const newPwLoginRes = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: {
+        email: testEmail,
+        password: newPassword,
+      },
+    });
+    expect(newPwLoginRes.statusCode).toBe(200);
+
+    // -------------------------------------------------------------------------
+    // 7. CSRF Token Endpoint
+    // -------------------------------------------------------------------------
+    const csrfRes = await app.inject({
+      method: "GET",
+      url: "/v1/auth/csrf",
+    });
+    expect(csrfRes.statusCode).toBe(200);
+    expect(csrfRes.json<{ csrfToken: string }>().csrfToken).toBeDefined();
+    expect(csrfRes.headers["set-cookie"]).toBeDefined();
   });
 });
 

@@ -20,5 +20,9 @@
     "tsx": "^4.20.0",
     "turbo": "^2.5.0",
     "typescript": "^5.8.0"
-  }
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
 }
