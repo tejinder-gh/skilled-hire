@@ -74,6 +74,9 @@ import {
   payoutHolds,
   contractorPayoutBalances,
   financialReconciliationReports,
+  transactionalOutbox,
+  notificationDeliveryLogs,
+  userNotificationPreferences,
   eq,
   ne,
   and,
@@ -85,6 +88,7 @@ import {
 } from "@marketplace/database";
 import { generateTotpCode, hashPassword } from "@marketplace/auth";
 import { generateTestWebhookSignature } from "@marketplace/payments";
+import { getMessagingProvider } from "./routes/notifications.routes.js";
 
 const enabled =
   (process.env.MARKETPLACE_INTEGRATION === "1" ||
@@ -9079,6 +9083,279 @@ describeSuite("Skilled Hire lifecycle", () => {
     });
     expect(listReconRes.statusCode).toBe(200);
     expect(listReconRes.json<{ reports: any[] }>().reports.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("28. Reliable notifications and transactional outbox worker (#10, SH-09)", async () => {
+    const sandboxProvider = getMessagingProvider();
+    sandboxProvider.clearSentMessages();
+    sandboxProvider.clearRules();
+
+    // 1. Fetch customer user and contractor ID
+    const [customerUser] = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.email, "customer@example.test"))
+      .limit(1);
+    expect(customerUser).toBeDefined();
+
+    const [dbContractor] = await db.select({ id: contractors.id }).from(contractors).limit(1);
+    expect(dbContractor).toBeDefined();
+
+    const uniqueIdemKey = `IDEM-TEST-NOTIF-${Date.now()}`;
+
+    // 2. Enqueue an outbox event atomically
+    const enqueueRes = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/outbox",
+      headers: auth("admin@example.test"),
+      payload: {
+        aggregateType: "JOB",
+        aggregateId: dbContractor!.id,
+        eventType: "TECHNICIAN_ASSIGNED",
+        idempotencyKey: uniqueIdemKey,
+        recipientUserId: customerUser!.id,
+        channel: "EMAIL",
+        destination: "customer@example.test",
+        templateSlug: "ontario_hvac_technician_assigned_v1",
+        templateVersion: 1,
+        payload: {
+          customerName: "Jane Doe",
+          serviceRequestId: "SR-99882",
+          technicianName: "John S.",
+          contractorName: "Apex Heating & Cooling",
+          scheduledTime: "Today at 2:00 PM",
+        },
+      },
+    });
+    expect(enqueueRes.statusCode).toBe(201);
+    const enqueuedItem = enqueueRes.json<{ outboxItem: { id: string; status: string } }>().outboxItem;
+    expect(enqueuedItem.status).toBe("PENDING");
+
+    // 3. Test Deduplication: posting exact same idempotency key returns existing item without creating duplicate
+    const dedupeRes = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/outbox",
+      headers: auth("admin@example.test"),
+      payload: {
+        aggregateType: "JOB",
+        aggregateId: dbContractor!.id,
+        eventType: "TECHNICIAN_ASSIGNED",
+        idempotencyKey: uniqueIdemKey,
+        recipientUserId: customerUser!.id,
+        channel: "EMAIL",
+        destination: "customer@example.test",
+        templateSlug: "ontario_hvac_technician_assigned_v1",
+        payload: {},
+      },
+    });
+    expect(dedupeRes.statusCode).toBe(201);
+    expect(dedupeRes.json<{ outboxItem: { id: string } }>().outboxItem.id).toBe(enqueuedItem.id);
+
+    // 4. Execute worker polling sweep
+    const pollRes = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/worker/poll",
+      headers: auth("admin@example.test"),
+      payload: {
+        batchSize: 10,
+        workerId: "test-integration-worker-1",
+      },
+    });
+    expect(pollRes.statusCode).toBe(200);
+    const pollData = pollRes.json<{
+      claimedCount: number;
+      deliveredCount: number;
+      processedIds: string[];
+    }>();
+    expect(pollData.claimedCount).toBeGreaterThanOrEqual(1);
+    expect(pollData.deliveredCount).toBeGreaterThanOrEqual(1);
+    expect(pollData.processedIds).toContain(enqueuedItem.id);
+
+    // 5. Query outbox status and verify it is now DELIVERED with deliveredAt set
+    const outboxCheckRes = await app.inject({
+      method: "GET",
+      url: `/v1/notifications/outbox?status=DELIVERED&recipientUserId=${customerUser!.id}`,
+      headers: auth("admin@example.test"),
+    });
+    expect(outboxCheckRes.statusCode).toBe(200);
+    const deliveredItems = outboxCheckRes.json<{ outbox: Array<{ id: string; status: string; deliveredAt: string }> }>().outbox;
+    const foundDelivered = deliveredItems.find((i) => i.id === enqueuedItem.id);
+    expect(foundDelivered).toBeDefined();
+    expect(foundDelivered?.status).toBe("DELIVERED");
+    expect(foundDelivered?.deliveredAt).toBeDefined();
+
+    // 6. Verify delivery audit logs
+    const logsRes = await app.inject({
+      method: "GET",
+      url: `/v1/notifications/delivery-logs?outboxId=${enqueuedItem.id}`,
+      headers: auth("admin@example.test"),
+    });
+    expect(logsRes.statusCode).toBe(200);
+    const logs = logsRes.json<{ deliveryLogs: Array<{ status: string; channel: string }> }>().deliveryLogs;
+    expect(logs).toHaveLength(1);
+    expect(logs[0]?.status).toBe("SUCCESS");
+    expect(logs[0]?.channel).toBe("EMAIL");
+
+    // 7. Failure Recovery Drill: simulate transient failure on sandbox provider
+    sandboxProvider.simulateTransientErrors(1);
+    const transientIdemKey = `IDEM-TRANSIENT-${Date.now()}`;
+    const transientEnqueueRes = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/outbox",
+      headers: auth("admin@example.test"),
+      payload: {
+        aggregateType: "JOB",
+        aggregateId: dbContractor!.id,
+        eventType: "PAYMENT_CONFIRMED",
+        idempotencyKey: transientIdemKey,
+        recipientUserId: customerUser!.id,
+        channel: "EMAIL",
+        destination: "transient@example.test",
+        templateSlug: "ontario_hvac_payment_confirmed_v1",
+        payload: {
+          customerName: "Jane",
+          milestoneName: "Rough-in Diagnostic",
+          amountDollars: "150.00",
+          jobId: "job-transient",
+          stripeReference: "ch_mock_1",
+        },
+      },
+    });
+    expect(transientEnqueueRes.statusCode).toBe(201);
+    const transientItemId = transientEnqueueRes.json<{ outboxItem: { id: string } }>().outboxItem.id;
+
+    // Run poll sweep which triggers simulated failure and schedules retry
+    const pollRetryRes = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/worker/poll",
+      headers: auth("admin@example.test"),
+      payload: { workerId: "test-worker-retry" },
+    });
+    expect(pollRetryRes.statusCode).toBe(200);
+    expect(pollRetryRes.json<{ retriedCount: number }>().retriedCount).toBeGreaterThanOrEqual(1);
+
+    // Verify item transitioned to RETRYING
+    const retryItemRes = await app.inject({
+      method: "GET",
+      url: `/v1/notifications/outbox?status=RETRYING&recipientUserId=${customerUser!.id}`,
+      headers: auth("admin@example.test"),
+    });
+    const retryingList = retryItemRes.json<{ outbox: Array<{ id: string; status: string; attempts: number }> }>().outbox;
+    const foundRetrying = retryingList.find((i) => i.id === transientItemId);
+    expect(foundRetrying).toBeDefined();
+    expect(foundRetrying?.status).toBe("RETRYING");
+    expect(foundRetrying?.attempts).toBe(1);
+
+    // 8. Dead-Letter Drill & Operator Manual Retry
+    // Directly simulate an item at max attempts
+    const [dlqRow] = await db
+      .insert(transactionalOutbox)
+      .values({
+        aggregateType: "JOB",
+        aggregateId: dbContractor!.id,
+        eventType: "DISPATCH_FAILED",
+        idempotencyKey: `IDEM-DLQ-${Date.now()}`,
+        recipientUserId: customerUser!.id,
+        channel: "SMS",
+        destination: "+14165559999",
+        templateSlug: "ontario_hvac_emergency_dispatch_v1",
+        templateVersion: 1,
+        payload: {},
+        status: "PENDING",
+        attempts: 4,
+        maxAttempts: 5,
+        nextAttemptAt: new Date(),
+      })
+      .returning();
+
+    sandboxProvider.simulateDestinationFailure("+14165559999", "CARRIER_REJECTED", "Simulated fatal carrier rejection");
+
+    // Poll to trigger 5th attempt failure -> transitions to DEAD_LETTER
+    await app.inject({
+      method: "POST",
+      url: "/v1/notifications/worker/poll",
+      headers: auth("admin@example.test"),
+    });
+
+    const [dlqCheck] = await db
+      .select({ status: transactionalOutbox.status, attempts: transactionalOutbox.attempts })
+      .from(transactionalOutbox)
+      .where(eq(transactionalOutbox.id, dlqRow!.id));
+    expect(dlqCheck?.status).toBe("DEAD_LETTER");
+    expect(dlqCheck?.attempts).toBe(5);
+
+    // 9. Manual operator retry resets DEAD_LETTER to PENDING
+    const retryActionRes = await app.inject({
+      method: "POST",
+      url: `/v1/notifications/outbox/${dlqRow!.id}/retry`,
+      headers: auth("admin@example.test"),
+    });
+    expect(retryActionRes.statusCode).toBe(200);
+    expect(retryActionRes.json<{ outboxItem: { status: string } }>().outboxItem.status).toBe("PENDING");
+
+    // 10. User Notification Preferences & Suppression
+    // Opt-out customer from MARKETING_PROMOTIONS
+    const optOutRes = await app.inject({
+      method: "PUT",
+      url: "/v1/notifications/preferences",
+      headers: auth("customer@example.test"),
+      payload: {
+        channel: "EMAIL",
+        category: "MARKETING_PROMOTIONS",
+        enabled: false,
+      },
+    });
+    expect(optOutRes.statusCode).toBe(200);
+    expect(optOutRes.json<{ preference: { enabled: boolean } }>().preference.enabled).toBe(false);
+
+    // Enqueue marketing email
+    const mktEnqueueRes = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/outbox",
+      headers: auth("admin@example.test"),
+      payload: {
+        aggregateType: "MARKETING",
+        aggregateId: customerUser!.id,
+        eventType: "SEASONAL_TUNEUP_PROMO",
+        idempotencyKey: `IDEM-MKT-${Date.now()}`,
+        recipientUserId: customerUser!.id,
+        channel: "EMAIL",
+        destination: "customer@example.test",
+        templateSlug: "ontario_hvac_emergency_dispatch_v1",
+        payload: {},
+      },
+    });
+    expect(mktEnqueueRes.statusCode).toBe(201);
+    const mktItemId = mktEnqueueRes.json<{ outboxItem: { id: string } }>().outboxItem.id;
+
+    // Run poll sweep
+    const mktPollRes = await app.inject({
+      method: "POST",
+      url: "/v1/notifications/worker/poll",
+      headers: auth("admin@example.test"),
+    });
+    expect(mktPollRes.statusCode).toBe(200);
+    expect(mktPollRes.json<{ cancelledCount: number }>().cancelledCount).toBeGreaterThanOrEqual(1);
+
+    const [mktItemCheck] = await db
+      .select({ status: transactionalOutbox.status })
+      .from(transactionalOutbox)
+      .where(eq(transactionalOutbox.id, mktItemId));
+    expect(mktItemCheck?.status).toBe("CANCELLED_PREFERENCE");
+
+    // 11. Statutory Protection: Opting out of SAFETY_EMERGENCY is blocked with 400
+    const statutoryOptOutRes = await app.inject({
+      method: "PUT",
+      url: "/v1/notifications/preferences",
+      headers: auth("customer@example.test"),
+      payload: {
+        channel: "EMAIL",
+        category: "SAFETY_EMERGENCY",
+        enabled: false,
+      },
+    });
+    expect(statutoryOptOutRes.statusCode).toBe(400);
+    expect(statutoryOptOutRes.json<{ error: string }>().error).toBe("REGULATORY_RESTRICTION");
   });
 });
 

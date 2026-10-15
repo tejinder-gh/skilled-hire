@@ -1360,5 +1360,37 @@ export const contractorPayoutTransferSchema = z.object({
   amountCents: z.number().int().positive().optional(),
 });
 
+// Transactional Outbox & Reliable Notifications (SH-09)
+export const enqueueOutboxNotificationSchema = z.object({
+  aggregateType: z.string().min(1).max(64),
+  aggregateId: uuid,
+  eventType: z.string().min(1).max(128),
+  idempotencyKey: z.string().min(8).max(255),
+  recipientUserId: uuid,
+  channel: z.enum(["IN_APP", "EMAIL", "SMS", "PUSH", "PHONE"]),
+  destination: z.string().min(1).max(255),
+  templateSlug: z.string().min(1).max(128),
+  templateVersion: z.number().int().positive().optional().default(1),
+  payload: z.record(z.unknown()).default({}),
+});
+
+export const updateNotificationPreferenceSchema = z.object({
+  channel: z.enum(["IN_APP", "EMAIL", "SMS", "PUSH", "PHONE"]),
+  category: z.enum([
+    "DISPATCH_ALERTS",
+    "TRANSACTIONAL_RECEIPTS",
+    "JOB_MILESTONES",
+    "MARKETING_PROMOTIONS",
+    "SAFETY_EMERGENCY",
+  ]),
+  enabled: z.boolean(),
+});
+
+export const workerPollSchema = z.object({
+  batchSize: z.number().int().min(1).max(100).optional().default(20),
+  workerId: z.string().min(1).max(100).optional(),
+});
+
+
 
 

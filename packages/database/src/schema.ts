@@ -190,6 +190,26 @@ export const notificationChannelEnum = pgEnum("notification_channel", [
   "PHONE",
 ]);
 
+export const outboxStatusEnum = pgEnum("outbox_status", [
+  "PENDING",
+  "PROCESSING",
+  "DELIVERED",
+  "RETRYING",
+  "DEAD_LETTER",
+  "CANCELLED_PREFERENCE",
+]);
+
+export const notificationPreferenceCategoryEnum = pgEnum(
+  "notification_preference_category",
+  [
+    "DISPATCH_ALERTS",
+    "TRANSACTIONAL_RECEIPTS",
+    "JOB_MILESTONES",
+    "MARKETING_PROMOTIONS",
+    "SAFETY_EMERGENCY",
+  ],
+);
+
 export const recommendationUrgencyEnum = pgEnum("recommendation_urgency", [
   "IMMEDIATE_SAFETY_HAZARD",
   "URGENT_REPAIR",
@@ -3924,6 +3944,157 @@ export const financialReconciliationReportsRelations = relations(
     }),
   }),
 );
+
+// 26. Transactional Outbox & Reliable Notifications (SH-09)
+export const notificationTemplates = pgTable(
+  "notification_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    templateSlug: text("template_slug").notNull(),
+    version: integer("version").notNull().default(1),
+    channel: notificationChannelEnum("channel").notNull(),
+    subjectTemplate: text("subject_template"),
+    bodyTemplate: text("body_template").notNull(),
+    description: text("description"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    uqTemplateVersion: unique("uq_notification_template_version").on(
+      table.templateSlug,
+      table.version,
+      table.channel,
+    ),
+  }),
+);
+
+export const userNotificationPreferences = pgTable(
+  "user_notification_preferences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    channel: notificationChannelEnum("channel").notNull(),
+    category: notificationPreferenceCategoryEnum("category").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    optedOutAt: timestamp("opted_out_at", { withTimezone: true }),
+    optInSource: text("opt_in_source").notNull().default("ONBOARDING_CONSENT"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    uqUserChannelCategory: unique("uq_user_channel_category").on(
+      table.userId,
+      table.channel,
+      table.category,
+    ),
+  }),
+);
+
+export const transactionalOutbox = pgTable(
+  "transactional_outbox",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    aggregateType: text("aggregate_type").notNull(),
+    aggregateId: uuid("aggregate_id").notNull(),
+    eventType: text("event_type").notNull(),
+    idempotencyKey: text("idempotency_key").notNull().unique(),
+    recipientUserId: uuid("recipient_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    channel: notificationChannelEnum("channel").notNull(),
+    destination: text("destination").notNull(),
+    templateSlug: text("template_slug").notNull(),
+    templateVersion: integer("template_version").notNull().default(1),
+    payload: jsonb("payload").notNull().default({}),
+    status: outboxStatusEnum("status").notNull().default("PENDING"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockedBy: text("locked_by"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const notificationDeliveryLogs = pgTable(
+  "notification_delivery_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    outboxId: uuid("outbox_id")
+      .notNull()
+      .references(() => transactionalOutbox.id, { onDelete: "cascade" }),
+    channel: notificationChannelEnum("channel").notNull(),
+    recipient: text("recipient").notNull(),
+    providerName: text("provider_name").notNull(),
+    providerMessageId: text("provider_message_id"),
+    attemptNumber: integer("attempt_number").notNull(),
+    durationMs: integer("duration_ms").notNull(),
+    status: text("status").notNull(),
+    responsePayload: jsonb("response_payload").notNull().default({}),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const notificationTemplatesRelations = relations(
+  notificationTemplates,
+  () => ({}),
+);
+
+export const userNotificationPreferencesRelations = relations(
+  userNotificationPreferences,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [userNotificationPreferences.userId],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const transactionalOutboxRelations = relations(
+  transactionalOutbox,
+  ({ one, many }) => ({
+    recipientUser: one(users, {
+      fields: [transactionalOutbox.recipientUserId],
+      references: [users.id],
+    }),
+    deliveryLogs: many(notificationDeliveryLogs),
+  }),
+);
+
+export const notificationDeliveryLogsRelations = relations(
+  notificationDeliveryLogs,
+  ({ one }) => ({
+    outbox: one(transactionalOutbox, {
+      fields: [notificationDeliveryLogs.outboxId],
+      references: [transactionalOutbox.id],
+    }),
+  }),
+);
+
 
 
 

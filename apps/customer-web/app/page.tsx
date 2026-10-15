@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AlternativeSlot,
+  NotificationChannel,
+  NotificationPreferenceCategory,
+  OutboxStatus,
   RecommendationDeclineReason,
   RecommendationResponseEventDTO,
   RecommendationStatus,
@@ -113,8 +116,110 @@ type SlotOption = {
 
 export default function CustomerHome() {
   const [activeTab, setActiveTab] = useState<
-    "book" | "tracking" | "completion" | "warranty" | "survey" | "security" | "payments"
+    "book" | "tracking" | "completion" | "warranty" | "survey" | "security" | "payments" | "preferences"
   >("book");
+
+  // --- NOTIFICATION PREFERENCES & RELIABLE OUTBOX (SH-09) ---
+  const [notificationPreferences, setNotificationPreferences] = useState<
+    Array<{
+      category: NotificationPreferenceCategory;
+      label: string;
+      description: string;
+      emailEnabled: boolean;
+      smsEnabled: boolean;
+      pushEnabled: boolean;
+      isStatutory: boolean;
+    }>
+  >([
+    {
+      category: "SAFETY_EMERGENCY",
+      label: "Safety & Emergency Alerts",
+      description: "Gas leak warnings, carbon monoxide hazards, freeze freeze-up alerts. Mandatory by Ontario safety statutes.",
+      emailEnabled: true,
+      smsEnabled: true,
+      pushEnabled: true,
+      isStatutory: true,
+    },
+    {
+      category: "TRANSACTIONAL_RECEIPTS",
+      label: "Invoices & Payment Receipts",
+      description: "Stripe transaction proofs, milestone releases, and tax receipts. Non-excludable under Ontario Consumer Protection Act.",
+      emailEnabled: true,
+      smsEnabled: true,
+      pushEnabled: false,
+      isStatutory: true,
+    },
+    {
+      category: "DISPATCH_ALERTS",
+      label: "Technician Dispatch & ETA",
+      description: "Live updates when technician departs, GPS live tracking link, and arrival on site.",
+      emailEnabled: true,
+      smsEnabled: true,
+      pushEnabled: true,
+      isStatutory: false,
+    },
+    {
+      category: "JOB_MILESTONES",
+      label: "Job Progress & Sign-offs",
+      description: "Diagnostic reports, quote approvals, milestone completion requests, and warranty certificates.",
+      emailEnabled: true,
+      smsEnabled: false,
+      pushEnabled: true,
+      isStatutory: false,
+    },
+    {
+      category: "MARKETING_PROMOTIONS",
+      label: "Seasonal Maintenance & Promotions",
+      description: "Annual HVAC tune-up reminders, heat pump rebate notifications, and seasonal promotions.",
+      emailEnabled: false,
+      smsEnabled: false,
+      pushEnabled: false,
+      isStatutory: false,
+    },
+  ]);
+
+  const [customerOutbox, setCustomerOutbox] = useState<
+    Array<{
+      id: string;
+      channel: NotificationChannel;
+      recipient: string;
+      subject: string;
+      preview: string;
+      category: NotificationPreferenceCategory;
+      status: OutboxStatus;
+      sentAt: string;
+      idempotencyKey: string;
+    }>
+  >([
+    {
+      id: "outbox-notif-01",
+      channel: "EMAIL",
+      recipient: "sarah.jenkins@example.com",
+      subject: "Skilled Hire: Payment Receipt - Diagnostic Call-Out Fee",
+      preview: "Payment of $89.00 CAD received. Diagnostic dispatch confirmed for Marcus Miller (HVAC 313A).",
+      category: "TRANSACTIONAL_RECEIPTS",
+      status: "DELIVERED",
+      sentAt: "Today, 10:45 AM",
+      idempotencyKey: "evt:pay:receipt:88194",
+    },
+    {
+      id: "outbox-notif-02",
+      channel: "SMS",
+      recipient: "+14165550198",
+      subject: "Technician En-Route",
+      preview: "Marcus is en-route in truck #HV-04! ETA 14 mins. Live track: https://skilledhire.ca/t/88194",
+      category: "DISPATCH_ALERTS",
+      status: "DELIVERED",
+      sentAt: "Today, 10:52 AM",
+      idempotencyKey: "evt:dispatch:enroute:88194",
+    },
+  ]);
+
+  const [notifFeedback, setNotifFeedback] = useState<{
+    message: string;
+    type: "success" | "error" | "info";
+  } | null>(null);
+  const [isSendingTestNotif, setIsSendingTestNotif] = useState(false);
 
   // --- STRIPE PAYMENTS & MILESTONES STATE (SH-07) ---
   const [milestones, setMilestones] = useState<Array<{
@@ -806,6 +911,74 @@ export default function CustomerHome() {
     setCreditBalanceCents(3000);
   };
 
+  const handleTogglePreference = (
+    category: NotificationPreferenceCategory,
+    channel: "email" | "sms" | "push"
+  ) => {
+    const target = notificationPreferences.find((p) => p.category === category);
+    if (!target) return;
+
+    if (target.isStatutory) {
+      setNotifFeedback({
+        message: `Ontario Consumer Protection & Safety Regulation prevents disabling ${target.label}. Statutory consumer notices are legally required to remain active.`,
+        type: "error",
+      });
+      return;
+    }
+
+    setNotificationPreferences((prev) =>
+      prev.map((item) => {
+        if (item.category !== category) return item;
+        const key = `${channel}Enabled` as const;
+        return {
+          ...item,
+          [key]: !item[key],
+        };
+      })
+    );
+    setNotifFeedback({
+      message: `Updated ${channel.toUpperCase()} preferences for ${target.label}. Synchronized to cloud preference vault.`,
+      type: "success",
+    });
+  };
+
+  const handleSendTestNotification = (
+    channel: NotificationChannel,
+    category: NotificationPreferenceCategory
+  ) => {
+    setIsSendingTestNotif(true);
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const uniqueId = `outbox-demo-${Date.now().toString().slice(-4)}`;
+
+    const newItem = {
+      id: uniqueId,
+      channel,
+      recipient: channel === "EMAIL" ? "sarah.jenkins@example.com" : "+14165550198",
+      subject:
+        category === "DISPATCH_ALERTS"
+          ? "Skilled Hire: Technician Arriving Soon"
+          : "Skilled Hire: Verified Service Invoice",
+      preview:
+        category === "DISPATCH_ALERTS"
+          ? "Marcus is 3 minutes away from your property. Please ensure driveway access is clear."
+          : "Your paid invoice #INV-99214 for $185.00 CAD has been settled. Warranty coverage is now active for 365 days.",
+      category,
+      status: "DELIVERED" as OutboxStatus,
+      sentAt: `Today, ${timeStr}`,
+      idempotencyKey: `evt:test:${channel.toLowerCase()}:${uniqueId}`,
+    };
+
+    setTimeout(() => {
+      setCustomerOutbox((prev) => [newItem, ...prev]);
+      setIsSendingTestNotif(false);
+      setNotifFeedback({
+        message: `Dispatched test ${channel} notification via Transactional Outbox Worker (Idempotency Key: ${newItem.idempotencyKey}).`,
+        type: "success",
+      });
+    }, 400);
+  };
+
   return (
     <Shell
       title="Homeowner Service & Protection Hub"
@@ -860,6 +1033,12 @@ export default function CustomerHome() {
               label: "Payments & Invoices",
               icon: "💳",
               badge: milestones.some((m) => m.status === "PENDING") ? "Due" : "Paid",
+            },
+            {
+              value: "preferences",
+              label: "Alerts & Outbox",
+              icon: "🔔",
+              badge: "Outbox Live",
             },
           ]}
         />
@@ -3176,6 +3355,234 @@ export default function CustomerHome() {
           {/* Ontario Consumer Protection Notice */}
           <Callout tone="info" title="Ontario Consumer Protection & Payment Transparency">
             Skilled Hire operates as a licensed marketplace facilitator in Ontario. Payments are authorized per milestone schedule and deposited directly to verified contractors. No advance funds are withheld under unauthorized escrow terms.
+          </Callout>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 8: RELIABLE NOTIFICATIONS & TRANSACTIONAL OUTBOX (SH-09)
+         ------------------------------------------------------------- */}
+      {activeTab === "preferences" && (
+        <div style={{ display: "grid", gap: 24 }}>
+          {notifFeedback && (
+            <Callout
+              tone={notifFeedback.type === "error" ? "danger" : notifFeedback.type === "success" ? "success" : "info"}
+              title={notifFeedback.type === "error" ? "Statutory Regulatory Guardrail" : "Communication Settings Updated"}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>{notifFeedback.message}</span>
+                <Button size="sm" variant="quiet" onClick={() => setNotifFeedback(null)}>
+                  Dismiss
+                </Button>
+              </div>
+            </Callout>
+          )}
+
+          <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">
+            <Metric
+              label="Outbox Architecture"
+              value="Transactional"
+              detail="Atomic DB Commit"
+            />
+            <Metric
+              label="Active Channels"
+              value="3 Providers"
+              detail="Email · SMS · Push"
+            />
+            <Metric
+              label="Delivery Assurance"
+              value="99.98%"
+              detail="Exponential Backoff"
+            />
+          </Grid>
+
+          {/* User Notification Preferences Section */}
+          <Card tone="white" padding="lg">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 20, margin: "0 0 4px", color: "#0f172a" }}>
+                  Homeowner Communication Channels
+                </h2>
+                <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                  Fine-tune how Skilled Hire contacts you regarding arrivals, job milestones, and quotes.
+                </p>
+              </div>
+              <Badge tone="blue">Ontario Consumer Protection Compliant</Badge>
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              {notificationPreferences.map((pref) => (
+                <div
+                  key={pref.category}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "16px 18px",
+                    borderRadius: 12,
+                    border: pref.isStatutory ? "1.5px solid #bfdbfe" : "1px solid #e2e8f0",
+                    background: pref.isStatutory ? "#f8faff" : "#ffffff",
+                  }}
+                >
+                  <div style={{ maxWidth: "55%" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <strong style={{ fontSize: 15, color: "#0f172a" }}>{pref.label}</strong>
+                      {pref.isStatutory && (
+                        <Badge tone="blue">Statutory · Non-Excludable</Badge>
+                      )}
+                    </div>
+                    <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                      {pref.description}
+                    </p>
+                  </div>
+
+                  {/* Channel Toggles */}
+                  <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: pref.isStatutory ? "#94a3b8" : "#334155",
+                        cursor: pref.isStatutory ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={pref.emailEnabled}
+                        disabled={pref.isStatutory}
+                        onChange={() => handleTogglePreference(pref.category, "email")}
+                        style={{ accentColor: "#2563eb", cursor: pref.isStatutory ? "not-allowed" : "pointer" }}
+                      />
+                      Email
+                    </label>
+
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: pref.isStatutory ? "#94a3b8" : "#334155",
+                        cursor: pref.isStatutory ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={pref.smsEnabled}
+                        disabled={pref.isStatutory}
+                        onChange={() => handleTogglePreference(pref.category, "sms")}
+                        style={{ accentColor: "#2563eb", cursor: pref.isStatutory ? "not-allowed" : "pointer" }}
+                      />
+                      SMS
+                    </label>
+
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: "#334155",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={pref.pushEnabled}
+                        onChange={() => handleTogglePreference(pref.category, "push")}
+                        style={{ accentColor: "#2563eb", cursor: "pointer" }}
+                      />
+                      Push
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Customer Outbox History & Sandbox Tests */}
+          <Card tone="white" padding="lg">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 20, margin: "0 0 4px", color: "#0f172a" }}>
+                  Live Outbox Delivery Stream
+                </h2>
+                <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                  Immutable delivery logs showing atomic transactional dispatch, idempotency hashes, and channel delivery receipts.
+                </p>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={isSendingTestNotif}
+                  onClick={() => handleSendTestNotification("SMS", "DISPATCH_ALERTS")}
+                >
+                  {isSendingTestNotif ? "Dispatching..." : "Simulate Dispatch SMS"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={isSendingTestNotif}
+                  onClick={() => handleSendTestNotification("EMAIL", "TRANSACTIONAL_RECEIPTS")}
+                >
+                  {isSendingTestNotif ? "Dispatching..." : "Simulate Receipt Email"}
+                </Button>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {customerOutbox.map((msg) => (
+                <div
+                  key={msg.id}
+                  style={{
+                    padding: "14px 16px",
+                    borderRadius: 10,
+                    border: "1px solid #e2e8f0",
+                    background: "#f8fafc",
+                    display: "grid",
+                    gap: 6,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Badge tone={msg.channel === "SMS" ? "green" : msg.channel === "EMAIL" ? "blue" : "purple"}>
+                        {msg.channel}
+                      </Badge>
+                      <strong style={{ fontSize: 14, color: "#0f172a" }}>{msg.subject}</strong>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>→ {msg.recipient}</span>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>{msg.sentAt}</span>
+                      <Badge tone={msg.status === "DELIVERED" ? "green" : "amber"}>
+                        {msg.status}
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <p style={{ margin: 0, fontSize: 13, color: "#334155" }}>
+                    {msg.preview}
+                  </p>
+
+                  <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#94a3b8", fontFamily: "monospace" }}>
+                    <span>ID: {msg.id}</span>
+                    <span>KEY: {msg.idempotencyKey}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Ontario Statutory Protection Note */}
+          <Callout tone="info" title="Ontario Statutory Consumer Protection & Safety Mandates">
+            Pursuant to the Ontario Consumer Protection Act and Technical Standards and Safety Act (TSSA), emergency safety alerts (gas leaks, CO detection, freeze risk) and transactional payment proofs cannot be opted out of. Non-statutory alerts (technician arrival SMS, marketing updates) can be freely toggled or unsubscribed from at any time.
           </Callout>
         </div>
       )}

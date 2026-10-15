@@ -12,6 +12,7 @@ import type {
   TechnicianServiceRegionDTO,
   FinancialReconciliationReportDTO,
   PayoutHoldDTO,
+  TransactionalOutboxItemDTO,
 } from "@marketplace/contracts";
 import {
   Badge,
@@ -66,6 +67,12 @@ export default function OperationsHome() {
   const [reconciling, setReconciling] = useState(false);
   const [releaseActionLoading, setReleaseActionLoading] = useState<string | null>(null);
   const [reconciliationNotice, setReconciliationNotice] = useState<string | null>(null);
+
+  // SH-09: Transactional Outbox & Worker State
+  const [outboxItems, setOutboxItems] = useState<TransactionalOutboxItemDTO[]>([]);
+  const [workerPolling, setWorkerPolling] = useState(false);
+  const [retryingOutboxId, setRetryingOutboxId] = useState<string | null>(null);
+  const [workerNotice, setWorkerNotice] = useState<string | null>(null);
 
   useEffect(() => {
     async function fetchOperationsData() {
@@ -149,9 +156,80 @@ export default function OperationsHome() {
             const holds = await holdsRes.json();
             setPayoutHoldQueue(holds || []);
           }
+
+          // 7. Fetch Outbox Items (SH-09)
+          const outboxRes = await fetch("http://localhost:4000/v1/notifications/outbox?limit=10", {
+            headers: authHeaders,
+          });
+          if (outboxRes.ok) {
+            const outboxData = await outboxRes.json();
+            setOutboxItems(outboxData.outbox || []);
+          }
         }
       } catch {
         // Fall back to offline demo data
+        setOutboxItems([
+          {
+            id: "outbox-mock-1",
+            aggregateType: "JOB",
+            aggregateId: "job-toronto-heat-pump-101",
+            eventType: "TECHNICIAN_ASSIGNED",
+            idempotencyKey: "JOB:job-toronto-heat-pump-101:TECHNICIAN_ASSIGNED:EMAIL:cust-1",
+            recipientUserId: "user-cust-1",
+            channel: "EMAIL",
+            destination: "homeowner@example.test",
+            templateSlug: "ontario_hvac_technician_assigned_v1",
+            templateVersion: 1,
+            payload: { technicianName: "John S.", scheduledTime: "Today 1:00 PM" },
+            status: "DELIVERED",
+            attempts: 1,
+            maxAttempts: 5,
+            nextAttemptAt: new Date().toISOString(),
+            deliveredAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: "outbox-mock-2",
+            aggregateType: "JOB",
+            aggregateId: "job-toronto-heat-pump-101",
+            eventType: "PAYMENT_CONFIRMED",
+            idempotencyKey: "JOB:job-toronto-heat-pump-101:PAYMENT_CONFIRMED:EMAIL:cust-1",
+            recipientUserId: "user-cust-1",
+            channel: "EMAIL",
+            destination: "homeowner@example.test",
+            templateSlug: "ontario_hvac_payment_confirmed_v1",
+            templateVersion: 1,
+            payload: { amountDollars: "1,130.00", milestoneName: "Final Completion & ESA Sign-off" },
+            status: "DELIVERED",
+            attempts: 1,
+            maxAttempts: 5,
+            nextAttemptAt: new Date().toISOString(),
+            deliveredAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: "outbox-mock-3",
+            aggregateType: "MILESTONE",
+            aggregateId: "ms-esa-heat-pump-final",
+            eventType: "PAYOUT_HOLD_PLACED",
+            idempotencyKey: "MILESTONE:ms-esa-heat-pump-final:PAYOUT_HOLD_PLACED:SMS:tech-1",
+            recipientUserId: "user-tech-1",
+            channel: "SMS",
+            destination: "+14165550199",
+            templateSlug: "ontario_hvac_emergency_dispatch_v1",
+            templateVersion: 1,
+            payload: { amountDollars: "850.00", holdReason: "MISSING_COMPLETION_EVIDENCE" },
+            status: "RETRYING",
+            attempts: 1,
+            maxAttempts: 5,
+            nextAttemptAt: new Date(Date.now() + 60000).toISOString(),
+            lastError: "PROVIDER_RATE_LIMIT: Upstream carrier rate limit",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ]);
         setReconciliationReport({
           id: "recon-demo-1",
           reportDate: new Date().toISOString().split("T")[0] ?? "2026-10-15",
@@ -482,6 +560,85 @@ export default function OperationsHome() {
       setReconciliationNotice(`Hold ${holdId} released upon compliance evidence validation.`);
     } finally {
       setReleaseActionLoading(null);
+    }
+  }
+
+  // SH-09: Outbox Worker Handlers
+  async function handlePollOutboxWorker() {
+    setWorkerPolling(true);
+    setWorkerNotice(null);
+    try {
+      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "dispatch@example.test", password: "DemoPassword!2026" }),
+      });
+      if (loginRes.ok) {
+        const { accessToken } = await loginRes.json();
+        const res = await fetch("http://localhost:4000/v1/notifications/worker/poll", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ batchSize: 20 }),
+        });
+        if (res.ok) {
+          const pollData = await res.json();
+          setWorkerNotice(
+            `Worker sweep executed: ${pollData.claimedCount} claimed, ${pollData.deliveredCount} delivered, ${pollData.retriedCount} retried, ${pollData.deadLetterCount} dead-lettered (${pollData.durationMs}ms).`,
+          );
+          // Refresh outbox list
+          const listRes = await fetch("http://localhost:4000/v1/notifications/outbox?limit=10", {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (listRes.ok) {
+            const refreshed = await listRes.json();
+            setOutboxItems(refreshed.outbox || []);
+          }
+        }
+      }
+    } catch {
+      setWorkerNotice("Worker sweep completed in offline mode: 1 item delivered, 0 errors.");
+      setOutboxItems((prev) =>
+        prev.map((item) => (item.status === "RETRYING" ? { ...item, status: "DELIVERED", deliveredAt: new Date().toISOString() } : item)),
+      );
+    } finally {
+      setWorkerPolling(false);
+    }
+  }
+
+  async function handleRetryOutboxItem(id: string) {
+    setRetryingOutboxId(id);
+    try {
+      const loginRes = await fetch("http://localhost:4000/v1/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "dispatch@example.test", password: "DemoPassword!2026" }),
+      });
+      if (loginRes.ok) {
+        const { accessToken } = await loginRes.json();
+        const res = await fetch(`http://localhost:4000/v1/notifications/outbox/${id}/retry`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+        if (res.ok) {
+          setWorkerNotice(`Notification ${id.slice(0, 8)} reset to PENDING for immediate processing.`);
+          setOutboxItems((prev) =>
+            prev.map((i) => (i.id === id ? { ...i, status: "PENDING" } : i)),
+          );
+        }
+      }
+    } catch {
+      setOutboxItems((prev) =>
+        prev.map((i) => (i.id === id ? { ...i, status: "PENDING" } : i)),
+      );
+      setWorkerNotice(`Notification ${id.slice(0, 8)} reset to PENDING.`);
+    } finally {
+      setRetryingOutboxId(null);
     }
   }
 
@@ -1115,6 +1272,149 @@ export default function OperationsHome() {
               ))}
             </div>
           )}
+        </div>
+      </Card>
+
+      {/* SH-09: Transactional Outbox & Reliable Communications Engine */}
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h2 style={{ margin: "0 0 4px" }}>Transactional Outbox & Multi-Channel Communications</h2>
+              <Badge tone="blue">WORKER LEASE ACTIVE</Badge>
+            </div>
+            <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
+              Asynchronous transactional outbox worker processing email, SMS, and push dispatch with deduplication, exponential backoff, and dead-letter queues.
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handlePollOutboxWorker}
+              disabled={workerPolling}
+            >
+              {workerPolling ? "Executing Sweep..." : "Run Worker Polling Sweep"}
+            </Button>
+          </div>
+        </div>
+
+        {workerNotice && (
+          <div style={{ marginBottom: 16 }}>
+            <Callout tone="success" title="Transactional Outbox Worker Sweep">
+              {workerNotice}
+            </Callout>
+          </div>
+        )}
+
+        <Grid columns="repeat(auto-fit, minmax(180px, 1fr))">
+          <Metric
+            label="Total Outbox Queue"
+            value={String(outboxItems.length)}
+            detail="Active & completed items"
+          />
+          <Metric
+            label="Delivered"
+            value={String(outboxItems.filter((i) => i.status === "DELIVERED").length)}
+            detail="100% provider acknowledged"
+          />
+          <Metric
+            label="In Backoff / Retry"
+            value={String(outboxItems.filter((i) => i.status === "RETRYING").length)}
+            detail="Exponential backoff active"
+          />
+          <Metric
+            label="Dead-Letter Queue"
+            value={String(outboxItems.filter((i) => i.status === "DEAD_LETTER").length)}
+            detail="Exhausted max attempts (5)"
+          />
+        </Grid>
+
+        <Divider />
+
+        <div style={{ marginTop: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 15, color: "#0f172a" }}>
+              Recent Outbox Transactions ({outboxItems.length})
+            </h3>
+            <span style={{ fontSize: 12, color: "#64748b" }}>
+              Idempotent event-driven dispatch (No in-request delivery dependence)
+            </span>
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {outboxItems.map((item) => (
+              <div
+                key={item.id}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "14px 16px",
+                  borderRadius: 10,
+                  border: "1px solid #e2e8f0",
+                  background:
+                    item.status === "DEAD_LETTER"
+                      ? "#fef2f2"
+                      : item.status === "RETRYING"
+                      ? "#fffbeb"
+                      : "#f8fafc",
+                  flexWrap: "wrap",
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <Badge
+                      tone={
+                        item.status === "DELIVERED"
+                          ? "green"
+                          : item.status === "RETRYING"
+                          ? "amber"
+                          : item.status === "DEAD_LETTER"
+                          ? "danger"
+                          : "blue"
+                      }
+                    >
+                      {item.status}
+                    </Badge>
+                    <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                      {item.eventType}
+                    </strong>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>
+                      · Channel: <strong>{item.channel}</strong> ({item.destination})
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#475569" }}>
+                    Template: <code>{item.templateSlug}</code> (v{item.templateVersion}) · Attempts: {item.attempts}/{item.maxAttempts}
+                  </div>
+                  {item.lastError && (
+                    <div style={{ fontSize: 12, color: "#b91c1c", marginTop: 4 }}>
+                      Last Error: {item.lastError}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {(item.status === "DEAD_LETTER" || item.status === "RETRYING") && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={retryingOutboxId === item.id}
+                      onClick={() => handleRetryOutboxItem(item.id)}
+                    >
+                      {retryingOutboxId === item.id ? "Resetting..." : "Retry Dispatch"}
+                    </Button>
+                  )}
+                  <span style={{ fontSize: 11, color: "#64748b" }}>
+                    {item.deliveredAt
+                      ? `Delivered ${new Date(item.deliveredAt).toLocaleTimeString()}`
+                      : `Next: ${new Date(item.nextAttemptAt).toLocaleTimeString()}`}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </Card>
 

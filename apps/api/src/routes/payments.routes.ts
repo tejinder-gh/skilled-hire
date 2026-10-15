@@ -52,6 +52,8 @@ import {
   reconciliationRunSchema,
   contractorPayoutTransferSchema,
 } from "@marketplace/validation";
+import { enqueueTransactionalNotification } from "./notifications.routes.js";
+import { generateOutboxIdempotencyKey } from "@marketplace/messaging";
 import { actor, authenticate, parse, uuid } from "../common/auth.js";
 import { audit } from "../common/events.js";
 
@@ -250,7 +252,58 @@ async function processSuccessfulPaymentSettlement(
         type: "HOLD",
         amountCents: netEarnings,
       });
+
+      // SH-09: Atomic Outbox Notification to contractor regarding payout hold
+      await enqueueTransactionalNotification(tx, {
+        aggregateType: "MILESTONE",
+        aggregateId: input.milestoneId,
+        eventType: "PAYOUT_HOLD_PLACED",
+        idempotencyKey: generateOutboxIdempotencyKey(
+          "MILESTONE",
+          input.milestoneId,
+          "PAYOUT_HOLD_PLACED",
+          "EMAIL",
+          contractorId,
+        ),
+        recipientUserId: contractorId,
+        channel: "EMAIL",
+        destination: "contractor@example.test",
+        templateSlug: "ontario_hvac_payout_hold_placed_v1",
+        payload: {
+          contractorName: "Partner Contractor",
+          milestoneName: milestoneTitle,
+          amountDollars: (netEarnings / 100).toFixed(2),
+          holdReason: eligibility.holdReason ?? "MISSING_COMPLETION_EVIDENCE",
+          requiredEvidenceType: eligibility.requiredEvidenceType ?? "ESA_CERTIFICATE",
+        },
+      });
     }
+
+    // SH-09: Atomic Outbox Notification to customer for statutory payment receipt
+    const resolvedJobId = msRow?.jobId ?? input.milestoneId;
+    await enqueueTransactionalNotification(tx, {
+      aggregateType: "JOB",
+      aggregateId: resolvedJobId,
+      eventType: "PAYMENT_CONFIRMED",
+      idempotencyKey: generateOutboxIdempotencyKey(
+        "JOB",
+        resolvedJobId,
+        "PAYMENT_CONFIRMED",
+        "EMAIL",
+        input.customerId,
+      ),
+      recipientUserId: input.customerId,
+      channel: "EMAIL",
+      destination: "customer@example.test",
+      templateSlug: "ontario_hvac_payment_confirmed_v1",
+      payload: {
+        customerName: "Valued Customer",
+        milestoneName: milestoneTitle,
+        amountDollars: (input.amountCents / 100).toFixed(2),
+        jobId: resolvedJobId,
+        stripeReference: input.paymentIntentId,
+      },
+    });
 
     // Persist updated contractor payout balance
     await tx
@@ -1256,6 +1309,29 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
             updatedAt: new Date(),
           })
           .where(eq(contractorPayoutBalances.contractorId, existingHold.contractorId));
+
+        // SH-09: Atomic Outbox Notification to contractor regarding funds released
+        await enqueueTransactionalNotification(tx, {
+          aggregateType: "MILESTONE",
+          aggregateId: existingHold.milestoneId,
+          eventType: "PAYOUT_HOLD_RELEASED",
+          idempotencyKey: generateOutboxIdempotencyKey(
+            "MILESTONE",
+            existingHold.milestoneId,
+            "PAYOUT_HOLD_RELEASED",
+            "EMAIL",
+            existingHold.contractorId,
+          ),
+          recipientUserId: existingHold.contractorId,
+          channel: "EMAIL",
+          destination: "contractor@example.test",
+          templateSlug: "ontario_hvac_payout_hold_released_v1",
+          payload: {
+            contractorName: "Partner Contractor",
+            milestoneName: existingHold.milestoneId,
+            amountDollars: (Number(existingHold.amountCents) / 100).toFixed(2),
+          },
+        });
 
         return [updated];
       });
