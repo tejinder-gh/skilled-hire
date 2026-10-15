@@ -1,6 +1,12 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { hasRole } from "@marketplace/auth";
+import {
+  hasRole,
+  isStaff,
+  parseCookies,
+  assertTenantAccess,
+  assertCustomerAccess,
+} from "@marketplace/auth";
 import type { Actor, Role } from "@marketplace/contracts";
 import {
   db,
@@ -51,18 +57,41 @@ export async function authenticate(
   reply: FastifyReply,
 ): Promise<void> {
   try {
-    const payload = await request.jwtVerify<{
-      sub: string;
-      sessionVersion: number;
-    }>();
+    let payload: { sub: string; sessionVersion: number } | null = null;
+
+    // 1. Try Authorization header
+    const authHeader = request.headers.authorization;
+    if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+      payload = await request.jwtVerify<{
+        sub: string;
+        sessionVersion: number;
+      }>();
+    } else {
+      // 2. Try sh_access cookie
+      const cookies = parseCookies(request.headers.cookie);
+      const cookieToken = cookies["sh_access"];
+      if (cookieToken) {
+        payload = request.server.jwt.verify<{
+          sub: string;
+          sessionVersion: number;
+        }>(cookieToken);
+      }
+    }
+
+    if (!payload || !payload.sub) {
+      throw new Error("UNAUTHENTICATED");
+    }
+
     const user = await db.query.users.findFirst({
       where: and(eq(users.id, payload.sub), isNull(users.deletedAt)),
       with: {
         roles: true,
       },
     });
-    if (!user || user.sessionVersion !== payload.sessionVersion)
+
+    if (!user || user.sessionVersion !== payload.sessionVersion) {
       throw new Error("SESSION_REVOKED");
+    }
 
     const [tech] = await db
       .select({ contractorId: technicians.contractorId })
@@ -84,13 +113,11 @@ export async function authenticate(
       ...(contractorId ? { contractorId } : {}),
     };
   } catch {
-    await reply
-      .code(401)
-      .send({
-        code: "UNAUTHENTICATED",
-        message: "Authentication is required",
-        requestId: request.id,
-      });
+    await reply.code(401).send({
+      code: "UNAUTHENTICATED",
+      message: "Authentication is required",
+      requestId: request.id,
+    });
   }
 }
 
@@ -104,11 +131,63 @@ export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
 }
 
 export function isOps(value: Actor): boolean {
-  return hasRole(
-    value,
-    "OPERATIONS_AGENT",
-    "DISPATCHER",
-    "ADMIN",
-    "SUPER_ADMIN",
-  );
+  return isStaff(value);
+}
+
+export function requireStaff(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  done: () => void,
+): void {
+  const currentActor = request.actor;
+  if (!currentActor || !isStaff(currentActor)) {
+    reply.code(403).send({
+      code: "FORBIDDEN",
+      message: "Staff clearance required for this operation",
+    });
+    return;
+  }
+  done();
+}
+
+export function requireTenant(
+  getContractorId: (request: FastifyRequest) => string | null | undefined,
+) {
+  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    const currentActor = request.actor;
+    if (!currentActor) {
+      await reply.code(401).send({ code: "UNAUTHENTICATED", message: "Login required" });
+      return;
+    }
+    const contractorId = getContractorId(request);
+    try {
+      assertTenantAccess(currentActor, contractorId);
+    } catch {
+      await reply.code(403).send({
+        code: "FORBIDDEN",
+        message: "Cross-tenant access denied",
+      });
+    }
+  };
+}
+
+export function requireCustomer(
+  getCustomerId: (request: FastifyRequest) => string | null | undefined,
+) {
+  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    const currentActor = request.actor;
+    if (!currentActor) {
+      await reply.code(401).send({ code: "UNAUTHENTICATED", message: "Login required" });
+      return;
+    }
+    const customerId = getCustomerId(request);
+    try {
+      assertCustomerAccess(currentActor, customerId);
+    } catch {
+      await reply.code(403).send({
+        code: "FORBIDDEN",
+        message: "Cross-customer access denied",
+      });
+    }
+  };
 }

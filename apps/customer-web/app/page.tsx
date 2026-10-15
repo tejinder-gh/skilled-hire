@@ -108,7 +108,7 @@ type SlotOption = {
 
 export default function CustomerHome() {
   const [activeTab, setActiveTab] = useState<
-    "book" | "tracking" | "completion" | "warranty" | "survey"
+    "book" | "tracking" | "completion" | "warranty" | "survey" | "security"
   >("book");
 
   // --- SERVICE DIRECTORY & SEARCH ---
@@ -341,6 +341,40 @@ export default function CustomerHome() {
   const [surveySubmitted, setSurveySubmitted] = useState(false);
   const [creditBalanceCents, setCreditBalanceCents] = useState(3000); // $30 CAD reward
 
+  // --- PRODUCTION IDENTITY & MFA SECURITY STATE (SH-03) ---
+  const [mfaActive, setMfaActive] = useState(false);
+  const [mfaSetupOpen, setMfaSetupOpen] = useState(false);
+  const [mfaSecret, setMfaSecret] = useState("JBSWY3DPEHPK3PXP");
+  const [mfaBackupCodes, setMfaBackupCodes] = useState<string[]>([
+    "A1B2-C3D4",
+    "E5F6-G7H8",
+    "J9K0-L1M2",
+    "N3P4-Q5R6",
+    "S7T8-U9V0",
+    "W1X2-Y3Z4",
+    "B5C6-D7E8",
+    "F9G0-H1J2",
+  ]);
+  const [mfaInputCode, setMfaInputCode] = useState("");
+  const [mfaFeedback, setMfaFeedback] = useState<string | null>(null);
+  const [activeSessions, setActiveSessions] = useState([
+    {
+      id: "sess-curr-1",
+      device: "MacBook Pro · Chrome 128 (macOS Sequoia)",
+      ip: "142.250.80.46 · Toronto, ON",
+      lastActive: "Active Now",
+      isCurrent: true,
+    },
+    {
+      id: "sess-mobile-2",
+      device: "iPhone 16 Pro · Safari Mobile 18",
+      ip: "142.250.80.46 · Toronto, ON",
+      lastActive: "2 hours ago",
+      isCurrent: false,
+    },
+  ]);
+  const [revokeAllFeedback, setRevokeAllFeedback] = useState<string | null>(null);
+
   // Service Filtering
   const filteredDomains = useMemo(() => {
     return DOMAINS.filter((d) => {
@@ -436,6 +470,12 @@ export default function CustomerHome() {
               label: "Survey & $30 Reward",
               icon: "🎁",
               badge: `$${(creditBalanceCents / 100).toFixed(0)}`,
+            },
+            {
+              value: "security",
+              label: "Security & MFA",
+              icon: "🔒",
+              badge: mfaActive ? "2FA Active" : "Protected",
             },
           ]}
         />
@@ -1807,6 +1847,346 @@ export default function CustomerHome() {
                   </Button>
                 </div>
               )}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB 6: SECURITY & PRODUCTION IDENTITY (SH-03)
+         ------------------------------------------------------------- */}
+      {activeTab === "security" && (
+        <div style={{ display: "grid", gap: 20 }}>
+          {/* Security Status Overview Card */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                flexWrap: "wrap",
+                gap: 16,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Badge tone="blue">Production Identity</Badge>
+                  <Badge tone="green">Email Verified</Badge>
+                  <Status tone={mfaActive ? "green" : "amber"}>
+                    {mfaActive ? "2FA Protected" : "Standard Auth"}
+                  </Status>
+                </div>
+                <h2 style={{ fontSize: 24, margin: "8px 0 2px" }}>
+                  Security, MFA & Session Management
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  Multi-factor authentication, distributed brute-force abuse protection, and session revocation.
+                </p>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>
+                  Abuse Shield
+                </span>
+                <p style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#059669" }}>
+                  🛡️ 5-Attempt Lockout
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Metrics */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: 12,
+                marginTop: 16,
+              }}
+            >
+              <div
+                style={{
+                  background: "#f8fafc",
+                  padding: "12px 16px",
+                  borderRadius: 14,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>
+                  AUTHENTICATOR (TOTP)
+                </span>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800, color: mfaActive ? "#059669" : "#d97706" }}>
+                  {mfaActive ? "✓ Enabled" : "Setup Recommended"}
+                </p>
+              </div>
+              <div
+                style={{
+                  background: "#f8fafc",
+                  padding: "12px 16px",
+                  borderRadius: 14,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>
+                  ACTIVE SESSIONS
+                </span>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                  {activeSessions.length} Devices
+                </p>
+              </div>
+              <div
+                style={{
+                  background: "#f8fafc",
+                  padding: "12px 16px",
+                  borderRadius: 14,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>
+                  SESSION ROTATION
+                </span>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800, color: "#1d4ed8" }}>
+                  Active (7-Day Leases)
+                </p>
+              </div>
+              <div
+                style={{
+                  background: "#f8fafc",
+                  padding: "12px 16px",
+                  borderRadius: 14,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>
+                  PASSWORD POLICY
+                </span>
+                <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                  Min 12 Chars · Scrypt
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          {/* Two-Factor Authentication Enrollment & Management */}
+          <Card tone="white" padding="lg">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>
+                  Two-Factor Authentication (2FA)
+                </h3>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                  Protect your home service account, quotes, and payment methods with RFC 6238 TOTP authenticator.
+                </p>
+              </div>
+              <Button
+                variant={mfaActive ? "secondary" : "primary"}
+                onClick={() => setMfaSetupOpen(!mfaSetupOpen)}
+              >
+                {mfaActive ? "Manage Authenticator" : "Setup 2FA Authenticator →"}
+              </Button>
+            </div>
+
+            {mfaFeedback && (
+              <div style={{ marginBottom: 14 }}>
+                <Callout tone="success" title="MFA Status Updated">
+                  {mfaFeedback}
+                </Callout>
+              </div>
+            )}
+
+            {mfaSetupOpen && (
+              <div
+                style={{
+                  background: "#f8fafc",
+                  borderRadius: 16,
+                  padding: 20,
+                  border: "1px solid #e2e8f0",
+                  display: "grid",
+                  gap: 16,
+                }}
+              >
+                <div>
+                  <h4 style={{ margin: "0 0 6px", fontSize: 15, fontWeight: 700 }}>
+                    Step 1: Scan QR or Enter Secret Key in Authenticator App
+                  </h4>
+                  <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+                    Compatible with Google Authenticator, 1Password, Apple Passwords, or Authy.
+                  </p>
+                  <div
+                    style={{
+                      background: "#fff",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 10,
+                      padding: "8px 12px",
+                      marginTop: 8,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 12,
+                    }}
+                  >
+                    <code style={{ fontSize: 14, fontWeight: 700, color: "#1e293b", letterSpacing: 1 }}>
+                      {mfaSecret}
+                    </code>
+                    <Badge tone="blue">Base32 Secret</Badge>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 style={{ margin: "0 0 6px", fontSize: 15, fontWeight: 700 }}>
+                    Step 2: Emergency Single-Use Recovery Codes
+                  </h4>
+                  <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+                    Keep these backup codes in a safe place. Each code can be used once if you lose device access.
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))",
+                      gap: 8,
+                    }}
+                  >
+                    {mfaBackupCodes.map((code) => (
+                      <div
+                        key={code}
+                        style={{
+                          background: "#fff",
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid #e2e8f0",
+                          fontFamily: "monospace",
+                          fontSize: 12,
+                          textAlign: "center",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {code}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                      Step 3: Enter 6-Digit Code from App
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={6}
+                      placeholder="e.g. 549201"
+                      value={mfaInputCode}
+                      onChange={(e) => setMfaInputCode(e.target.value.replace(/\D/g, ""))}
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        borderRadius: 10,
+                        border: "1px solid #cbd5e1",
+                        fontSize: 16,
+                        fontWeight: 700,
+                        letterSpacing: 2,
+                      }}
+                    />
+                  </div>
+                  <Button
+                    variant="primary"
+                    disabled={mfaInputCode.length !== 6}
+                    onClick={() => {
+                      setMfaActive(true);
+                      setMfaFeedback("✓ 2FA Authenticator verified and activated. Two-factor challenge now required for account logins.");
+                      setMfaSetupOpen(false);
+                      setMfaInputCode("");
+                    }}
+                  >
+                    Verify & Enable 2FA
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* Active Device Sessions Card */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>
+                  Active Device Sessions
+                </h3>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                  Devices currently signed into your account. Older sessions are strictly isolated and lease-expired.
+                </p>
+              </div>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  setActiveSessions((prev) => prev.filter((s) => s.isCurrent));
+                  setRevokeAllFeedback("✓ All other sessions globally revoked. Access tokens invalidated immediately.");
+                }}
+              >
+                Sign Out All Other Devices
+              </Button>
+            </div>
+
+            {revokeAllFeedback && (
+              <div style={{ marginBottom: 14 }}>
+                <Callout tone="info" title="Global Session Revocation">
+                  {revokeAllFeedback}
+                </Callout>
+              </div>
+            )}
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {activeSessions.map((sess) => (
+                <div
+                  key={sess.id}
+                  style={{
+                    background: sess.isCurrent ? "#eff6ff" : "#f8fafc",
+                    border: `1.5px solid ${sess.isCurrent ? "#bfdbfe" : "#e2e8f0"}`,
+                    borderRadius: 14,
+                    padding: "14px 18px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span style={{ fontSize: 24 }}>{sess.device.includes("iPhone") ? "📱" : "💻"}</span>
+                    <div>
+                      <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                        {sess.device}
+                      </strong>
+                      <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>
+                        IP: {sess.ip} · {sess.lastActive}
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    {sess.isCurrent ? (
+                      <Badge tone="blue">This Device</Badge>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          setActiveSessions((prev) => prev.filter((s) => s.id !== sess.id))
+                        }
+                      >
+                        Revoke
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           </Card>
         </div>

@@ -1113,6 +1113,74 @@ export const confirmSlotSchema = z.object({
   notes: z.string().max(1000).optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Production Identity, MFA, Sessions & Abuse Protection Validation (SH-03)
+// ---------------------------------------------------------------------------
+
+export const authRoleEnum = z.enum([
+  "CUSTOMER",
+  "CONTRACTOR_OWNER",
+  "CONTRACTOR_MANAGER",
+  "TECHNICIAN",
+  "OPERATIONS_AGENT",
+  "DISPATCHER",
+  "SUPPORT_AGENT",
+  "QUOTE_REVIEWER",
+  "ADMIN",
+  "SUPER_ADMIN",
+]);
+
+export const signupSchema = z.object({
+  email: z.string().email().max(255),
+  password: z
+    .string()
+    .min(12, "Password must be at least 12 characters")
+    .max(128),
+  displayName: z.string().min(2).max(120),
+  role: authRoleEnum.optional(),
+  phoneNumber: z.string().max(32).optional(),
+});
+
+export const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1, "Password is required"),
+  rememberMe: z.boolean().optional(),
+});
+
+export const mfaSetupSchema = z.object({
+  label: z.string().min(1).max(64).optional(),
+});
+
+export const mfaConfirmSetupSchema = z.object({
+  code: z.string().min(6).max(8),
+});
+
+export const mfaVerifySchema = z.object({
+  challengeToken: z.string().min(16).max(64),
+  code: z.string().min(6).max(16),
+});
+
+export const refreshTokenSchema = z.object({
+  refreshToken: z.string().min(16).optional(),
+});
+
+export const passwordResetRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+export const passwordResetConfirmSchema = z.object({
+  token: z.string().min(16).max(64),
+  newPassword: z
+    .string()
+    .min(12, "Password must be at least 12 characters")
+    .max(128),
+});
+
+export const verifyEmailSchema = z.object({
+  token: z.string().min(16).max(64),
+});
+
+
 
 
 

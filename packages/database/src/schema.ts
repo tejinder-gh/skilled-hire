@@ -120,6 +120,9 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   displayName: text("display_name").notNull(),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  phoneNumber: varchar("phone_number", { length: 32 }),
+  phoneVerified: boolean("phone_verified").notNull().default(false),
   mfaRequired: boolean("mfa_required").notNull().default(false),
   sessionVersion: integer("session_version").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true })
@@ -141,6 +144,102 @@ export const userRoles = pgTable(
   },
   (table) => [primaryKey({ columns: [table.userId, table.role] })],
 );
+
+export const userSessions = pgTable("user_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  refreshTokenHash: varchar("refresh_token_hash", { length: 64 })
+    .notNull()
+    .unique(),
+  sessionVersion: integer("session_version").notNull().default(1),
+  ipAddress: varchar("ip_address", { length: 64 }),
+  userAgent: text("user_agent"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const userMfaDevices = pgTable("user_mfa_devices", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  method: varchar("method", { length: 32 }).notNull().default("TOTP"),
+  secret: text("secret").notNull(),
+  label: varchar("label", { length: 128 }).notNull().default("Authenticator App"),
+  verified: boolean("verified").notNull().default(false),
+  backupCodesHash: jsonb("backup_codes_hash").notNull().default([]),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const userMfaChallenges = pgTable("user_mfa_challenges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  challengeToken: varchar("challenge_token", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  attempts: integer("attempts").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const userPasswordResets = pgTable("user_password_resets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const userEmailVerifications = pgTable("user_email_verifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const authRateLimits = pgTable("auth_rate_limits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  key: varchar("key", { length: 128 }).notNull().unique(),
+  attempts: integer("attempts").notNull().default(1),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  firstAttemptAt: timestamp("first_attempt_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 // 3. Service Taxonomy & Catalog
 export const verticals = pgTable("verticals", {
