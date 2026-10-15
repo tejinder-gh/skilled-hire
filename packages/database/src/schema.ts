@@ -4,6 +4,7 @@ import {
   boolean,
   char,
   date,
+  index,
   integer,
   jsonb,
   numeric,
@@ -532,26 +533,40 @@ export const issueTypes = pgTable(
 );
 
 // 4. Customer Properties
-export const properties = pgTable("properties", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  customerId: uuid("customer_id")
-    .notNull()
-    .references(() => users.id),
-  label: text("label").notNull(),
-  addressLine1: text("address_line1").notNull(),
-  city: text("city").notNull(),
-  region: text("region").notNull(),
-  postalCode: text("postal_code").notNull(),
-  latitude: numeric("latitude", { precision: 9, scale: 6 }),
-  longitude: numeric("longitude", { precision: 9, scale: 6 }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }),
-});
+export const properties = pgTable(
+  "properties",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => users.id),
+    label: text("label").notNull(),
+    addressLine1: text("address_line1").notNull(),
+    city: text("city").notNull(),
+    region: text("region").notNull(),
+    postalCode: text("postal_code").notNull(),
+    propertyType: text("property_type").notNull().default("DETACHED"),
+    unitNumber: text("unit_number"),
+    accessNotes: text("access_notes"),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    latitude: numeric("latitude", { precision: 9, scale: 6 }),
+    longitude: numeric("longitude", { precision: 9, scale: 6 }),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("idx_properties_customer_primary").on(
+      table.customerId,
+      table.isPrimary,
+    ),
+  ],
+);
 
 // 5. Contractors & Technicians
 export const contractors = pgTable("contractors", {
@@ -1755,6 +1770,7 @@ export const propertiesRelations = relations(properties, ({ one, many }) => ({
     references: [users.id],
   }),
   serviceRequests: many(serviceRequests),
+  systems: many(propertySystems),
 }));
 
 export const serviceRequestsRelations = relations(
@@ -4253,6 +4269,37 @@ export const contractorDispatchPenaltiesRelations = relations(
     }),
   }),
 );
+
+// 29. Customer Booking Drafts (#12, SH-11)
+export const bookingDrafts = pgTable(
+  "booking_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    step: integer("step").notNull().default(0),
+    draftPayload: jsonb("draft_payload").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("uq_booking_drafts_customer_id").on(table.customerId),
+    index("idx_booking_drafts_customer").on(table.customerId),
+  ],
+);
+
+export const bookingDraftsRelations = relations(bookingDrafts, ({ one }) => ({
+  customer: one(users, {
+    fields: [bookingDrafts.customerId],
+    references: [users.id],
+  }),
+}));
+
 
 
 

@@ -1437,6 +1437,50 @@ export const resolveExceptionSchema = z.object({
   compensationAmountCents: z.number().int().min(0).optional(),
 });
 
+// 29. Customer Accounts, Properties & Booking Drafts (#12, SH-11)
+export const createPropertySchema = z.object({
+  label: z.string().min(1).max(100),
+  addressLine1: z.string().min(1).max(200),
+  unitNumber: z.string().max(20).optional(),
+  city: z.string().min(1).max(100),
+  region: z.string().min(1).max(100).default("ON"),
+  postalCode: z.string().min(3).max(20),
+  propertyType: z
+    .enum(["DETACHED", "SEMI_DETACHED", "TOWNHOUSE", "CONDO", "COMMERCIAL"])
+    .default("DETACHED"),
+  accessNotes: z.string().max(500).optional(),
+  isPrimary: z.boolean().default(false),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+});
+
+export const updatePropertySchema = z.object({
+  label: z.string().min(1).max(100).optional(),
+  addressLine1: z.string().min(1).max(200).optional(),
+  unitNumber: z.string().max(20).optional(),
+  city: z.string().min(1).max(100).optional(),
+  region: z.string().min(1).max(100).optional(),
+  postalCode: z.string().min(3).max(20).optional(),
+  propertyType: z
+    .enum(["DETACHED", "SEMI_DETACHED", "TOWNHOUSE", "CONDO", "COMMERCIAL"])
+    .optional(),
+  accessNotes: z.string().max(500).optional(),
+  isPrimary: z.boolean().optional(),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+});
+
+export const updateCustomerProfileSchema = z.object({
+  fullName: z.string().min(2).max(100).optional(),
+  phoneNumber: z.string().min(7).max(25).optional(),
+});
+
+export const saveBookingDraftSchema = z.object({
+  step: z.number().int().min(0).max(10),
+  draftPayload: z.record(z.string(), z.unknown()),
+});
+
+
 
 
 

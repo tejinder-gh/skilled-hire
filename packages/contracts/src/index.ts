@@ -1174,3 +1174,4 @@ export * from "./files.js";
 export * from "./payments.js";
 export * from "./notifications.js";
 export * from "./dispatch-exceptions.js";
+export * from "./customer-accounts.js";

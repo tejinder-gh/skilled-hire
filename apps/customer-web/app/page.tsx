@@ -3,9 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AlternativeSlot,
+  BookingDraftDTO,
+  BookingReceiptDTO,
   CancellationQuoteResponse,
   CancellationPolicyType,
   CancellationReason,
+  CustomerProfileDTO,
+  CustomerPropertyDTO,
   CustomerRecoveryChoiceType,
   CustomerServiceCreditDTO,
   DispatchExceptionSeverity,
@@ -14,6 +18,7 @@ import type {
   NotificationChannel,
   NotificationPreferenceCategory,
   OutboxStatus,
+  PropertyType,
   RecommendationDeclineReason,
   RecommendationResponseEventDTO,
   RecommendationStatus,
@@ -123,6 +128,18 @@ type SlotOption = {
   availableCapacity?: number | undefined;
   confidence?: "HIGH" | "LIMITED" | "NONE" | undefined;
   badge?: string | undefined;
+};
+
+type EquipmentItem = {
+  id: string;
+  verticalId: string;
+  name: string;
+  assetType: string;
+  manufacturer?: string | undefined;
+  modelNumber?: string | undefined;
+  serialNumber?: string | undefined;
+  warrantyStatus: "ACTIVE" | "EXPIRED" | "UNKNOWN" | "EXTENDED";
+  installedOn?: string | undefined;
 };
 
 export default function CustomerHome() {
@@ -312,6 +329,140 @@ export default function CustomerHome() {
   const [reserveMessage, setReserveMessage] = useState<string | null>(null);
   const [assignedTechName, setAssignedTechName] = useState<string>("Marcus Sterling");
 
+  // --- CUSTOMER PROFILE & PROPERTIES STATE (SH-11, Issue #12) ---
+  const [customerProfile, setCustomerProfile] = useState<CustomerProfileDTO>({
+    id: "user-cust-avery",
+    email: "sarah.jenkins@example.com",
+    fullName: "Sarah Jenkins",
+    phoneNumber: "+1 (416) 555-0198",
+    role: "CUSTOMER",
+    emailVerified: true,
+    mfaEnabled: true,
+    propertiesCount: 2,
+    activeServiceRequestsCount: 1,
+    completedJobsCount: 4,
+    courtesyCreditBalanceCents: 3000,
+    createdAt: "2025-04-10T14:22:00.000Z",
+  });
+
+  const [properties, setProperties] = useState<CustomerPropertyDTO[]>([
+    {
+      id: "prop-king-123",
+      customerId: "user-cust-avery",
+      label: "Primary Residence",
+      addressLine1: "123 King Street W",
+      unitNumber: "Unit 1402",
+      city: "Toronto",
+      region: "ON",
+      postalCode: "M5V 2T6",
+      propertyType: "CONDO",
+      accessNotes: "Buzz code #1402 at main entrance. Concierge will verify contractor ID.",
+      isPrimary: true,
+      equipmentCount: 2,
+      createdAt: "2025-04-10T14:25:00.000Z",
+      updatedAt: "2026-02-14T09:15:00.000Z",
+    },
+    {
+      id: "prop-cottage-456",
+      customerId: "user-cust-avery",
+      label: "Muskoka Lake Cottage",
+      addressLine1: "45 Peninsula Point Rd",
+      city: "Gravenhurst",
+      region: "ON",
+      postalCode: "P1P 1R1",
+      propertyType: "DETACHED",
+      accessNotes: "Keypad code on side utility room: 4921. Gate latch requires lifting handle.",
+      isPrimary: false,
+      equipmentCount: 1,
+      createdAt: "2025-08-20T11:00:00.000Z",
+      updatedAt: "2025-08-20T11:00:00.000Z",
+    },
+  ]);
+
+  const [selectedPropertyId, setSelectedPropertyId] = useState<string>("prop-king-123");
+
+  const [propertyEquipmentMap, setPropertyEquipmentMap] = useState<
+    Record<string, EquipmentItem[]>
+  >({
+    "prop-king-123": [
+      {
+        id: "eq-lennox-ac",
+        verticalId: "vert-hvac",
+        name: "Lennox Signature High-Efficiency Central AC",
+        assetType: "AIR_CONDITIONER",
+        manufacturer: "Lennox",
+        modelNumber: "XC21-036-230",
+        serialNumber: "5821-LEN-2021",
+        warrantyStatus: "ACTIVE",
+        installedOn: "2021-06-15",
+      },
+      {
+        id: "eq-carrier-furnace",
+        verticalId: "vert-hvac",
+        name: "Carrier Infinity 98 Modulating Gas Furnace",
+        assetType: "FURNACE",
+        manufacturer: "Carrier",
+        modelNumber: "59MN7A060V17",
+        serialNumber: "CAR-98-8472",
+        warrantyStatus: "ACTIVE",
+        installedOn: "2020-10-12",
+      },
+    ],
+    "prop-cottage-456": [
+      {
+        id: "eq-mitsubishi-heatpump",
+        verticalId: "vert-hvac",
+        name: "Mitsubishi Electric Zuba-Central Cold-Climate Heat Pump",
+        assetType: "HEAT_PUMP",
+        manufacturer: "Mitsubishi Electric",
+        modelNumber: "PUZ-HA36NHA5",
+        serialNumber: "ME-ZUBA-99120",
+        warrantyStatus: "EXTENDED",
+        installedOn: "2023-05-20",
+      },
+    ],
+  });
+
+  const [selectedEquipmentId, setSelectedEquipmentId] = useState<string>("eq-lennox-ac");
+
+  // Dynamic intake symptom checklists & system age
+  const [symptomSelections, setSymptomSelections] = useState<string[]>([
+    "Compressor Humming / Fan Stalled",
+    "Indoor Air Warm / Not Cooling",
+  ]);
+  const [filterLastChanged, setFilterLastChanged] = useState<string>("1-3 months ago");
+  const [equipmentAgeYears, setEquipmentAgeYears] = useState<string>("4-7 years");
+
+  // Booking Draft Persistence & Receipts
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>("Just now");
+  const [confirmedReceipt, setConfirmedReceipt] = useState<BookingReceiptDTO | null>(null);
+  const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+
+  // Modals
+  const [isAddPropertyModalOpen, setIsAddPropertyModalOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isAddEquipmentModalOpen, setIsAddEquipmentModalOpen] = useState(false);
+
+  // Modal forms
+  const [newPropLabel, setNewPropLabel] = useState("");
+  const [newPropAddress, setNewPropAddress] = useState("");
+  const [newPropUnit, setNewPropUnit] = useState("");
+  const [newPropCity, setNewPropCity] = useState("Toronto");
+  const [newPropPostalCode, setNewPropPostalCode] = useState("");
+  const [newPropType, setNewPropType] = useState<PropertyType>("DETACHED");
+  const [newPropAccessNotes, setNewPropAccessNotes] = useState("");
+  const [newPropIsPrimary, setNewPropIsPrimary] = useState(false);
+
+  const [editProfileName, setEditProfileName] = useState(customerProfile.fullName);
+  const [editProfilePhone, setEditProfilePhone] = useState(customerProfile.phoneNumber ?? "");
+
+  const [newEqName, setNewEqName] = useState("");
+  const [newEqAssetType, setNewEqAssetType] = useState("AIR_CONDITIONER");
+  const [newEqManufacturer, setNewEqManufacturer] = useState("");
+  const [newEqModelNumber, setNewEqModelNumber] = useState("");
+  const [newEqSerialNumber, setNewEqSerialNumber] = useState("");
+  const [newEqWarranty, setNewEqWarranty] = useState<"ACTIVE" | "EXPIRED" | "UNKNOWN" | "EXTENDED">("ACTIVE");
+
   const [selectedSlot, setSelectedSlot] = useState<string>("today-13-15");
   const [description, setDescription] = useState(
     "Central AC compressor humming loudly, but condenser fan not turning and indoor air is warm.",
@@ -319,6 +470,77 @@ export default function CustomerHome() {
   const [urgency, setUrgency] = useState<"STANDARD" | "EMERGENCY">("STANDARD");
   const [includeInsurance, setIncludeInsurance] = useState(true);
   const [bookingConfirmed, setBookingConfirmed] = useState(false);
+
+  const handleSelectProperty = (propId: string) => {
+    setSelectedPropertyId(propId);
+    const prop = properties.find((p) => p.id === propId);
+    if (prop) {
+      setPostalCode(prop.postalCode);
+      const eqList = propertyEquipmentMap[propId] ?? [];
+      setSelectedEquipmentId(eqList[0]?.id ?? "");
+    }
+  };
+
+  // Cross-device & mobile draft persistence
+  useEffect(() => {
+    try {
+      const saved = typeof window !== "undefined" ? localStorage.getItem("skilled_hire_booking_draft_v1") : null;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.domain) setSelectedDomain(parsed.domain);
+        if (parsed.propertyId && properties.some((p) => p.id === parsed.propertyId)) {
+          setSelectedPropertyId(parsed.propertyId);
+        }
+        if (parsed.equipmentId) setSelectedEquipmentId(parsed.equipmentId);
+        if (parsed.description) setDescription(parsed.description);
+        if (parsed.urgency) setUrgency(parsed.urgency);
+        if (parsed.selectedSlot) setSelectedSlot(parsed.selectedSlot);
+        if (parsed.symptoms && Array.isArray(parsed.symptoms)) {
+          setSymptomSelections(parsed.symptoms);
+        }
+        setDraftSavedAt("Restored from draft");
+      }
+    } catch {
+      // LocalStorage unavailable
+    }
+  }, []);
+
+  // Auto-save draft on form change
+  useEffect(() => {
+    if (bookingConfirmed) return;
+    const timeout = setTimeout(() => {
+      try {
+        if (typeof window !== "undefined") {
+          const payload = {
+            domain: selectedDomain,
+            propertyId: selectedPropertyId,
+            equipmentId: selectedEquipmentId,
+            description,
+            urgency,
+            selectedSlot,
+            symptoms: symptomSelections,
+            step: bookingStep,
+          };
+          localStorage.setItem("skilled_hire_booking_draft_v1", JSON.stringify(payload));
+          const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          setDraftSavedAt(now);
+        }
+      } catch {
+        // storage quota
+      }
+    }, 600);
+    return () => clearTimeout(timeout);
+  }, [
+    selectedDomain,
+    selectedPropertyId,
+    selectedEquipmentId,
+    description,
+    urgency,
+    selectedSlot,
+    symptomSelections,
+    bookingStep,
+    bookingConfirmed,
+  ]);
 
   // --- TECHNICIAN SERVICE RECOMMENDATIONS & RESPONSE TRACKING ---
   const [recommendations, setRecommendations] = useState<ServiceRecommendationDTO[]>([
@@ -1108,9 +1330,68 @@ export default function CustomerHome() {
         // Fallback
       }
     }
+
+    const currentProp =
+      properties.find((p) => p.id === selectedPropertyId) ?? properties[0]!;
+    const eqList = propertyEquipmentMap[selectedPropertyId] ?? [];
+    const currentEq = eqList.find((e) => e.id === selectedEquipmentId);
+    const selectedSlotObj = (slotAvailability?.alternativeSlots ?? []).find(
+      (s) => s.id === selectedSlot,
+    );
+
+    const receipt: BookingReceiptDTO = {
+      serviceRequestId: `REQ-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+      referenceNumber: `SH-ONT-${Date.now().toString().slice(-6)}`,
+      status: "CONFIRMED",
+      customerId: customerProfile.id,
+      customerName: customerProfile.fullName,
+      customerPhone: customerProfile.phoneNumber ?? undefined,
+      propertyId: currentProp.id,
+      propertyLabel: currentProp.label,
+      propertyAddress: `${currentProp.addressLine1}${currentProp.unitNumber ? ` (${currentProp.unitNumber})` : ""}, ${currentProp.city}, ${currentProp.region} ${currentProp.postalCode}`,
+      verticalSlug: selectedDomain,
+      tradeName: activeDomainObj.label,
+      categoryName: activeDomainObj.category,
+      issueName: activeDomainObj.defaultIssue,
+      urgency,
+      description,
+      equipmentSummary: currentEq
+        ? `${currentEq.manufacturer ?? ""} ${currentEq.name} (Model: ${currentEq.modelNumber ?? "N/A"}, S/N: ${currentEq.serialNumber ?? "N/A"})`
+        : "General Diagnostic Assessment (No equipment pre-bound)",
+      scheduledStart: selectedSlotObj
+        ? `${selectedSlotObj.day} at ${selectedSlotObj.time.split(" - ")[0]}`
+        : "Today at 1:00 PM",
+      scheduledEnd: selectedSlotObj
+        ? `${selectedSlotObj.day} at ${selectedSlotObj.time.split(" - ")[1]}`
+        : "Today at 3:00 PM",
+      basePriceCents: diagnosticFeeCents,
+      protectionCoverageCents: includeInsurance ? 2500000 : 0,
+      guaranteeSummary:
+        "Backed by 365-Day Skilled Hire Workmanship Guarantee ($25,000 protection cap)",
+      cancellationPolicySummary:
+        "Ontario CPA Compliant: Full refund if cancelled 2+ hours prior to arrival window",
+      statutoryDisclosures: [
+        "Technical Standards and Safety Act (TSSA) Ontario Regulation 211/01 (Fuel Safety)",
+        "Ontario Electrical Safety Code (OESC) / Electrical Safety Authority (ESA) Authorized Work",
+        "Ontario Consumer Protection Act (CPA) 2002 Consumer Rights & 10-Day Statutory Disclosures",
+      ],
+      submittedAt: new Date().toISOString(),
+    };
+
+    setConfirmedReceipt(receipt);
+    setIsReceiptModalOpen(true);
     setBookingConfirmed(true);
     setBookingStep(3);
-    setActiveTab("tracking");
+
+    // Clear saved draft on completion
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("skilled_hire_booking_draft_v1");
+      }
+      setDraftSavedAt(null);
+    } catch {
+      // ignore
+    }
   };
 
   const handleSurveySubmit = () => {
@@ -1192,6 +1473,159 @@ export default function CustomerHome() {
       subtitle="Apple-inspired home care journey: instant trade search, transparent upfront estimates, live technician arrival tracking, structured sign-offs, 365-day workmanship warranty, and Digital Property Passport."
       eyebrow="SKILLED HIRE · ONTARIO LICENSED SERVICES"
     >
+      {/* Customer Account & Property Switcher Bar */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)",
+          border: "1px solid #e2e8f0",
+          borderRadius: 20,
+          padding: "16px 20px",
+          marginBottom: 20,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 16,
+          boxShadow: "0 2px 8px rgba(15, 23, 42, 0.03)",
+        }}
+      >
+        {/* Left: Customer Info */}
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div
+            style={{
+              width: 46,
+              height: 46,
+              borderRadius: "50%",
+              background: "linear-gradient(135deg, #1d4ed8 0%, #3b82f6 100%)",
+              color: "#fff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 800,
+              fontSize: 17,
+              boxShadow: "0 2px 6px rgba(29, 78, 216, 0.25)",
+            }}
+          >
+            SJ
+          </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 16, color: "#0f172a" }}>
+                {customerProfile.fullName}
+              </strong>
+              <Badge tone="blue">Verified Homeowner</Badge>
+              <Badge tone="neutral">MFA Active</Badge>
+            </div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, display: "flex", gap: 12 }}>
+              <span>✉️ {customerProfile.email}</span>
+              <span>📞 {customerProfile.phoneNumber}</span>
+              <span style={{ color: "#059669", fontWeight: 700 }}>
+                🎁 ${(customerProfile.courtesyCreditBalanceCents / 100).toFixed(0)} Reward Credit
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Center: Property Selector Switcher */}
+        <div
+          style={{
+            background: "#fff",
+            border: "1.5px solid #cbd5e1",
+            borderRadius: 14,
+            padding: "8px 14px",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            minWidth: 320,
+            boxShadow: "0 1px 3px rgba(15, 23, 42, 0.05)",
+          }}
+        >
+          <span style={{ fontSize: 20 }}>
+            {properties.find((p) => p.id === selectedPropertyId)?.propertyType === "CONDO"
+              ? "🏢"
+              : "🏡"}
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+              Active Service Property
+            </div>
+            <select
+              aria-label="Active service property"
+              value={selectedPropertyId}
+              onChange={(e) => handleSelectProperty(e.target.value)}
+              style={{
+                border: "none",
+                background: "transparent",
+                fontSize: 14,
+                fontWeight: 700,
+                color: "#0f172a",
+                cursor: "pointer",
+                padding: "2px 0",
+                width: "100%",
+                outline: "none",
+              }}
+            >
+              {properties.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label} — {p.addressLine1} ({p.city}, {p.postalCode}) {p.isPrimary ? "★ Primary" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Badge tone="blue">
+            {properties.find((p) => p.id === selectedPropertyId)?.propertyType ?? "DETACHED"}
+          </Badge>
+        </div>
+
+        {/* Right: Quick Actions & Draft Badge */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {draftSavedAt && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: "#f0fdf4",
+                border: "1px solid #bbf7d0",
+                borderRadius: 9999,
+                padding: "4px 10px",
+                fontSize: 12,
+                color: "#166534",
+                fontWeight: 600,
+              }}
+              title="Booking draft is continuously auto-saved and synced"
+            >
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: "#22c55e",
+                  display: "inline-block",
+                }}
+              />
+              Draft Saved ({draftSavedAt})
+            </div>
+          )}
+
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setIsAddPropertyModalOpen(true)}
+          >
+            + Add Property
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setIsProfileModalOpen(true)}
+          >
+            👤 Profile
+          </Button>
+        </div>
+      </div>
+
       {/* Primary Apple-style Navigation */}
       <div style={{ marginBottom: 24, overflowX: "auto" }}>
         <SegmentedControl
@@ -1408,6 +1842,266 @@ export default function CustomerHome() {
                 </Button>
               </div>
 
+              {/* 1. Selected Property Banner */}
+              {(() => {
+                const activeProp =
+                  properties.find((p) => p.id === selectedPropertyId) ?? properties[0]!;
+                return (
+                  <div
+                    style={{
+                      background: "#f8fafc",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 14,
+                      padding: "14px 16px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 10,
+                      marginBottom: 16,
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 18 }}>
+                          {activeProp.propertyType === "CONDO" ? "🏢" : "🏡"}
+                        </span>
+                        <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                          Service Location: {activeProp.label}
+                        </strong>
+                        {activeProp.isPrimary && <Badge tone="blue">Primary Home</Badge>}
+                        <Badge tone="neutral">{activeProp.propertyType}</Badge>
+                      </div>
+                      <div style={{ fontSize: 13, color: "#475569", marginTop: 4 }}>
+                        {activeProp.addressLine1}
+                        {activeProp.unitNumber ? `, ${activeProp.unitNumber}` : ""},{" "}
+                        {activeProp.city}, ON {activeProp.postalCode}
+                        {activeProp.accessNotes && (
+                          <span style={{ marginLeft: 8, color: "#64748b" }}>
+                            · Access: {activeProp.accessNotes}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setIsAddPropertyModalOpen(true)}
+                      >
+                        + Switch / Add Property
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* 2. Equipment Passport Picker */}
+              <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                    Digital Equipment Passport · Select Target Equipment
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddEquipmentModalOpen(true)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#1d4ed8",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    + Register New Equipment
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                    gap: 10,
+                  }}
+                >
+                  {(propertyEquipmentMap[selectedPropertyId] ?? []).map((eq) => {
+                    const isSelected = selectedEquipmentId === eq.id;
+                    return (
+                      <div
+                        key={eq.id}
+                        onClick={() => setSelectedEquipmentId(eq.id)}
+                        style={{
+                          padding: "12px 14px",
+                          borderRadius: 12,
+                          border: `1.5px solid ${isSelected ? "#1d4ed8" : "#e2e8f0"}`,
+                          background: isSelected ? "#eff6ff" : "#fff",
+                          cursor: "pointer",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "flex-start",
+                            marginBottom: 4,
+                          }}
+                        >
+                          <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                            {eq.name}
+                          </strong>
+                          <Badge tone={eq.warrantyStatus === "ACTIVE" ? "green" : "neutral"}>
+                            {eq.warrantyStatus === "ACTIVE" ? "Warranty Active" : eq.warrantyStatus}
+                          </Badge>
+                        </div>
+                        <div style={{ fontSize: 12, color: "#64748b" }}>
+                          {eq.manufacturer && <span>Mfg: {eq.manufacturer} · </span>}
+                          {eq.modelNumber && <span>Model: {eq.modelNumber}</span>}
+                        </div>
+                        {eq.serialNumber && (
+                          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+                            S/N: {eq.serialNumber}
+                            {eq.installedOn && ` · Installed: ${eq.installedOn}`}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  <div
+                    onClick={() => setSelectedEquipmentId("")}
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1.5px solid ${selectedEquipmentId === "" ? "#1d4ed8" : "#e2e8f0"}`,
+                      background: selectedEquipmentId === "" ? "#eff6ff" : "#fff",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                      Unlisted / General Assessment
+                    </strong>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>
+                      Technician will inspect and register asset on-site
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Trade Symptom Checklist */}
+              <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+                <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                  Common Diagnostic Symptoms (Select all that apply)
+                </label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {[
+                    "Compressor Humming / Fan Stalled",
+                    "Indoor Air Warm / Not Cooling",
+                    "Thermostat Blank / No Power",
+                    "Water Pooling Around Unit",
+                    "Unusual Rattling or Buzzing",
+                    "Breaker Frequently Tripping",
+                    "Ice Forming on Refrigerant Line",
+                  ].map((sym) => {
+                    const isChecked = symptomSelections.includes(sym);
+                    return (
+                      <button
+                        key={sym}
+                        type="button"
+                        onClick={() => {
+                          setSymptomSelections((prev) =>
+                            isChecked ? prev.filter((s) => s !== sym) : [...prev, sym],
+                          );
+                        }}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 9999,
+                          border: `1px solid ${isChecked ? "#1d4ed8" : "#cbd5e1"}`,
+                          background: isChecked ? "#dbeafe" : "#f8fafc",
+                          color: isChecked ? "#1e40af" : "#334155",
+                          fontSize: 12,
+                          fontWeight: isChecked ? 700 : 500,
+                          cursor: "pointer",
+                          transition: "all 0.12s ease",
+                        }}
+                      >
+                        {isChecked ? "✓ " : "+ "}
+                        {sym}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 4. Age & Filter Condition */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 12,
+                  marginBottom: 16,
+                }}
+              >
+                <div style={{ display: "grid", gap: 6 }}>
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                    Approximate System Age
+                  </label>
+                  <select
+                    aria-label="Approximate system age"
+                    value={equipmentAgeYears}
+                    onChange={(e) => setEquipmentAgeYears(e.target.value)}
+                    style={{
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 10,
+                      padding: "10px 12px",
+                      fontSize: 14,
+                      background: "#fff",
+                    }}
+                  >
+                    <option value="1-3 years">1 - 3 years (Modern / In Warranty)</option>
+                    <option value="4-7 years">4 - 7 years (Mid-life)</option>
+                    <option value="8-12 years">8 - 12 years (Mature)</option>
+                    <option value="13+ years">13+ years (Replacement candidate)</option>
+                    <option value="Unknown">Unknown</option>
+                  </select>
+                </div>
+
+                <div style={{ display: "grid", gap: 6 }}>
+                  <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                    Air Filter Last Replaced
+                  </label>
+                  <select
+                    aria-label="Air filter last replaced"
+                    value={filterLastChanged}
+                    onChange={(e) => setFilterLastChanged(e.target.value)}
+                    style={{
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 10,
+                      padding: "10px 12px",
+                      fontSize: 14,
+                      background: "#fff",
+                    }}
+                  >
+                    <option value="Within 30 days">Within past 30 days</option>
+                    <option value="1-3 months ago">1 - 3 months ago</option>
+                    <option value="4-6 months ago">4 - 6 months ago</option>
+                    <option value="Over 6 months / Unsure">Over 6 months / Unsure</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* 5. Issue Description & Urgency */}
               <div style={{ display: "grid", gap: 16 }}>
                 <Field
                   label="Describe the issue you are experiencing"
@@ -1453,10 +2147,15 @@ export default function CustomerHome() {
                   )}
                 </div>
 
-                <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, flexWrap: "wrap", gap: 10 }}>
                   <Button variant="primary" size="lg" onClick={() => setBookingStep(2)}>
                     Continue to Slot Selection →
                   </Button>
+                  {draftSavedAt && (
+                    <span style={{ fontSize: 12, color: "#64748b" }}>
+                      ☁️ Draft auto-saved ({draftSavedAt})
+                    </span>
+                  )}
                 </div>
               </div>
             </Card>
@@ -4979,6 +5678,575 @@ export default function CustomerHome() {
               onClick={() => setIsRecoveryModalOpen(false)}
             >
               Close
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* -------------------------------------------------------------
+          MODAL: BOOKING SUBMISSION RECEIPT (SH-11)
+         ------------------------------------------------------------- */}
+      <Modal
+        isOpen={isReceiptModalOpen}
+        onClose={() => {
+          setIsReceiptModalOpen(false);
+          setActiveTab("tracking");
+        }}
+        title="Official Service Booking Receipt"
+      >
+        {confirmedReceipt && (
+          <div style={{ display: "grid", gap: 16 }}>
+            <div
+              style={{
+                background: "linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)",
+                border: "1.5px solid #86efac",
+                borderRadius: 16,
+                padding: "16px 20px",
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+              }}
+            >
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: "50%",
+                  background: "#16a34a",
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 22,
+                  fontWeight: 800,
+                  flexShrink: 0,
+                }}
+              >
+                ✓
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <strong style={{ fontSize: 17, color: "#166534" }}>
+                    Service Request Confirmed & Dispatched
+                  </strong>
+                  <Badge tone="green">STATUS: CONFIRMED</Badge>
+                </div>
+                <div style={{ fontSize: 13, color: "#15803d", marginTop: 2 }}>
+                  Booking Reference: <strong>{confirmedReceipt.referenceNumber}</strong> · Request ID:{" "}
+                  {confirmedReceipt.serviceRequestId}
+                </div>
+              </div>
+            </div>
+
+            {/* Two column grid of details */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 14,
+              }}
+            >
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 14,
+                  padding: 14,
+                }}
+              >
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+                  Customer & Property
+                </div>
+                <div style={{ marginTop: 6, fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+                  {confirmedReceipt.customerName}
+                </div>
+                <div style={{ fontSize: 13, color: "#334155", marginTop: 2 }}>
+                  {confirmedReceipt.propertyLabel}
+                </div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                  {confirmedReceipt.propertyAddress}
+                </div>
+                {confirmedReceipt.customerPhone && (
+                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                    Phone: {confirmedReceipt.customerPhone}
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 14,
+                  padding: 14,
+                }}
+              >
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+                  Service Appointment & Window
+                </div>
+                <div style={{ marginTop: 6, fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+                  {confirmedReceipt.tradeName} Diagnostic
+                </div>
+                <div style={{ fontSize: 13, color: "#334155", marginTop: 2 }}>
+                  📅 {confirmedReceipt.scheduledStart ?? "Today, 1:00 PM"}
+                </div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                  Urgency: {confirmedReceipt.urgency === "EMERGENCY" ? "⚡ Emergency (~45m SLA)" : "Standard Scheduled"}
+                </div>
+                {confirmedReceipt.equipmentSummary && (
+                  <div style={{ fontSize: 11, color: "#1e40af", marginTop: 4, fontWeight: 600 }}>
+                    Asset: {confirmedReceipt.equipmentSummary}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Financial & Fee Summary */}
+            <div
+              style={{
+                background: "#fff",
+                border: "1px solid #cbd5e1",
+                borderRadius: 14,
+                padding: 14,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 8 }}>
+                Authorized Fee Breakdown (Diagnostic Call-Out)
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                <span>Diagnostic Truck Roll & Initial Assessment:</span>
+                <strong>${(confirmedReceipt.basePriceCents / 100).toFixed(2)} CAD</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                <span>Workmanship Guarantee Protection Cap:</span>
+                <span style={{ color: "#16a34a", fontWeight: 700 }}>$25,000.00 Included</span>
+              </div>
+              {confirmedReceipt.protectionCoverageCents > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                  <span>Incidental Damage Protection Insurance:</span>
+                  <span>$19.00 CAD (Authorized)</span>
+                </div>
+              )}
+              <Divider />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 800, marginTop: 4 }}>
+                <span>Total Authorized at Dispatch:</span>
+                <span>${((confirmedReceipt.basePriceCents + (confirmedReceipt.protectionCoverageCents > 0 ? 1900 : 0)) / 100).toFixed(2)} CAD</span>
+              </div>
+            </div>
+
+            {/* Ontario Statutory Protections & Disclosures */}
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: 14,
+                padding: 14,
+                fontSize: 12,
+                color: "#475569",
+              }}
+            >
+              <strong style={{ color: "#0f172a", display: "block", marginBottom: 6 }}>
+                Ontario Statutory Compliance Disclosures
+              </strong>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4 }}>
+                {confirmedReceipt.statutoryDisclosures.map((d, i) => (
+                  <li key={i}>{d}</li>
+                ))}
+              </ul>
+              <div style={{ marginTop: 8, color: "#166534", fontWeight: 600 }}>
+                {confirmedReceipt.guaranteeSummary}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  window.print();
+                }}
+              >
+                🖨️ Print / Save PDF
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setIsReceiptModalOpen(false);
+                  setActiveTab("tracking");
+                }}
+              >
+                Track Live Technician →
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* -------------------------------------------------------------
+          MODAL: ADD PROPERTY (SH-11)
+         ------------------------------------------------------------- */}
+      <Modal
+        isOpen={isAddPropertyModalOpen}
+        onClose={() => setIsAddPropertyModalOpen(false)}
+        title="Add Service Property"
+      >
+        <div style={{ display: "grid", gap: 14 }}>
+          <Field
+            label="Property Label"
+            placeholder="e.g. Primary Residence, Muskoka Cottage, Downtown Rental"
+            value={newPropLabel}
+            onChange={setNewPropLabel}
+          />
+          <Field
+            label="Street Address"
+            placeholder="e.g. 789 Bay Street"
+            value={newPropAddress}
+            onChange={setNewPropAddress}
+          />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field
+              label="Unit / Suite (Optional)"
+              placeholder="e.g. Unit 402"
+              value={newPropUnit}
+              onChange={setNewPropUnit}
+            />
+            <Field
+              label="City"
+              placeholder="e.g. Toronto"
+              value={newPropCity}
+              onChange={setNewPropCity}
+            />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field
+              label="Postal Code (Ontario A1A 1A1)"
+              placeholder="e.g. M5J 2R8"
+              value={newPropPostalCode}
+              onChange={(val) => setNewPropPostalCode(val.toUpperCase())}
+            />
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                Property Type
+              </label>
+              <select
+                aria-label="New property type"
+                value={newPropType}
+                onChange={(e) => setNewPropType(e.target.value as PropertyType)}
+                style={{
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  background: "#fff",
+                }}
+              >
+                <option value="DETACHED">Detached House</option>
+                <option value="SEMI_DETACHED">Semi-Detached</option>
+                <option value="TOWNHOUSE">Townhouse</option>
+                <option value="CONDO">Condominium / Apartment</option>
+                <option value="COMMERCIAL">Commercial / Retail</option>
+              </select>
+            </div>
+          </div>
+          <Field
+            label="Access & Gate Instructions"
+            multiline
+            placeholder="Keypad code, lockbox location, concierge buzzer, parking instructions..."
+            value={newPropAccessNotes}
+            onChange={setNewPropAccessNotes}
+          />
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={newPropIsPrimary}
+              onChange={(e) => setNewPropIsPrimary(e.target.checked)}
+            />
+            <span>Set this property as my Primary Residence</span>
+          </label>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+            <Button variant="secondary" onClick={() => setIsAddPropertyModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!newPropAddress.trim() || !newPropPostalCode.trim()}
+              onClick={() => {
+                const newId = `prop-custom-${Date.now()}`;
+                const formattedPostal = newPropPostalCode.trim().replace(/^([A-Za-z]\d[A-Za-z])\s?(\d[A-Za-z]\d)$/, "$1 $2");
+                const newProperty: CustomerPropertyDTO = {
+                  id: newId,
+                  customerId: customerProfile.id,
+                  label: newPropLabel.trim() || newPropAddress.trim(),
+                  addressLine1: newPropAddress.trim(),
+                  unitNumber: newPropUnit.trim() || undefined,
+                  city: newPropCity.trim() || "Toronto",
+                  region: "ON",
+                  postalCode: formattedPostal,
+                  propertyType: newPropType,
+                  accessNotes: newPropAccessNotes.trim() || undefined,
+                  isPrimary: newPropIsPrimary,
+                  equipmentCount: 0,
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                };
+
+                setProperties((prev) => {
+                  const updated = newPropIsPrimary ? prev.map((p) => ({ ...p, isPrimary: false })) : [...prev];
+                  return [newProperty, ...updated];
+                });
+
+                setSelectedPropertyId(newId);
+                setPostalCode(formattedPostal);
+                setCustomerProfile((prev) => ({
+                  ...prev,
+                  propertiesCount: prev.propertiesCount + 1,
+                }));
+
+                // Reset modal form
+                setNewPropLabel("");
+                setNewPropAddress("");
+                setNewPropUnit("");
+                setNewPropPostalCode("");
+                setNewPropAccessNotes("");
+                setNewPropIsPrimary(false);
+                setIsAddPropertyModalOpen(false);
+              }}
+            >
+              Save Property
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* -------------------------------------------------------------
+          MODAL: CUSTOMER PROFILE & ACCOUNT (SH-11)
+         ------------------------------------------------------------- */}
+      <Modal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        title="Customer Profile & Account"
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          {/* Stats Bar */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4, 1fr)",
+              gap: 10,
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 14,
+              padding: 12,
+              textAlign: "center",
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a" }}>
+                {customerProfile.propertiesCount}
+              </div>
+              <div style={{ fontSize: 11, color: "#64748b" }}>Properties</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a" }}>
+                {customerProfile.activeServiceRequestsCount}
+              </div>
+              <div style={{ fontSize: 11, color: "#64748b" }}>Active Jobs</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a" }}>
+                {customerProfile.completedJobsCount}
+              </div>
+              <div style={{ fontSize: 11, color: "#64748b" }}>Completed</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: "#16a34a" }}>
+                ${(customerProfile.courtesyCreditBalanceCents / 100).toFixed(0)}
+              </div>
+              <div style={{ fontSize: 11, color: "#64748b" }}>Credit Balance</div>
+            </div>
+          </div>
+
+          <Field
+            label="Full Legal Name"
+            value={editProfileName}
+            onChange={setEditProfileName}
+          />
+          <Field
+            label="Phone Number (SMS Notifications)"
+            value={editProfilePhone}
+            onChange={setEditProfilePhone}
+          />
+          <Field
+            label="Email Address"
+            value={customerProfile.email}
+            onChange={() => {}}
+            hint="Email cannot be changed directly in demo mode."
+          />
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "10px 14px",
+              background: "#f0fdf4",
+              border: "1px solid #bbf7d0",
+              borderRadius: 12,
+            }}
+          >
+            <div>
+              <strong style={{ fontSize: 13, color: "#166534" }}>Multi-Factor Authentication (MFA)</strong>
+              <div style={{ fontSize: 12, color: "#15803d" }}>TOTP Authenticator App Active</div>
+            </div>
+            <Badge tone="green">Protected</Badge>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Button variant="secondary" onClick={() => setIsProfileModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setCustomerProfile((prev) => ({
+                  ...prev,
+                  fullName: editProfileName.trim() || prev.fullName,
+                  phoneNumber: editProfilePhone.trim() || prev.phoneNumber,
+                }));
+                setIsProfileModalOpen(false);
+              }}
+            >
+              Save Profile
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* -------------------------------------------------------------
+          MODAL: ADD EQUIPMENT ASSET (SH-11)
+         ------------------------------------------------------------- */}
+      <Modal
+        isOpen={isAddEquipmentModalOpen}
+        onClose={() => setIsAddEquipmentModalOpen(false)}
+        title="Add Equipment to Property Passport"
+      >
+        <div style={{ display: "grid", gap: 14 }}>
+          <Field
+            label="Equipment / System Name"
+            placeholder="e.g. Lennox Signature XC21 Central AC, Carrier Furnace"
+            value={newEqName}
+            onChange={setNewEqName}
+          />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gap: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+                Asset Category
+              </label>
+              <select
+                aria-label="Equipment asset category"
+                value={newEqAssetType}
+                onChange={(e) => setNewEqAssetType(e.target.value)}
+                style={{
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  background: "#fff",
+                }}
+              >
+                <option value="AIR_CONDITIONER">Air Conditioner</option>
+                <option value="FURNACE">Gas Furnace</option>
+                <option value="HEAT_PUMP">Heat Pump</option>
+                <option value="BOILER">Boiler / Hydronic</option>
+                <option value="WATER_HEATER">Water Heater</option>
+                <option value="ELECTRICAL_PANEL">Electrical Panel</option>
+                <option value="HRV_ERV">HRV / ERV Air Exchanger</option>
+              </select>
+            </div>
+            <Field
+              label="Manufacturer"
+              placeholder="e.g. Lennox, Carrier, Trane"
+              value={newEqManufacturer}
+              onChange={setNewEqManufacturer}
+            />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field
+              label="Model Number"
+              placeholder="e.g. XC21-036-230"
+              value={newEqModelNumber}
+              onChange={setNewEqModelNumber}
+            />
+            <Field
+              label="Serial Number"
+              placeholder="e.g. 5821-LEN-2021"
+              value={newEqSerialNumber}
+              onChange={setNewEqSerialNumber}
+            />
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <label style={{ fontSize: 13, fontWeight: 700, color: "#475569" }}>
+              Warranty Status
+            </label>
+            <select
+              aria-label="Equipment warranty status"
+              value={newEqWarranty}
+              onChange={(e) =>
+                setNewEqWarranty(
+                  e.target.value as "ACTIVE" | "EXPIRED" | "UNKNOWN" | "EXTENDED",
+                )
+              }
+              style={{
+                border: "1px solid #cbd5e1",
+                borderRadius: 10,
+                padding: "10px 12px",
+                fontSize: 14,
+                background: "#fff",
+              }}
+            >
+              <option value="ACTIVE">Active Manufacturer Warranty</option>
+              <option value="EXTENDED">Extended 10-Year Labor / Parts</option>
+              <option value="EXPIRED">Expired</option>
+              <option value="UNKNOWN">Unknown / To Be Verified</option>
+            </select>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+            <Button variant="secondary" onClick={() => setIsAddEquipmentModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!newEqName.trim()}
+              onClick={() => {
+                const newId = `eq-cust-${Date.now()}`;
+                const newAsset: EquipmentItem = {
+                  id: newId,
+                  verticalId: "vert-hvac",
+                  name: newEqName.trim(),
+                  assetType: newEqAssetType,
+                  manufacturer: newEqManufacturer.trim() || undefined,
+                  modelNumber: newEqModelNumber.trim() || undefined,
+                  serialNumber: newEqSerialNumber.trim() || undefined,
+                  warrantyStatus: newEqWarranty,
+                  installedOn: new Date().toISOString().split("T")[0],
+                };
+
+                setPropertyEquipmentMap((prev) => ({
+                  ...prev,
+                  [selectedPropertyId]: [...(prev[selectedPropertyId] ?? []), newAsset],
+                }));
+
+                setSelectedEquipmentId(newId);
+                setNewEqName("");
+                setNewEqManufacturer("");
+                setNewEqModelNumber("");
+                setNewEqSerialNumber("");
+                setIsAddEquipmentModalOpen(false);
+              }}
+            >
+              Add Equipment Asset
             </Button>
           </div>
         </div>

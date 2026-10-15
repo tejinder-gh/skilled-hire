@@ -81,6 +81,7 @@ import {
   jobCancellations,
   customerServiceCredits,
   contractorDispatchPenalties,
+  bookingDrafts,
   eq,
   ne,
   and,
@@ -9697,6 +9698,215 @@ describeSuite("Skilled Hire lifecycle", () => {
     });
     expect(queueRes.statusCode).toBe(200);
     expect(queueRes.json<{ total: number }>().total).toBeGreaterThanOrEqual(0);
+  });
+
+  it("30. Customer accounts, multiple properties, equipment passport, and booking draft persistence (#12, SH-11)", async () => {
+    // 1. Customer Profile Query (GET /v1/customer/profile)
+    const profileRes = await app.inject({
+      method: "GET",
+      url: "/v1/customer/profile",
+      headers: auth("customer@example.test"),
+    });
+    expect(profileRes.statusCode).toBe(200);
+    const profile = profileRes.json<{
+      id: string;
+      email: string;
+      fullName: string;
+      role: string;
+      propertiesCount: number;
+      courtesyCreditBalanceCents: number;
+    }>();
+    expect(profile.email).toBe("customer@example.test");
+    expect(profile.role).toBe("CUSTOMER");
+    expect(profile.propertiesCount).toBeGreaterThanOrEqual(1);
+
+    // 2. Customer Profile Update (PATCH /v1/customer/profile)
+    const updateProfileRes = await app.inject({
+      method: "PATCH",
+      url: "/v1/customer/profile",
+      headers: auth("customer@example.test"),
+      payload: {
+        fullName: "Sarah Avery Jenkins",
+        phoneNumber: "+14165550199",
+      },
+    });
+    expect(updateProfileRes.statusCode).toBe(200);
+    expect(updateProfileRes.json<{ profile: { fullName: string; phoneNumber: string } }>().profile.fullName).toBe("Sarah Avery Jenkins");
+
+    // 3. Create Primary Property (POST /v1/properties)
+    const newPropRes = await app.inject({
+      method: "POST",
+      url: "/v1/properties",
+      headers: auth("customer@example.test"),
+      payload: {
+        label: "Downtown Toronto Penthouse",
+        addressLine1: "180 University Ave",
+        unitNumber: "PH04",
+        city: "Toronto",
+        region: "ON",
+        postalCode: "M5H 0A2",
+        propertyType: "CONDO",
+        isPrimary: true,
+        accessNotes: "Buzz code #9402, concierge 24/7",
+        latitude: 43.6495,
+        longitude: -79.3871,
+      },
+    });
+    expect(newPropRes.statusCode).toBe(201);
+    const newPropJson = newPropRes.json<{ id: string; property: { isPrimary: boolean; propertyType: string } }>();
+    const downtownPropId = newPropJson.id;
+    expect(newPropJson.property.isPrimary).toBe(true);
+    expect(newPropJson.property.propertyType).toBe("CONDO");
+
+    // 4. Create Secondary Property (POST /v1/properties)
+    const secondPropRes = await app.inject({
+      method: "POST",
+      url: "/v1/properties",
+      headers: auth("customer@example.test"),
+      payload: {
+        label: "Muskoka Family Cottage",
+        addressLine1: "42 Lake Joseph Rd",
+        city: "Port Carling",
+        region: "ON",
+        postalCode: "P0B 1J0",
+        propertyType: "DETACHED",
+        isPrimary: false,
+        accessNotes: "Key in lockbox by the boathouse code 4492",
+      },
+    });
+    expect(secondPropRes.statusCode).toBe(201);
+    const muskokaPropId = secondPropRes.json<{ id: string }>().id;
+
+    // 5. Query Customer Properties (GET /v1/properties)
+    const propListRes = await app.inject({
+      method: "GET",
+      url: "/v1/properties",
+      headers: auth("customer@example.test"),
+    });
+    expect(propListRes.statusCode).toBe(200);
+    const propList = propListRes.json<Array<{ id: string; isPrimary: boolean; label: string }>>();
+    expect(propList.length).toBeGreaterThanOrEqual(2);
+    // Primary property is sorted first
+    expect(propList[0]?.isPrimary).toBe(true);
+
+    // 6. Update Property (PATCH /v1/properties/:id)
+    const updatePropRes = await app.inject({
+      method: "PATCH",
+      url: `/v1/properties/${muskokaPropId}`,
+      headers: auth("customer@example.test"),
+      payload: {
+        label: "Muskoka Lake Joseph Cottage & Boat House",
+        accessNotes: "Key in lockbox by boathouse code updated to 9912",
+      },
+    });
+    expect(updatePropRes.statusCode).toBe(200);
+    expect(updatePropRes.json<{ property: { label: string } }>().property.label).toBe("Muskoka Lake Joseph Cottage & Boat House");
+
+    // 7. Add Equipment to Property Passport (POST /v1/properties/:id/equipment)
+    const [hvacVertical] = await db
+      .select({ id: verticals.id })
+      .from(verticals)
+      .where(eq(verticals.slug, "hvac"))
+      .limit(1);
+
+    const addEquipRes = await app.inject({
+      method: "POST",
+      url: `/v1/properties/${downtownPropId}/equipment`,
+      headers: auth("customer@example.test"),
+      payload: {
+        verticalId: hvacVertical!.id,
+        name: "Lennox Signature XC21 High-Efficiency AC",
+        assetType: "CENTRAL_AIR_CONDITIONER",
+        manufacturer: "Lennox",
+        modelNumber: "XC21-036-230",
+        serialNumber: "LN-88319-2024",
+        installedOn: "2024-05-15",
+        warrantyStatus: "ACTIVE",
+        metadata: { seersRating: 21, refrigerant: "R-410A" },
+      },
+    });
+    expect(addEquipRes.statusCode).toBe(201);
+    const equipJson = addEquipRes.json<{ success: boolean; asset: { id: string; name: string } }>();
+    expect(equipJson.success).toBe(true);
+    expect(equipJson.asset.name).toBe("Lennox Signature XC21 High-Efficiency AC");
+
+    // 8. Query Property Equipment (GET /v1/properties/:id/equipment)
+    const listEquipRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${downtownPropId}/equipment`,
+      headers: auth("customer@example.test"),
+    });
+    expect(listEquipRes.statusCode).toBe(200);
+    const equipList = listEquipRes.json<Array<{ name: string; manufacturer: string; warrantyStatus: string }>>();
+    expect(equipList.some((e) => e.manufacturer === "Lennox")).toBe(true);
+
+    // 9. Booking Draft Synchronization (PUT & GET & DELETE /v1/customer/booking-draft)
+    const saveDraftRes = await app.inject({
+      method: "PUT",
+      url: "/v1/customer/booking-draft",
+      headers: auth("customer@example.test"),
+      payload: {
+        step: 2,
+        draftPayload: {
+          verticalSlug: "hvac",
+          propertyId: downtownPropId,
+          urgency: "STANDARD",
+          description: "Annual heat pump and condenser spring inspection and filter replacement.",
+          selectedSlotId: "slot-tomorrow-morning",
+        },
+      },
+    });
+    expect(saveDraftRes.statusCode).toBe(200);
+    expect(saveDraftRes.json<{ success: boolean }>().success).toBe(true);
+
+    const getDraftRes = await app.inject({
+      method: "GET",
+      url: "/v1/customer/booking-draft",
+      headers: auth("customer@example.test"),
+    });
+    expect(getDraftRes.statusCode).toBe(200);
+    const retrievedDraft = getDraftRes.json<{ draft: { step: number; draftPayload: { verticalSlug: string } } }>();
+    expect(retrievedDraft.draft.step).toBe(2);
+    expect(retrievedDraft.draft.draftPayload.verticalSlug).toBe("hvac");
+
+    const clearDraftRes = await app.inject({
+      method: "DELETE",
+      url: "/v1/customer/booking-draft",
+      headers: auth("customer@example.test"),
+    });
+    expect(clearDraftRes.statusCode).toBe(200);
+
+    const postClearDraftRes = await app.inject({
+      method: "GET",
+      url: "/v1/customer/booking-draft",
+      headers: auth("customer@example.test"),
+    });
+    expect(postClearDraftRes.json<{ draft: unknown }>().draft).toBeNull();
+
+    // 10. Authorization Guard: Another customer cannot access or delete properties
+    const unauthorizedRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${downtownPropId}`,
+      headers: auth("provider@example.test"),
+    });
+    expect(unauthorizedRes.statusCode).toBe(403);
+
+    // 11. Soft Delete Secondary Property (DELETE /v1/properties/:id)
+    const deletePropRes = await app.inject({
+      method: "DELETE",
+      url: `/v1/properties/${muskokaPropId}`,
+      headers: auth("customer@example.test"),
+    });
+    expect(deletePropRes.statusCode).toBe(200);
+
+    // Verify deleted property is excluded from active properties list
+    const postDeleteListRes = await app.inject({
+      method: "GET",
+      url: "/v1/properties",
+      headers: auth("customer@example.test"),
+    });
+    const postDeleteList = postDeleteListRes.json<Array<{ id: string }>>();
+    expect(postDeleteList.some((p) => p.id === muskokaPropId)).toBe(false);
   });
 });
 
