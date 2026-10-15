@@ -1324,3 +1324,41 @@ export const processRefundSchema = z.object({
   idempotencyKey: z.string().min(16).max(255),
 });
 
+// Payout Holds, Milestone Evidence & Ledger Reconciliation (SH-08)
+export const payoutHoldPlaceSchema = z.object({
+  contractorId: uuid,
+  milestoneId: uuid,
+  amountCents: z.number().int().positive(),
+  holdReason: z.enum([
+    "MISSING_COMPLETION_EVIDENCE",
+    "ACTIVE_DISPUTE",
+    "COMPLIANCE_RESTRICTION",
+    "QUALITY_AUDIT_SAMPLE",
+    "NEGATIVE_CONTRACTOR_BALANCE",
+    "MANUAL_RISK_HOLD",
+  ]),
+  requiredEvidenceType: z.string().max(64).optional(),
+  evidenceAttachmentId: uuid.optional(),
+  releaseNotes: z.string().max(1000).optional(),
+});
+
+export const payoutHoldReleaseSchema = z.object({
+  releaseNotes: z.string().min(3).max(1000),
+  evidenceAttachmentId: uuid.optional(),
+});
+
+export const reconciliationRunSchema = z.object({
+  reportDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Format must be YYYY-MM-DD")
+    .optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+export const contractorPayoutTransferSchema = z.object({
+  contractorId: uuid,
+  amountCents: z.number().int().positive().optional(),
+});
+
+
+

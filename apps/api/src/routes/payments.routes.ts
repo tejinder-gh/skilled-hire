@@ -21,12 +21,25 @@ import {
   paymentIntents,
   stripeWebhookEvents,
   paymentDisputes,
+  marketplaceFinancialLedger,
+  payoutHolds,
+  contractorPayoutBalances,
+  financialReconciliationReports,
 } from "@marketplace/database";
 import {
   StripeSandboxService,
   verifyStripeWebhookSignature,
   calculateApplicationFee,
   StripeSignatureError,
+  generateCustomerPaymentLedgerEntries,
+  generatePayoutHoldLedgerEntries,
+  generatePayoutReleaseLedgerEntries,
+  generateContractorPayoutLedgerEntries,
+  generateRefundLedgerEntries,
+  applyLedgerToContractorBalance,
+  evaluateMilestonePayoutEligibility,
+  computeFinancialReconciliation,
+  type DoubleEntryTransaction,
 } from "@marketplace/payments";
 import {
   connectOnboardInitiateSchema,
@@ -34,13 +47,228 @@ import {
   confirmPaymentIntentSchema,
   attachPaymentMethodSchema,
   processRefundSchema,
+  payoutHoldPlaceSchema,
+  payoutHoldReleaseSchema,
+  reconciliationRunSchema,
+  contractorPayoutTransferSchema,
 } from "@marketplace/validation";
 import { actor, authenticate, parse, uuid } from "../common/auth.js";
 import { audit } from "../common/events.js";
 
 const stripeService = new StripeSandboxService();
 
+/**
+ * Gets or initializes a contractor's payout balance record.
+ */
+async function getOrCreateContractorBalance(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  contractorId: string,
+) {
+  const [existing] = await tx
+    .select()
+    .from(contractorPayoutBalances)
+    .where(eq(contractorPayoutBalances.contractorId, contractorId))
+    .limit(1);
+
+  if (existing) {
+    return {
+      availableBalanceCents: Number(existing.availableBalanceCents),
+      heldBalanceCents: Number(existing.heldBalanceCents),
+      lifetimeEarningsCents: Number(existing.lifetimeEarningsCents),
+      lifetimePayoutsCents: Number(existing.lifetimePayoutsCents),
+      isNegative: existing.isNegative,
+    };
+  }
+
+  await tx.insert(contractorPayoutBalances).values({
+    contractorId,
+    availableBalanceCents: 0,
+    heldBalanceCents: 0,
+    lifetimeEarningsCents: 0,
+    lifetimePayoutsCents: 0,
+    isNegative: false,
+    currency: "CAD",
+  });
+
+  return {
+    availableBalanceCents: 0,
+    heldBalanceCents: 0,
+    lifetimeEarningsCents: 0,
+    lifetimePayoutsCents: 0,
+    isNegative: false,
+  };
+}
+
+/**
+ * Inserts immutable double-entry ledger records into marketplace_financial_ledger.
+ */
+async function recordLedgerEntriesInDb(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  transaction: DoubleEntryTransaction,
+) {
+  for (const entry of transaction.entries) {
+    await tx.insert(marketplaceFinancialLedger).values({
+      entryType: transaction.entryType,
+      accountType: entry.accountType,
+      direction: entry.direction,
+      amountCents: entry.amountCents,
+      currency: "CAD",
+      contractorId: entry.contractorId ?? null,
+      customerId: entry.customerId ?? null,
+      jobId: entry.jobId ?? null,
+      milestoneId: entry.milestoneId ?? null,
+      transactionId: entry.transactionId ?? null,
+      refundId: entry.refundId ?? null,
+      description: entry.description,
+      runningBalanceCents: 0,
+    });
+  }
+}
+
+/**
+ * Core settlement logic: Records payment transaction, updates milestone,
+ * logs append-only double entries to the financial ledger, evaluates milestone evidence
+ * gates, places automated holds if evidence is missing, and updates contractor balances.
+ */
+async function processSuccessfulPaymentSettlement(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: {
+    milestoneId: string;
+    paymentIntentId: string;
+    contractorId?: string | null | undefined;
+    customerId: string;
+    amountCents: number;
+    provider: string;
+    idempotencyKey: string;
+  },
+) {
+  // 1. Insert transaction
+  const [savedTx] = await tx
+    .insert(paymentTransactions)
+    .values({
+      milestoneId: input.milestoneId,
+      provider: input.provider,
+      providerReference: input.paymentIntentId,
+      idempotencyKey: input.idempotencyKey,
+      amountCents: input.amountCents,
+      currency: "CAD",
+      status: "PAID",
+    })
+    .onConflictDoNothing({ target: paymentTransactions.idempotencyKey })
+    .returning();
+
+  // 2. Update milestone
+  await tx
+    .update(paymentMilestones)
+    .set({ status: "PAID", paidAt: new Date() })
+    .where(eq(paymentMilestones.id, input.milestoneId));
+
+  // 3. Resolve contractor ID if not directly provided
+  let contractorId = input.contractorId;
+  let milestoneTitle = "Milestone Payment";
+  let isFinal = false;
+  let evidenceRequired = false;
+
+  const [msRow] = await tx
+    .select({
+      triggerName: paymentMilestones.triggerName,
+      sequence: paymentMilestones.sequence,
+      evidenceRequired: paymentMilestones.evidenceRequired,
+      contractorId: jobs.contractorId,
+      jobId: jobs.id,
+    })
+    .from(paymentMilestones)
+    .innerJoin(paymentSchedules, eq(paymentSchedules.id, paymentMilestones.scheduleId))
+    .innerJoin(quotes, eq(quotes.id, paymentSchedules.quoteId))
+    .innerJoin(jobs, eq(jobs.id, quotes.jobId))
+    .where(eq(paymentMilestones.id, input.milestoneId))
+    .limit(1);
+
+  if (msRow) {
+    contractorId = contractorId ?? msRow.contractorId;
+    milestoneTitle = msRow.triggerName;
+    evidenceRequired = msRow.evidenceRequired;
+    isFinal = msRow.sequence === 3 || msRow.triggerName.toLowerCase().includes("final");
+  }
+
+  if (contractorId) {
+    // 4. Generate double-entry financial ledger records
+    const ledgerTx = generateCustomerPaymentLedgerEntries({
+      transactionId: savedTx?.id ?? input.paymentIntentId,
+      milestoneId: input.milestoneId,
+      jobId: msRow?.jobId,
+      contractorId,
+      customerId: input.customerId,
+      grossAmountCents: input.amountCents,
+    });
+    await recordLedgerEntriesInDb(tx, ledgerTx);
+
+    // 5. Update contractor balance with net earnings
+    const appFee = calculateApplicationFee(input.amountCents);
+    const netEarnings = input.amountCents - appFee;
+    const currentBal = await getOrCreateContractorBalance(tx, contractorId);
+
+    let updatedBal = applyLedgerToContractorBalance(currentBal, {
+      type: "EARNING",
+      amountCents: netEarnings,
+    });
+
+    // 6. Milestone evidence payout eligibility evaluation
+    const eligibility = evaluateMilestonePayoutEligibility({
+      milestoneTitle,
+      isFinalMilestone: isFinal,
+      requiresPermit: evidenceRequired,
+      customerAccepted: false,
+      completionReportStatus: "SUBMITTED",
+      hasOpenDispute: false,
+      isContractorNegativeBalance: updatedBal.isNegative,
+    });
+
+    if (eligibility.holdRequired) {
+      // Place hold in payout_holds
+      await tx.insert(payoutHolds).values({
+        contractorId,
+        milestoneId: input.milestoneId,
+        amountCents: netEarnings,
+        currency: "CAD",
+        holdReason: eligibility.holdReason ?? "MISSING_COMPLETION_EVIDENCE",
+        holdStatus: "ACTIVE",
+        requiredEvidenceType: eligibility.requiredEvidenceType ?? "COMPLETION_SIGN_OFF",
+      });
+
+      // Double-entry: Lock funds in PAYOUT_ESCROW_HOLD
+      const holdLedger = generatePayoutHoldLedgerEntries({
+        contractorId,
+        milestoneId: input.milestoneId,
+        amountCents: netEarnings,
+        holdReason: eligibility.holdReason ?? "MISSING_COMPLETION_EVIDENCE",
+      });
+      await recordLedgerEntriesInDb(tx, holdLedger);
+
+      // Deduct from available, shift into held
+      updatedBal = applyLedgerToContractorBalance(updatedBal, {
+        type: "HOLD",
+        amountCents: netEarnings,
+      });
+    }
+
+    // Persist updated contractor payout balance
+    await tx
+      .update(contractorPayoutBalances)
+      .set({
+        availableBalanceCents: updatedBal.availableBalanceCents,
+        heldBalanceCents: updatedBal.heldBalanceCents,
+        lifetimeEarningsCents: updatedBal.lifetimeEarningsCents,
+        lifetimePayoutsCents: updatedBal.lifetimePayoutsCents,
+        isNegative: updatedBal.isNegative,
+        updatedAt: new Date(),
+      })
+      .where(eq(contractorPayoutBalances.contractorId, contractorId));
+  }
+}
+
 export const paymentsRoutes: FastifyPluginAsync = async (app) => {
+
   // ---------------------------------------------------------------------------
   // 1. Stripe Connect Sandbox Onboarding (Contractors)
   // ---------------------------------------------------------------------------
@@ -429,25 +657,15 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
             })
             .where(eq(paymentIntents.id, intent.id));
 
-          // Record payment transaction
-          await tx
-            .insert(paymentTransactions)
-            .values({
-              milestoneId: intent.milestoneId,
-              provider: "STRIPE_CONNECT",
-              providerReference: confirmResult.paymentIntentId,
-              idempotencyKey: `tx_${confirmResult.paymentIntentId}`,
-              amountCents: Number(intent.amountCents),
-              currency: intent.currency,
-              status: "PAID",
-            })
-            .onConflictDoNothing({ target: paymentTransactions.idempotencyKey });
-
-          // Update milestone
-          await tx
-            .update(paymentMilestones)
-            .set({ status: "PAID", paidAt: new Date() })
-            .where(eq(paymentMilestones.id, intent.milestoneId));
+          await processSuccessfulPaymentSettlement(tx, {
+            milestoneId: intent.milestoneId,
+            paymentIntentId: confirmResult.paymentIntentId,
+            contractorId: intent.contractorId,
+            customerId: intent.customerId,
+            amountCents: Number(intent.amountCents),
+            provider: "STRIPE_CONNECT",
+            idempotencyKey: `tx_${confirmResult.paymentIntentId}`,
+          });
         });
 
         await audit(
@@ -572,23 +790,15 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
               .set({ status: "SUCCEEDED", updatedAt: new Date() })
               .where(eq(paymentIntents.id, intentRecord.id));
 
-            await tx
-              .insert(paymentTransactions)
-              .values({
-                milestoneId: intentRecord.milestoneId,
-                provider: "STRIPE_CONNECT",
-                providerReference: stripePiId,
-                idempotencyKey: `wh_tx_${stripePiId}`,
-                amountCents: Number(intentRecord.amountCents),
-                currency: intentRecord.currency,
-                status: "PAID",
-              })
-              .onConflictDoNothing({ target: paymentTransactions.idempotencyKey });
-
-            await tx
-              .update(paymentMilestones)
-              .set({ status: "PAID", paidAt: new Date() })
-              .where(eq(paymentMilestones.id, intentRecord.milestoneId));
+            await processSuccessfulPaymentSettlement(tx, {
+              milestoneId: intentRecord.milestoneId,
+              paymentIntentId: stripePiId,
+              contractorId: intentRecord.contractorId,
+              customerId: intentRecord.customerId,
+              amountCents: Number(intentRecord.amountCents),
+              provider: "STRIPE_CONNECT",
+              idempotencyKey: `wh_tx_${stripePiId}`,
+            });
           });
         }
       } else if (event.type === "payment_intent.payment_failed") {
@@ -835,6 +1045,54 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
         .onConflictDoNothing({ target: refunds.idempotencyKey })
         .returning({ id: refunds.id });
 
+      // Record double-entry refund ledger and update contractor payout balance
+      const [txContext] = await db
+        .select({
+          contractorId: jobs.contractorId,
+          customerId: serviceRequests.customerId,
+          milestoneId: paymentTransactions.milestoneId,
+        })
+        .from(paymentTransactions)
+        .innerJoin(paymentMilestones, eq(paymentMilestones.id, paymentTransactions.milestoneId))
+        .innerJoin(paymentSchedules, eq(paymentSchedules.id, paymentMilestones.scheduleId))
+        .innerJoin(quotes, eq(quotes.id, paymentSchedules.quoteId))
+        .innerJoin(jobs, eq(jobs.id, quotes.jobId))
+        .innerJoin(serviceRequests, eq(serviceRequests.id, jobs.serviceRequestId))
+        .where(eq(paymentTransactions.id, body.transactionId))
+        .limit(1);
+
+      if (txContext && result?.id) {
+        await db.transaction(async (tx) => {
+          const refundLedger = generateRefundLedgerEntries({
+            refundId: result.id,
+            transactionId: body.transactionId,
+            contractorId: txContext.contractorId,
+            customerId: txContext.customerId,
+            refundAmountCents: body.amountCents,
+          });
+          await recordLedgerEntriesInDb(tx, refundLedger);
+
+          const feeReversal = calculateApplicationFee(body.amountCents);
+          const contractorDebit = body.amountCents - feeReversal;
+          const currentBal = await getOrCreateContractorBalance(tx, txContext.contractorId);
+          const updatedBal = applyLedgerToContractorBalance(currentBal, {
+            type: "REFUND_DEBIT",
+            amountCents: contractorDebit,
+          });
+
+          await tx
+            .update(contractorPayoutBalances)
+            .set({
+              availableBalanceCents: updatedBal.availableBalanceCents,
+              heldBalanceCents: updatedBal.heldBalanceCents,
+              lifetimeEarningsCents: updatedBal.lifetimeEarningsCents,
+              isNegative: updatedBal.isNegative,
+              updatedAt: new Date(),
+            })
+            .where(eq(contractorPayoutBalances.contractorId, txContext.contractorId));
+        });
+      }
+
       await audit(
         currentActor.id,
         "REFUND_ISSUED",
@@ -852,4 +1110,538 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
       });
     },
   );
+
+  // ---------------------------------------------------------------------------
+  // 7. Payout Holds & Evidence Gates (SH-08)
+  // ---------------------------------------------------------------------------
+  app.post(
+    "/v1/payouts/holds",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(actor(request), "OPERATIONS_AGENT", "SUPPORT_AGENT", "ADMIN", "SUPER_ADMIN");
+      const currentActor = actor(request);
+      const body = parse(payoutHoldPlaceSchema, request.body);
+
+      const [hold] = await db.transaction(async (tx) => {
+        const [saved] = await tx
+          .insert(payoutHolds)
+          .values({
+            contractorId: body.contractorId,
+            milestoneId: body.milestoneId,
+            amountCents: body.amountCents,
+            currency: "CAD",
+            holdReason: body.holdReason,
+            holdStatus: "ACTIVE",
+            requiredEvidenceType: body.requiredEvidenceType ?? "COMPLETION_SIGN_OFF",
+            evidenceAttachmentId: body.evidenceAttachmentId,
+            placedByUserId: currentActor.id,
+            releaseNotes: body.releaseNotes,
+          })
+          .returning();
+
+        const holdLedger = generatePayoutHoldLedgerEntries({
+          contractorId: body.contractorId,
+          milestoneId: body.milestoneId,
+          amountCents: body.amountCents,
+          holdReason: body.holdReason,
+        });
+        await recordLedgerEntriesInDb(tx, holdLedger);
+
+        const currentBal = await getOrCreateContractorBalance(tx, body.contractorId);
+        const updatedBal = applyLedgerToContractorBalance(currentBal, {
+          type: "HOLD",
+          amountCents: body.amountCents,
+        });
+
+        await tx
+          .update(contractorPayoutBalances)
+          .set({
+            availableBalanceCents: updatedBal.availableBalanceCents,
+            heldBalanceCents: updatedBal.heldBalanceCents,
+            isNegative: updatedBal.isNegative,
+            updatedAt: new Date(),
+          })
+          .where(eq(contractorPayoutBalances.contractorId, body.contractorId));
+
+        return [saved];
+      });
+
+      await audit(
+        currentActor.id,
+        "PAYOUT_HOLD_PLACED",
+        "PAYOUT_HOLD",
+        hold!.id,
+        null,
+        {
+          contractorId: body.contractorId,
+          milestoneId: body.milestoneId,
+          amountCents: body.amountCents,
+          holdReason: body.holdReason,
+        },
+      );
+
+      return reply.code(201).send(hold);
+    },
+  );
+
+  app.post(
+    "/v1/payouts/holds/:id/release",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(
+        actor(request),
+        "CONTRACTOR_OWNER",
+        "OPERATIONS_AGENT",
+        "SUPPORT_AGENT",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
+      const currentActor = actor(request);
+      const holdId = parse(z.object({ id: uuid }), request.params).id;
+      const body = parse(payoutHoldReleaseSchema, request.body);
+
+      const [existingHold] = await db
+        .select()
+        .from(payoutHolds)
+        .where(eq(payoutHolds.id, holdId))
+        .limit(1);
+
+      if (!existingHold) {
+        return reply.code(404).send({
+          code: "NOT_FOUND",
+          message: "Payout hold not found",
+        });
+      }
+
+      if (existingHold.holdStatus !== "ACTIVE") {
+        return reply.code(422).send({
+          code: "HOLD_NOT_ACTIVE",
+          message: `Payout hold is already ${existingHold.holdStatus.toLowerCase()}`,
+        });
+      }
+
+      const [released] = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(payoutHolds)
+          .set({
+            holdStatus: "RELEASED",
+            releasedAt: new Date(),
+            releasedByUserId: currentActor.id,
+            releaseNotes: body.releaseNotes,
+            evidenceAttachmentId: body.evidenceAttachmentId ?? existingHold.evidenceAttachmentId,
+          })
+          .where(eq(payoutHolds.id, holdId))
+          .returning();
+
+        const releaseLedger = generatePayoutReleaseLedgerEntries({
+          contractorId: existingHold.contractorId,
+          milestoneId: existingHold.milestoneId,
+          amountCents: Number(existingHold.amountCents),
+          releaseNotes: body.releaseNotes,
+        });
+        await recordLedgerEntriesInDb(tx, releaseLedger);
+
+        const currentBal = await getOrCreateContractorBalance(tx, existingHold.contractorId);
+        const updatedBal = applyLedgerToContractorBalance(currentBal, {
+          type: "RELEASE",
+          amountCents: Number(existingHold.amountCents),
+        });
+
+        await tx
+          .update(contractorPayoutBalances)
+          .set({
+            availableBalanceCents: updatedBal.availableBalanceCents,
+            heldBalanceCents: updatedBal.heldBalanceCents,
+            isNegative: updatedBal.isNegative,
+            updatedAt: new Date(),
+          })
+          .where(eq(contractorPayoutBalances.contractorId, existingHold.contractorId));
+
+        return [updated];
+      });
+
+      await audit(
+        currentActor.id,
+        "PAYOUT_HOLD_RELEASED",
+        "PAYOUT_HOLD",
+        holdId,
+        { previousStatus: "ACTIVE" },
+        { status: "RELEASED", releaseNotes: body.releaseNotes },
+      );
+
+      return reply.code(200).send(released);
+    },
+  );
+
+  app.get(
+    "/v1/payouts/holds",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const query = parse(
+        z.object({
+          contractorId: uuid.optional(),
+          status: z.enum(["ACTIVE", "RELEASED", "FORFEITED", "ALL"]).default("ALL"),
+        }),
+        request.query ?? {},
+      );
+
+      const conditions = [];
+      if (query.contractorId) {
+        conditions.push(eq(payoutHolds.contractorId, query.contractorId));
+      }
+      if (
+        query.status === "ACTIVE" ||
+        query.status === "RELEASED" ||
+        query.status === "FORFEITED"
+      ) {
+        conditions.push(eq(payoutHolds.holdStatus, query.status));
+      }
+
+      const holds = await db
+        .select()
+        .from(payoutHolds)
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(payoutHolds.createdAt));
+
+      return reply.code(200).send({
+        holds: holds.map((h) => ({
+          id: h.id,
+          contractorId: h.contractorId,
+          milestoneId: h.milestoneId,
+          amountCents: Number(h.amountCents),
+          currency: h.currency,
+          holdReason: h.holdReason,
+          holdStatus: h.holdStatus,
+          requiredEvidenceType: h.requiredEvidenceType,
+          evidenceAttachmentId: h.evidenceAttachmentId,
+          releaseNotes: h.releaseNotes,
+          createdAt: h.createdAt.toISOString(),
+          releasedAt: h.releasedAt?.toISOString() ?? null,
+        })),
+      });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // 8. Contractor Payout Balance & Ledger History (SH-08)
+  // ---------------------------------------------------------------------------
+  app.get(
+    "/v1/contractors/:id/payout-balance",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const contractorId = parse(z.object({ id: uuid }), request.params).id;
+
+      let [balance] = await db
+        .select()
+        .from(contractorPayoutBalances)
+        .where(eq(contractorPayoutBalances.contractorId, contractorId))
+        .limit(1);
+
+      if (!balance) {
+        [balance] = await db
+          .insert(contractorPayoutBalances)
+          .values({
+            contractorId,
+            availableBalanceCents: 0,
+            heldBalanceCents: 0,
+            lifetimeEarningsCents: 0,
+            lifetimePayoutsCents: 0,
+            isNegative: false,
+            currency: "CAD",
+          })
+          .returning();
+      }
+
+      const activeHolds = await db
+        .select()
+        .from(payoutHolds)
+        .where(
+          and(
+            eq(payoutHolds.contractorId, contractorId),
+            eq(payoutHolds.holdStatus, "ACTIVE"),
+          ),
+        )
+        .orderBy(desc(payoutHolds.createdAt));
+
+      const ledgerEntries = await db
+        .select()
+        .from(marketplaceFinancialLedger)
+        .where(eq(marketplaceFinancialLedger.contractorId, contractorId))
+        .orderBy(desc(marketplaceFinancialLedger.createdAt))
+        .limit(50);
+
+      return reply.code(200).send({
+        contractorId: balance?.contractorId,
+        availableBalanceCents: Number(balance?.availableBalanceCents ?? 0),
+        heldBalanceCents: Number(balance?.heldBalanceCents ?? 0),
+        lifetimeEarningsCents: Number(balance?.lifetimeEarningsCents ?? 0),
+        lifetimePayoutsCents: Number(balance?.lifetimePayoutsCents ?? 0),
+        isNegative: balance?.isNegative ?? false,
+        currency: balance?.currency ?? "CAD",
+        activeHolds: activeHolds.map((h) => ({
+          id: h.id,
+          milestoneId: h.milestoneId,
+          amountCents: Number(h.amountCents),
+          holdReason: h.holdReason,
+          requiredEvidenceType: h.requiredEvidenceType,
+          createdAt: h.createdAt.toISOString(),
+        })),
+        recentLedgerEntries: ledgerEntries.map((l) => ({
+          id: l.id,
+          entryType: l.entryType,
+          accountType: l.accountType,
+          direction: l.direction,
+          amountCents: Number(l.amountCents),
+          description: l.description,
+          createdAt: l.createdAt.toISOString(),
+        })),
+      });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // 9. Contractor Payout Transfer (Bank Disbursal via Connect) (SH-08)
+  // ---------------------------------------------------------------------------
+  app.post(
+    "/v1/payouts/transfer",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(
+        actor(request),
+        "CONTRACTOR_OWNER",
+        "CONTRACTOR_MANAGER",
+        "OPERATIONS_AGENT",
+        "ADMIN",
+        "SUPER_ADMIN",
+      );
+      const currentActor = actor(request);
+      const body = parse(contractorPayoutTransferSchema, request.body);
+
+      const [balance] = await db
+        .select()
+        .from(contractorPayoutBalances)
+        .where(eq(contractorPayoutBalances.contractorId, body.contractorId))
+        .limit(1);
+
+      if (!balance || Number(balance.availableBalanceCents) <= 0 || balance.isNegative) {
+        return reply.code(422).send({
+          code: "INSUFFICIENT_AVAILABLE_FUNDS",
+          message: "Contractor has no available positive balance for payout transfer",
+        });
+      }
+
+      const transferAmount = body.amountCents ?? Number(balance.availableBalanceCents);
+      if (transferAmount > Number(balance.availableBalanceCents)) {
+        return reply.code(422).send({
+          code: "TRANSFER_EXCEEDS_AVAILABLE",
+          message: `Requested payout ($${(transferAmount / 100).toFixed(2)}) exceeds available balance ($${(Number(balance.availableBalanceCents) / 100).toFixed(2)})`,
+        });
+      }
+
+      const stripeTransferId = `tr_test_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+
+      const [updatedBal] = await db.transaction(async (tx) => {
+        const payoutLedger = generateContractorPayoutLedgerEntries({
+          contractorId: body.contractorId,
+          amountCents: transferAmount,
+          stripeTransferId,
+        });
+        await recordLedgerEntriesInDb(tx, payoutLedger);
+
+        const currentSnapshot = {
+          availableBalanceCents: Number(balance.availableBalanceCents),
+          heldBalanceCents: Number(balance.heldBalanceCents),
+          lifetimeEarningsCents: Number(balance.lifetimeEarningsCents),
+          lifetimePayoutsCents: Number(balance.lifetimePayoutsCents),
+          isNegative: balance.isNegative,
+        };
+
+        const nextSnapshot = applyLedgerToContractorBalance(currentSnapshot, {
+          type: "PAYOUT",
+          amountCents: transferAmount,
+        });
+
+        const [saved] = await tx
+          .update(contractorPayoutBalances)
+          .set({
+            availableBalanceCents: nextSnapshot.availableBalanceCents,
+            lifetimePayoutsCents: nextSnapshot.lifetimePayoutsCents,
+            isNegative: nextSnapshot.isNegative,
+            updatedAt: new Date(),
+          })
+          .where(eq(contractorPayoutBalances.contractorId, body.contractorId))
+          .returning();
+
+        return [saved];
+      });
+
+      await audit(
+        currentActor.id,
+        "PAYOUT_TRANSFERRED",
+        "CONTRACTOR_PAYOUT_BALANCE",
+        body.contractorId,
+        null,
+        { transferAmount, stripeTransferId },
+      );
+
+      return reply.code(200).send({
+        stripeTransferId,
+        transferAmountCents: transferAmount,
+        status: "DISPATCHED",
+        remainingAvailableBalanceCents: Number(updatedBal?.availableBalanceCents ?? 0),
+      });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // 10. Daily Financial Reconciliation & Discrepancy Audits (SH-08)
+  // ---------------------------------------------------------------------------
+  app.post(
+    "/v1/reconciliation/run",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(actor(request), "OPERATIONS_AGENT", "ADMIN", "SUPER_ADMIN");
+      const currentActor = actor(request);
+      const body = parse(reconciliationRunSchema, request.body ?? {});
+      const reportDate = body.reportDate ?? new Date().toISOString().split("T")[0]!;
+
+      // Gather financial data for reconciliation
+      const charges = await db
+        .select({
+          id: marketplaceFinancialLedger.id,
+          amountCents: marketplaceFinancialLedger.amountCents,
+        })
+        .from(marketplaceFinancialLedger)
+        .where(
+          and(
+            eq(marketplaceFinancialLedger.entryType, "CUSTOMER_CHARGE"),
+            eq(marketplaceFinancialLedger.accountType, "STRIPE_CLEARING"),
+          ),
+        );
+
+      const platformFees = await db
+        .select({
+          id: marketplaceFinancialLedger.id,
+          amountCents: marketplaceFinancialLedger.amountCents,
+        })
+        .from(marketplaceFinancialLedger)
+        .where(eq(marketplaceFinancialLedger.accountType, "PLATFORM_REVENUE"));
+
+      const payouts = await db
+        .select({
+          id: marketplaceFinancialLedger.id,
+          amountCents: marketplaceFinancialLedger.amountCents,
+        })
+        .from(marketplaceFinancialLedger)
+        .where(
+          and(
+            eq(marketplaceFinancialLedger.entryType, "CONTRACTOR_PAYOUT"),
+            eq(marketplaceFinancialLedger.direction, "DEBIT"),
+          ),
+        );
+
+      const refundEntries = await db
+        .select({
+          id: marketplaceFinancialLedger.id,
+          amountCents: marketplaceFinancialLedger.amountCents,
+        })
+        .from(marketplaceFinancialLedger)
+        .where(
+          and(
+            eq(marketplaceFinancialLedger.entryType, "REFUND_DEBIT"),
+            eq(marketplaceFinancialLedger.accountType, "STRIPE_CLEARING"),
+          ),
+        );
+
+      const activeHolds = await db
+        .select({
+          id: payoutHolds.id,
+          amountCents: payoutHolds.amountCents,
+        })
+        .from(payoutHolds)
+        .where(eq(payoutHolds.holdStatus, "ACTIVE"));
+
+      const unpaidBalances = await db
+        .select({
+          contractorId: contractorPayoutBalances.contractorId,
+          amountCents: contractorPayoutBalances.availableBalanceCents,
+        })
+        .from(contractorPayoutBalances);
+
+      const recResult = computeFinancialReconciliation(
+        {
+          charges: charges.map((c) => ({ id: c.id, amountCents: Number(c.amountCents) })),
+          platformFees: platformFees.map((f) => ({ id: f.id, amountCents: Number(f.amountCents) })),
+          payouts: payouts.map((p) => ({ id: p.id, amountCents: Number(p.amountCents) })),
+          refunds: refundEntries.map((r) => ({ id: r.id, amountCents: Number(r.amountCents) })),
+          activeHolds: activeHolds.map((h) => ({ id: h.id, amountCents: Number(h.amountCents) })),
+          unpaidAvailableBalances: unpaidBalances.map((b) => ({
+            contractorId: b.contractorId,
+            amountCents: Number(b.amountCents),
+          })),
+        },
+        reportDate,
+      );
+
+      const [report] = await db
+        .insert(financialReconciliationReports)
+        .values({
+          reportDate,
+          totalChargesCents: recResult.totalChargesCents,
+          totalPlatformFeesCents: recResult.totalPlatformFeesCents,
+          totalContractorPayoutsCents: recResult.totalContractorPayoutsCents,
+          totalRefundsCents: recResult.totalRefundsCents,
+          totalActiveHoldsCents: recResult.totalActiveHoldsCents,
+          discrepancyCents: recResult.discrepancyCents,
+          status: recResult.status,
+          unreconciledTransactionIds: recResult.unreconciledIds,
+          exceptionNotes: body.notes ?? recResult.summary,
+          generatedBy: currentActor.id,
+        })
+        .returning();
+
+      await audit(
+        currentActor.id,
+        "FINANCIAL_RECONCILIATION_RUN",
+        "FINANCIAL_RECONCILIATION_REPORT",
+        report!.id,
+        null,
+        { status: recResult.status, discrepancyCents: recResult.discrepancyCents },
+      );
+
+      return reply.code(201).send(report);
+    },
+  );
+
+  app.get(
+    "/v1/reconciliation/reports",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(actor(request), "OPERATIONS_AGENT", "ADMIN", "SUPER_ADMIN");
+
+      const reports = await db
+        .select()
+        .from(financialReconciliationReports)
+        .orderBy(desc(financialReconciliationReports.createdAt))
+        .limit(30);
+
+      return reply.code(200).send({
+        reports: reports.map((r) => ({
+          id: r.id,
+          reportDate: r.reportDate,
+          totalChargesCents: Number(r.totalChargesCents),
+          totalPlatformFeesCents: Number(r.totalPlatformFeesCents),
+          totalContractorPayoutsCents: Number(r.totalContractorPayoutsCents),
+          totalRefundsCents: Number(r.totalRefundsCents),
+          totalActiveHoldsCents: Number(r.totalActiveHoldsCents),
+          discrepancyCents: Number(r.discrepancyCents),
+          status: r.status,
+          unreconciledTransactionIds: r.unreconciledTransactionIds,
+          exceptionNotes: r.exceptionNotes,
+          createdAt: r.createdAt.toISOString(),
+        })),
+      });
+    },
+  );
 };
+

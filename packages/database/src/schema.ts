@@ -121,6 +121,49 @@ export const disputeStatusEnum = pgEnum("dispute_status", [
   "LOST",
 ]);
 
+export const ledgerEntryTypeEnum = pgEnum("ledger_entry_type", [
+  "CUSTOMER_CHARGE",
+  "APPLICATION_FEE",
+  "CONTRACTOR_PAYOUT",
+  "REFUND_DEBIT",
+  "DISPUTE_HOLD",
+  "PAYOUT_HOLD",
+  "PAYOUT_RELEASE",
+  "NEGATIVE_BALANCE_RECOVERY",
+  "MANUAL_ADJUSTMENT",
+]);
+
+export const ledgerAccountTypeEnum = pgEnum("ledger_account_type", [
+  "CUSTOMER_RECEIVABLE",
+  "PLATFORM_REVENUE",
+  "CONTRACTOR_PAYABLE",
+  "STRIPE_CLEARING",
+  "DISPUTE_RESERVE",
+  "PAYOUT_ESCROW_HOLD",
+]);
+
+export const payoutHoldReasonEnum = pgEnum("payout_hold_reason", [
+  "MISSING_COMPLETION_EVIDENCE",
+  "ACTIVE_DISPUTE",
+  "COMPLIANCE_RESTRICTION",
+  "QUALITY_AUDIT_SAMPLE",
+  "NEGATIVE_CONTRACTOR_BALANCE",
+  "MANUAL_RISK_HOLD",
+]);
+
+export const payoutHoldStatusEnum = pgEnum("payout_hold_status", [
+  "ACTIVE",
+  "RELEASED",
+  "FORFEITED",
+]);
+
+export const reconciliationStatusEnum = pgEnum("reconciliation_status", [
+  "BALANCED",
+  "DISCREPANCY_DETECTED",
+  "INVESTIGATING",
+  "RESOLVED",
+]);
+
 export const changeOrderStatusEnum = pgEnum("change_order_status", [
   "DRAFT",
   "SUBMITTED",
@@ -897,6 +940,144 @@ export const paymentDisputes = pgTable("payment_disputes", {
     .defaultNow(),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
 });
+
+// Append-Only Financial Ledger & Payout Holds (SH-08)
+export const marketplaceFinancialLedger = pgTable(
+  "marketplace_financial_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entryType: ledgerEntryTypeEnum("entry_type").notNull(),
+    accountType: ledgerAccountTypeEnum("account_type").notNull(),
+    direction: varchar("direction", { length: 6 }).notNull(),
+    amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+    currency: char("currency", { length: 3 }).notNull().default("CAD"),
+    contractorId: uuid("contractor_id").references(() => contractors.id, {
+      onDelete: "set null",
+    }),
+    customerId: uuid("customer_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    jobId: uuid("job_id").references(() => jobs.id, {
+      onDelete: "set null",
+    }),
+    milestoneId: uuid("milestone_id").references(
+      () => paymentMilestones.id,
+      { onDelete: "set null" },
+    ),
+    transactionId: uuid("transaction_id").references(
+      () => paymentTransactions.id,
+      { onDelete: "set null" },
+    ),
+    refundId: uuid("refund_id").references(() => refunds.id, {
+      onDelete: "set null",
+    }),
+    description: text("description").notNull(),
+    runningBalanceCents: bigint("running_balance_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+export const payoutHolds = pgTable("payout_holds", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "cascade" }),
+  milestoneId: uuid("milestone_id")
+    .notNull()
+    .references(() => paymentMilestones.id, { onDelete: "cascade" }),
+  amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+  currency: char("currency", { length: 3 }).notNull().default("CAD"),
+  holdReason: payoutHoldReasonEnum("hold_reason").notNull(),
+  holdStatus: payoutHoldStatusEnum("hold_status").notNull().default("ACTIVE"),
+  requiredEvidenceType: varchar("required_evidence_type", { length: 64 }),
+  evidenceAttachmentId: uuid("evidence_attachment_id").references(
+    () => fileAttachments.id,
+    { onDelete: "set null" },
+  ),
+  placedByUserId: uuid("placed_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  releasedByUserId: uuid("released_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  releaseNotes: text("release_notes"),
+  stripeTransferId: varchar("stripe_transfer_id", { length: 128 }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  releasedAt: timestamp("released_at", { withTimezone: true }),
+});
+
+export const contractorPayoutBalances = pgTable("contractor_payout_balances", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .unique()
+    .references(() => contractors.id, { onDelete: "cascade" }),
+  availableBalanceCents: bigint("available_balance_cents", { mode: "number" })
+    .notNull()
+    .default(0),
+  heldBalanceCents: bigint("held_balance_cents", { mode: "number" })
+    .notNull()
+    .default(0),
+  lifetimeEarningsCents: bigint("lifetime_earnings_cents", { mode: "number" })
+    .notNull()
+    .default(0),
+  lifetimePayoutsCents: bigint("lifetime_payouts_cents", { mode: "number" })
+    .notNull()
+    .default(0),
+  isNegative: boolean("is_negative").notNull().default(false),
+  currency: char("currency", { length: 3 }).notNull().default("CAD"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const financialReconciliationReports = pgTable(
+  "financial_reconciliation_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reportDate: date("report_date").notNull(),
+    totalChargesCents: bigint("total_charges_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    totalPlatformFeesCents: bigint("total_platform_fees_cents", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    totalContractorPayoutsCents: bigint("total_contractor_payouts_cents", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    totalRefundsCents: bigint("total_refunds_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    totalActiveHoldsCents: bigint("total_active_holds_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    discrepancyCents: bigint("discrepancy_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    status: reconciliationStatusEnum("status").notNull().default("BALANCED"),
+    unreconciledTransactionIds: jsonb("unreconciled_transaction_ids")
+      .notNull()
+      .default([]),
+    exceptionNotes: text("exception_notes"),
+    generatedBy: uuid("generated_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
 
 // 8. Service Records, Reviews, Audits
 export const serviceRecords = pgTable("service_records", {
@@ -3674,4 +3855,75 @@ export const paymentIntentsRelations = relations(paymentIntents, ({ one }) => ({
     references: [contractors.id],
   }),
 }));
+
+export const marketplaceFinancialLedgerRelations = relations(
+  marketplaceFinancialLedger,
+  ({ one }) => ({
+    contractor: one(contractors, {
+      fields: [marketplaceFinancialLedger.contractorId],
+      references: [contractors.id],
+    }),
+    customer: one(users, {
+      fields: [marketplaceFinancialLedger.customerId],
+      references: [users.id],
+    }),
+    job: one(jobs, {
+      fields: [marketplaceFinancialLedger.jobId],
+      references: [jobs.id],
+    }),
+    milestone: one(paymentMilestones, {
+      fields: [marketplaceFinancialLedger.milestoneId],
+      references: [paymentMilestones.id],
+    }),
+    transaction: one(paymentTransactions, {
+      fields: [marketplaceFinancialLedger.transactionId],
+      references: [paymentTransactions.id],
+    }),
+    refund: one(refunds, {
+      fields: [marketplaceFinancialLedger.refundId],
+      references: [refunds.id],
+    }),
+  }),
+);
+
+export const payoutHoldsRelations = relations(payoutHolds, ({ one }) => ({
+  contractor: one(contractors, {
+    fields: [payoutHolds.contractorId],
+    references: [contractors.id],
+  }),
+  milestone: one(paymentMilestones, {
+    fields: [payoutHolds.milestoneId],
+    references: [paymentMilestones.id],
+  }),
+  placedBy: one(users, {
+    fields: [payoutHolds.placedByUserId],
+    references: [users.id],
+  }),
+  releasedBy: one(users, {
+    fields: [payoutHolds.releasedByUserId],
+    references: [users.id],
+  }),
+}));
+
+export const contractorPayoutBalancesRelations = relations(
+  contractorPayoutBalances,
+  ({ one }) => ({
+    contractor: one(contractors, {
+      fields: [contractorPayoutBalances.contractorId],
+      references: [contractors.id],
+    }),
+  }),
+);
+
+export const financialReconciliationReportsRelations = relations(
+  financialReconciliationReports,
+  ({ one }) => ({
+    generatedByUser: one(users, {
+      fields: [financialReconciliationReports.generatedBy],
+      references: [users.id],
+    }),
+  }),
+);
+
+
 

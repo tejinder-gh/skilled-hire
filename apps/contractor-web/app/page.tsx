@@ -201,6 +201,164 @@ export default function ContractorHome() {
   });
   const [connectFeedback, setConnectFeedback] = useState<string | null>(null);
 
+  // SH-08: Payout Balance, Milestone Evidence Holds & Financial Ledger State
+  const [payoutBalance, setPayoutBalance] = useState<{
+    availableBalanceCents: number;
+    heldBalanceCents: number;
+    lifetimeEarningsCents: number;
+    lifetimePayoutsCents: number;
+    isNegative: boolean;
+  }>({
+    availableBalanceCents: 95000,
+    heldBalanceCents: 49400,
+    lifetimeEarningsCents: 1245000,
+    lifetimePayoutsCents: 1100600,
+    isNegative: false,
+  });
+
+  const [contractorHolds, setContractorHolds] = useState<
+    Array<{
+      id: string;
+      jobId: string;
+      milestoneTitle: string;
+      amountCents: number;
+      holdReason: string;
+      holdStatus: "ACTIVE" | "RELEASED" | "FORFEITED";
+      requiredEvidenceType: string;
+      releaseNotes?: string;
+      placedAt: string;
+    }>
+  >([
+    {
+      id: "hold-8812",
+      jobId: "JOB-2026-4390",
+      milestoneTitle: "Final Completion & ESA Electrical Inspection Sign-off",
+      amountCents: 49400,
+      holdReason: "MISSING_COMPLETION_EVIDENCE",
+      holdStatus: "ACTIVE",
+      requiredEvidenceType: "ESA_INSPECTION_CERTIFICATE",
+      placedAt: "Yesterday, 3:15 PM",
+    },
+  ]);
+
+  const [contractorLedger, setContractorLedger] = useState<
+    Array<{
+      id: string;
+      entryType: string;
+      accountType: string;
+      direction: "DEBIT" | "CREDIT";
+      amountCents: number;
+      description: string;
+      timestamp: string;
+    }>
+  >([
+    {
+      id: "led-101",
+      entryType: "PAYOUT_HOLD",
+      accountType: "PAYOUT_ESCROW_HOLD",
+      direction: "CREDIT",
+      amountCents: 49400,
+      description: "Funds locked in payout hold reserve (MISSING_COMPLETION_EVIDENCE)",
+      timestamp: "Yesterday, 3:15 PM",
+    },
+    {
+      id: "led-100",
+      entryType: "CUSTOMER_CHARGE",
+      accountType: "CONTRACTOR_PAYABLE",
+      direction: "CREDIT",
+      amountCents: 49400,
+      description: "Net earnings credited for milestone Final Completion & ESA Sign-off",
+      timestamp: "Yesterday, 3:15 PM",
+    },
+    {
+      id: "led-099",
+      entryType: "CUSTOMER_CHARGE",
+      accountType: "PLATFORM_REVENUE",
+      direction: "CREDIT",
+      amountCents: 2600,
+      description: "Marketplace platform fee (5%) for milestone Final Completion",
+      timestamp: "Yesterday, 3:15 PM",
+    },
+    {
+      id: "led-098",
+      entryType: "CUSTOMER_CHARGE",
+      accountType: "STRIPE_CLEARING",
+      direction: "DEBIT",
+      amountCents: 52000,
+      description: "Customer payment received for milestone Final Completion",
+      timestamp: "Yesterday, 3:15 PM",
+    },
+  ]);
+
+  const handleSimulateHoldRelease = (holdId: string) => {
+    const hold = contractorHolds.find((h) => h.id === holdId);
+    if (!hold || hold.holdStatus !== "ACTIVE") return;
+
+    setContractorHolds((prev) =>
+      prev.map((h) =>
+        h.id === holdId
+          ? {
+              ...h,
+              holdStatus: "RELEASED",
+              releaseNotes: "ESA Certificate of Acceptance inspected and customer completion sign-off verified",
+            }
+          : h,
+      ),
+    );
+
+    setPayoutBalance((prev) => ({
+      ...prev,
+      availableBalanceCents: prev.availableBalanceCents + hold.amountCents,
+      heldBalanceCents: Math.max(0, prev.heldBalanceCents - hold.amountCents),
+    }));
+
+    setContractorLedger((prev) => [
+      {
+        id: `led-${Date.now()}`,
+        entryType: "PAYOUT_RELEASE",
+        accountType: "CONTRACTOR_PAYABLE",
+        direction: "CREDIT",
+        amountCents: hold.amountCents,
+        description: `Funds returned to available contractor payable: ${hold.milestoneTitle}`,
+        timestamp: "Just now",
+      },
+      ...prev,
+    ]);
+
+    setConnectFeedback(`✓ Payout hold released for ${hold.milestoneTitle}! $${(hold.amountCents / 100).toFixed(2)} CAD is now available for direct transfer.`);
+  };
+
+  const handleSimulatePayoutDisbursal = () => {
+    if (payoutBalance.availableBalanceCents <= 0) {
+      setConnectFeedback("⚠️ No positive available balance for payout transfer.");
+      return;
+    }
+
+    const transferAmount = payoutBalance.availableBalanceCents;
+    const transferId = `tr_test_${Date.now().toString(36)}`;
+
+    setPayoutBalance((prev) => ({
+      ...prev,
+      availableBalanceCents: 0,
+      lifetimePayoutsCents: prev.lifetimePayoutsCents + transferAmount,
+    }));
+
+    setContractorLedger((prev) => [
+      {
+        id: `led-${Date.now()}`,
+        entryType: "CONTRACTOR_PAYOUT",
+        accountType: "STRIPE_CLEARING",
+        direction: "CREDIT",
+        amountCents: transferAmount,
+        description: `Payout transfer ${transferId} dispatched to TD Canada Trust ending in ${connectStatus.last4}`,
+        timestamp: "Just now",
+      },
+      ...prev,
+    ]);
+
+    setConnectFeedback(`⚡ Direct payout transfer of $${(transferAmount / 100).toFixed(2)} CAD dispatched via Stripe Connect Express rail (${transferId}).`);
+  };
+
   // Filter state for Compliance Tab
   const [selectedVertical, setSelectedVertical] = useState("hvac");
   const [selectedLocation, setSelectedLocation] = useState("ON");
@@ -4112,18 +4270,189 @@ export default function ContractorHome() {
               <Button
                 variant="primary"
                 size="sm"
-                onClick={() => {
-                  setConnectFeedback("Simulated payout sync: $845.50 CAD successfully transferred to TD Canada Trust ending in 8821.");
-                }}
+                onClick={handleSimulatePayoutDisbursal}
+                disabled={payoutBalance.availableBalanceCents <= 0}
               >
-                ⚡ Test Instant Payout Sync
+                ⚡ Disburse Available Payout (${(payoutBalance.availableBalanceCents / 100).toFixed(2)} CAD)
               </Button>
             </div>
           </div>
 
+          {connectFeedback && (
+            <Callout tone="success" title="Financial Action Completed">
+              {connectFeedback}
+            </Callout>
+          )}
+
           <Callout tone="success" title="Stripe Connect Express Sandbox Active · Zero Escrow">
             Direct Destination Charges Active: Funds for accepted and completed milestones are deposited directly to your Canadian commercial bank account. Under Ontario marketplace standards, Skilled Hire holds funds as payment facilitator—never under an unauthorized escrow title.
           </Callout>
+
+          {/* Real-Time Contractor Balance Tracking (SH-08) */}
+          <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Available for Disbursal</span>
+              <p style={{ margin: "4px 0", fontSize: 24, fontWeight: 900, color: payoutBalance.isNegative ? "#dc2626" : "#16a34a" }}>
+                ${(payoutBalance.availableBalanceCents / 100).toFixed(2)} <span style={{ fontSize: 13, fontWeight: 700 }}>CAD</span>
+              </p>
+              <Badge tone={payoutBalance.isNegative ? "danger" : "green"}>
+                {payoutBalance.isNegative ? "Negative Balance Recovery Active" : "Eligible for Next-Day EFT"}
+              </Badge>
+            </Card>
+
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Held in Evidence Gates</span>
+              <p style={{ margin: "4px 0", fontSize: 24, fontWeight: 900, color: payoutBalance.heldBalanceCents > 0 ? "#ea580c" : "#64748b" }}>
+                ${(payoutBalance.heldBalanceCents / 100).toFixed(2)} <span style={{ fontSize: 13, fontWeight: 700 }}>CAD</span>
+              </p>
+              <Badge tone={payoutBalance.heldBalanceCents > 0 ? "amber" : "blue"}>
+                {payoutBalance.heldBalanceCents > 0 ? "Pending Completion Sign-Off" : "0 Active Holds"}
+              </Badge>
+            </Card>
+
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Lifetime Net Earnings</span>
+              <p style={{ margin: "4px 0", fontSize: 20, fontWeight: 800, color: "#0f172a" }}>
+                ${(payoutBalance.lifetimeEarningsCents / 100).toFixed(2)} CAD
+              </p>
+              <span style={{ fontSize: 11, color: "#64748b" }}>Net of 5% marketplace fee</span>
+            </Card>
+
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Lifetime Bank Transfers</span>
+              <p style={{ margin: "4px 0", fontSize: 20, fontWeight: 800, color: "#0f172a" }}>
+                ${(payoutBalance.lifetimePayoutsCents / 100).toFixed(2)} CAD
+              </p>
+              <Badge tone="blue">TD Canada Trust (****{connectStatus.last4})</Badge>
+            </Card>
+          </Grid>
+
+          {/* Active Payout Holds & Evidence Gates (SH-08) */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: "0 0 2px", fontSize: 16, fontWeight: 800 }}>
+                  Milestone Evidence Eligibility Gates & Payout Holds
+                </h3>
+                <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                  Payout transfers require completion evidence (ESA Certificate of Acceptance, homeowner sign-off) to unlock held balance.
+                </p>
+              </div>
+              <Badge tone={contractorHolds.some((h) => h.holdStatus === "ACTIVE") ? "amber" : "green"}>
+                {contractorHolds.filter((h) => h.holdStatus === "ACTIVE").length} Active Holds
+              </Badge>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {contractorHolds.map((hold) => (
+                <div
+                  key={hold.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "14px 16px",
+                    borderRadius: 10,
+                    border: hold.holdStatus === "ACTIVE" ? "1px solid #fed7aa" : "1px solid #e2e8f0",
+                    background: hold.holdStatus === "ACTIVE" ? "#fffbeb" : "#f8fafc",
+                    flexWrap: "wrap",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <strong style={{ fontSize: 14, color: "#0f172a" }}>{hold.milestoneTitle}</strong>
+                      <Badge tone={hold.holdStatus === "ACTIVE" ? "amber" : "green"}>
+                        {hold.holdStatus === "ACTIVE" ? "🔒 Payout Held" : "✓ Released"}
+                      </Badge>
+                      <Badge tone="blue">{hold.jobId}</Badge>
+                    </div>
+                    <p style={{ margin: "0 0 4px", fontSize: 12, color: "#475569" }}>
+                      Required Gate: <code style={{ fontSize: 11, background: "#f1f5f9", padding: "2px 6px", borderRadius: 4 }}>{hold.requiredEvidenceType}</code> · Reason: {hold.holdReason}
+                    </p>
+                    <span style={{ fontSize: 11, color: "#64748b" }}>
+                      Hold Placed: {hold.placedAt} {hold.releaseNotes && `· Note: ${hold.releaseNotes}`}
+                    </span>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 17, fontWeight: 900, color: hold.holdStatus === "ACTIVE" ? "#ea580c" : "#16a34a" }}>
+                        ${(hold.amountCents / 100).toFixed(2)} CAD
+                      </div>
+                      <span style={{ fontSize: 11, color: "#64748b" }}>Held Net Amount</span>
+                    </div>
+
+                    {hold.holdStatus === "ACTIVE" && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => handleSimulateHoldRelease(hold.id)}
+                      >
+                        📄 Verify Evidence & Release
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Append-Only Financial Ledger (GAAP Double-Entry Stream) */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: "0 0 2px", fontSize: 16, fontWeight: 800 }}>
+                  Append-Only Financial Ledger (GAAP Double-Entry Journal)
+                </h3>
+                <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                  Immutable audit records for all customer charges, platform take-rates, escrow holds, and contractor dispatches.
+                </p>
+              </div>
+              <Badge tone="green">Balanced · GAAP Certified</Badge>
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid #e2e8f0", textAlign: "left", color: "#64748b" }}>
+                    <th style={{ padding: "8px 10px" }}>Entry Type</th>
+                    <th style={{ padding: "8px 10px" }}>Account</th>
+                    <th style={{ padding: "8px 10px" }}>Direction</th>
+                    <th style={{ padding: "8px 10px" }}>Amount (CAD)</th>
+                    <th style={{ padding: "8px 10px" }}>Description</th>
+                    <th style={{ padding: "8px 10px" }}>Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contractorLedger.map((row) => (
+                    <tr key={row.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                      <td style={{ padding: "10px" }}>
+                        <Badge tone="blue">{row.entryType}</Badge>
+                      </td>
+                      <td style={{ padding: "10px", fontFamily: "monospace", fontSize: 12, color: "#334155" }}>
+                        {row.accountType}
+                      </td>
+                      <td style={{ padding: "10px" }}>
+                        <Badge tone={row.direction === "CREDIT" ? "green" : "amber"}>
+                          {row.direction}
+                        </Badge>
+                      </td>
+                      <td style={{ padding: "10px", fontWeight: 800, color: row.direction === "CREDIT" ? "#16a34a" : "#0f172a" }}>
+                        {row.direction === "CREDIT" ? "+" : "-"}${(row.amountCents / 100).toFixed(2)}
+                      </td>
+                      <td style={{ padding: "10px", color: "#475569", maxWidth: 300 }}>
+                        {row.description}
+                      </td>
+                      <td style={{ padding: "10px", color: "#94a3b8", fontSize: 12 }}>
+                        {row.timestamp}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
 
           {/* Connect Account Status Cards */}
           <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">

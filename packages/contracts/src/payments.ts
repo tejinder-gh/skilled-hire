@@ -115,3 +115,95 @@ export interface ProcessRefundResponse {
   amountCents: number;
   providerReference: string;
 }
+
+// Append-Only Financial Ledger & Payout Holds (SH-08)
+export type LedgerEntryType =
+  | "CUSTOMER_CHARGE"
+  | "APPLICATION_FEE"
+  | "CONTRACTOR_PAYOUT"
+  | "REFUND_DEBIT"
+  | "DISPUTE_HOLD"
+  | "PAYOUT_HOLD"
+  | "PAYOUT_RELEASE"
+  | "NEGATIVE_BALANCE_RECOVERY"
+  | "MANUAL_ADJUSTMENT";
+
+export type LedgerAccountType =
+  | "CUSTOMER_RECEIVABLE"
+  | "PLATFORM_REVENUE"
+  | "CONTRACTOR_PAYABLE"
+  | "STRIPE_CLEARING"
+  | "DISPUTE_RESERVE"
+  | "PAYOUT_ESCROW_HOLD";
+
+export type PayoutHoldReason =
+  | "MISSING_COMPLETION_EVIDENCE"
+  | "ACTIVE_DISPUTE"
+  | "COMPLIANCE_RESTRICTION"
+  | "QUALITY_AUDIT_SAMPLE"
+  | "NEGATIVE_CONTRACTOR_BALANCE"
+  | "MANUAL_RISK_HOLD";
+
+export type PayoutHoldStatus = "ACTIVE" | "RELEASED" | "FORFEITED";
+
+export type ReconciliationStatus =
+  | "BALANCED"
+  | "DISCREPANCY_DETECTED"
+  | "INVESTIGATING"
+  | "RESOLVED";
+
+export interface LedgerEntryDTO {
+  id: string;
+  entryType: LedgerEntryType;
+  accountType: LedgerAccountType;
+  direction: "DEBIT" | "CREDIT";
+  amountCents: number;
+  currency: string;
+  contractorId?: string | null;
+  customerId?: string | null;
+  jobId?: string | null;
+  milestoneId?: string | null;
+  description: string;
+  runningBalanceCents: number;
+  createdAt: string;
+}
+
+export interface PayoutHoldDTO {
+  id: string;
+  contractorId: string;
+  milestoneId: string;
+  amountCents: number;
+  currency: string;
+  holdReason: PayoutHoldReason;
+  holdStatus: PayoutHoldStatus;
+  requiredEvidenceType?: string | null;
+  evidenceAttachmentId?: string | null;
+  releaseNotes?: string | null;
+  createdAt: string;
+  releasedAt?: string | null;
+}
+
+export interface ContractorPayoutBalanceDTO {
+  contractorId: string;
+  availableBalanceCents: number;
+  heldBalanceCents: number;
+  lifetimeEarningsCents: number;
+  lifetimePayoutsCents: number;
+  isNegative: boolean;
+  currency: string;
+}
+
+export interface FinancialReconciliationReportDTO {
+  id: string;
+  reportDate: string;
+  totalChargesCents: number;
+  totalPlatformFeesCents: number;
+  totalContractorPayoutsCents: number;
+  totalRefundsCents: number;
+  totalActiveHoldsCents: number;
+  discrepancyCents: number;
+  status: ReconciliationStatus;
+  unreconciledTransactionIds: string[];
+  createdAt: string;
+}
+

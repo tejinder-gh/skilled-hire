@@ -70,6 +70,10 @@ import {
   paymentIntents,
   stripeWebhookEvents,
   paymentDisputes,
+  marketplaceFinancialLedger,
+  payoutHolds,
+  contractorPayoutBalances,
+  financialReconciliationReports,
   eq,
   ne,
   and,
@@ -8813,7 +8817,271 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(refundData.amountCents).toBe(5000);
     expect(refundData.providerReference).toBeDefined();
   });
+
+  it("enforces append-only financial ledger, milestone evidence gates, payout holds/releases, contractor balance tracking, and daily reconciliation (#9, SH-08)", async () => {
+    // 1. Identify primary contractor and customer
+    const [contractorRecord] = await db
+      .select({ id: contractors.id, ownerUserId: contractors.ownerUserId })
+      .from(contractors)
+      .limit(1);
+    expect(contractorRecord).toBeDefined();
+    const contractorId = contractorRecord!.id;
+
+    const [customerUser] = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.email, "customer@example.test"))
+      .limit(1);
+    expect(customerUser).toBeDefined();
+
+    // 2. Fetch or provision property, service request, and job
+    const [prop] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, customerUser!.id))
+      .limit(1);
+
+    const [vert] = await db.select({ id: verticals.id }).from(verticals).limit(1);
+    const [cat] = await db
+      .select({ id: serviceCategories.id })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, vert!.id))
+      .limit(1);
+    const [issue] = await db
+      .select({ id: issueTypes.id })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, cat!.id))
+      .limit(1);
+
+    const [serviceReq] = await db
+      .insert(serviceRequests)
+      .values({
+        customerId: customerUser!.id,
+        propertyId: prop!.id,
+        verticalId: vert!.id,
+        categoryId: cat!.id,
+        issueTypeId: issue!.id,
+        urgency: "STANDARD",
+        status: "COMPLETED",
+        description: "HVAC High-Efficiency Heat Pump Commissioning & ESA Inspection",
+      })
+      .returning({ id: serviceRequests.id });
+
+    const [tech] = await db
+      .select({ id: technicians.id })
+      .from(technicians)
+      .where(eq(technicians.contractorId, contractorId))
+      .limit(1);
+
+    const [job] = await db
+      .insert(jobs)
+      .values({
+        serviceRequestId: serviceReq!.id,
+        contractorId,
+        technicianId: tech!.id,
+        status: "COMPLETED",
+      })
+      .returning({ id: jobs.id });
+
+    const [quote] = await db
+      .insert(quotes)
+      .values({
+        jobId: job!.id,
+        version: 1,
+        status: "ACCEPTED",
+        contractorSubtotalCents: 100000,
+        taxCents: 13000,
+        customerTotalCents: 113000,
+        currency: "CAD",
+        expiresAt: new Date(Date.now() + 86400000),
+      })
+      .returning({ id: quotes.id });
+
+    const [schedule] = await db
+      .insert(paymentSchedules)
+      .values({
+        quoteId: quote!.id,
+        totalCents: 113000,
+        currency: "CAD",
+      })
+      .returning({ id: paymentSchedules.id });
+
+    // Create a final milestone requiring evidence
+    const [milestone] = await db
+      .insert(paymentMilestones)
+      .values({
+        scheduleId: schedule!.id,
+        sequence: 3,
+        triggerName: "Final Completion & ESA Sign-off",
+        amountCents: 100000, // $1,000 CAD
+        evidenceRequired: true,
+        status: "PENDING",
+      })
+      .returning();
+
+    // 3. Customer initiates and confirms payment intent for $1,000 CAD
+    const piRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/intent",
+      headers: auth("customer@example.test"),
+      payload: {
+        milestoneId: milestone!.id,
+      },
+    });
+    expect(piRes.statusCode).toBe(201);
+    const pi = piRes.json<{ id: string; amountCents: number }>();
+    expect(pi.amountCents).toBe(100000);
+
+    const confirmRes = await app.inject({
+      method: "POST",
+      url: `/v1/payments/intent/${pi.id}/confirm`,
+      headers: auth("customer@example.test"),
+      payload: {
+        testTriggerOutcome: "success",
+      },
+    });
+    expect(confirmRes.statusCode).toBe(200);
+
+    // 4. Verify append-only double-entry financial ledger records
+    const ledgerEntries = await db
+      .select()
+      .from(marketplaceFinancialLedger)
+      .where(eq(marketplaceFinancialLedger.milestoneId, milestone!.id));
+
+    expect(ledgerEntries.length).toBeGreaterThanOrEqual(3);
+
+    const chargeDebits = ledgerEntries.filter(
+      (e) => e.entryType === "CUSTOMER_CHARGE" && e.direction === "DEBIT",
+    );
+    const chargeCredits = ledgerEntries.filter(
+      (e) => e.entryType === "CUSTOMER_CHARGE" && e.direction === "CREDIT",
+    );
+    expect(chargeDebits).toHaveLength(1);
+    expect(chargeDebits[0]?.accountType).toBe("STRIPE_CLEARING");
+    expect(Number(chargeDebits[0]?.amountCents)).toBe(100000);
+
+    const feeCredit = chargeCredits.find((e) => e.accountType === "PLATFORM_REVENUE");
+    const payableCredit = chargeCredits.find((e) => e.accountType === "CONTRACTOR_PAYABLE");
+    expect(Number(feeCredit?.amountCents)).toBe(5000); // 5% fee
+    expect(Number(payableCredit?.amountCents)).toBe(95000); // 95% net contractor earning
+
+    // 5. Verify Milestone Evidence Gate placed an automated payout hold
+    const holds = await db
+      .select()
+      .from(payoutHolds)
+      .where(eq(payoutHolds.milestoneId, milestone!.id));
+    expect(holds).toHaveLength(1);
+    const autoHold = holds[0]!;
+    expect(autoHold.holdStatus).toBe("ACTIVE");
+    expect(autoHold.holdReason).toBe("MISSING_COMPLETION_EVIDENCE");
+    expect(Number(autoHold.amountCents)).toBe(95000);
+
+    // Verify hold ledger entries were created
+    const holdLedger = ledgerEntries.filter((e) => e.entryType === "PAYOUT_HOLD");
+    expect(holdLedger.length).toBeGreaterThanOrEqual(2);
+
+    // 6. Check contractor payout balance snapshot: Available is 0, held is 95,000
+    const balRes = await app.inject({
+      method: "GET",
+      url: `/v1/contractors/${contractorId}/payout-balance`,
+      headers: auth("admin@example.test"),
+    });
+    expect(balRes.statusCode).toBe(200);
+    const balData = balRes.json<{
+      availableBalanceCents: number;
+      heldBalanceCents: number;
+      activeHolds: any[];
+    }>();
+    expect(balData.availableBalanceCents).toBe(0);
+    expect(balData.heldBalanceCents).toBe(95000);
+    expect(balData.activeHolds.length).toBeGreaterThanOrEqual(1);
+
+    // 7. Verify contractor cannot disburse held funds
+    const prematureTransferRes = await app.inject({
+      method: "POST",
+      url: "/v1/payouts/transfer",
+      headers: auth("admin@example.test"),
+      payload: {
+        contractorId,
+        amountCents: 95000,
+      },
+    });
+    expect(prematureTransferRes.statusCode).toBe(422);
+
+    // 8. Evidence is submitted and verified -> Release payout hold
+    const releaseRes = await app.inject({
+      method: "POST",
+      url: `/v1/payouts/holds/${autoHold.id}/release`,
+      headers: auth("admin@example.test"),
+      payload: {
+        releaseNotes: "Verified ESA Certificate of Acceptance and signed customer acceptance",
+      },
+    });
+    expect(releaseRes.statusCode).toBe(200);
+    expect(releaseRes.json<{ holdStatus: string }>().holdStatus).toBe("RELEASED");
+
+    // 9. Contractor balance is now available for disbursal
+    const releasedBalRes = await app.inject({
+      method: "GET",
+      url: `/v1/contractors/${contractorId}/payout-balance`,
+      headers: auth("admin@example.test"),
+    });
+    expect(releasedBalRes.statusCode).toBe(200);
+    const releasedBal = releasedBalRes.json<{
+      availableBalanceCents: number;
+      heldBalanceCents: number;
+    }>();
+    expect(releasedBal.availableBalanceCents).toBe(95000);
+    expect(releasedBal.heldBalanceCents).toBe(0);
+
+    // 10. Disburse payout transfer to contractor bank account
+    const transferRes = await app.inject({
+      method: "POST",
+      url: "/v1/payouts/transfer",
+      headers: auth("admin@example.test"),
+      payload: {
+        contractorId,
+        amountCents: 95000,
+      },
+    });
+    expect(transferRes.statusCode).toBe(200);
+    const transferData = transferRes.json<{
+      status: string;
+      transferAmountCents: number;
+      remainingAvailableBalanceCents: number;
+    }>();
+    expect(transferData.status).toBe("DISPATCHED");
+    expect(transferData.transferAmountCents).toBe(95000);
+    expect(transferData.remainingAvailableBalanceCents).toBe(0);
+
+    // 11. Run Daily Financial Reconciliation
+    const reconRes = await app.inject({
+      method: "POST",
+      url: "/v1/reconciliation/run",
+      headers: auth("admin@example.test"),
+      payload: {
+        notes: "Automated end-of-day audit across clearing, payable, and revenue accounts",
+      },
+    });
+    expect(reconRes.statusCode).toBe(201);
+    const reconData = reconRes.json<{
+      status: string;
+      discrepancyCents: number;
+    }>();
+    expect(reconData.status).toBe("BALANCED");
+    expect(Number(reconData.discrepancyCents)).toBe(0);
+
+    // 12. Query historical reconciliation reports
+    const listReconRes = await app.inject({
+      method: "GET",
+      url: "/v1/reconciliation/reports",
+      headers: auth("admin@example.test"),
+    });
+    expect(listReconRes.statusCode).toBe(200);
+    expect(listReconRes.json<{ reports: any[] }>().reports.length).toBeGreaterThanOrEqual(1);
+  });
 });
+
 
 
 
