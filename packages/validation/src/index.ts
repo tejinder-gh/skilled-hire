@@ -28,6 +28,8 @@ export const quoteItemSchema = z.object({
   description: z.string().max(2000).optional(),
   quantity: z.number().int().positive().max(10000),
   unitPriceCents: z.number().int().nonnegative().max(100_000_000),
+  isCustomerSupplied: z.boolean().default(false),
+  warrantyCaveat: z.string().max(2000).optional(),
   materialMetadata: z
     .object({
       manufacturer: z.string().max(100).optional(),
@@ -39,11 +41,21 @@ export const quoteItemSchema = z.object({
 });
 export const createQuoteSchema = z.object({
   items: z.array(quoteItemSchema).min(1).max(100),
+  diagnosticFeeCents: z.number().int().nonnegative().default(0),
   platformFeeCents: z.number().int().nonnegative(),
   discountCents: z.number().int().nonnegative().default(0),
   taxCents: z.number().int().nonnegative(),
+  customerSuppliedPartsCaveat: z.string().max(2000).optional(),
   notes: z.string().max(5000).optional(),
   expiresAt: z.string().datetime(),
+});
+export const acceptQuoteSchema = z.object({
+  customerSuppliedAcknowledged: z.boolean().default(false),
+  notes: z.string().max(2000).optional(),
+});
+export const declineQuoteSchema = z.object({
+  reason: z.string().min(3).max(500),
+  notes: z.string().max(2000).optional(),
 });
 export const reviewSchema = z.object({
   overall: z.number().int().min(1).max(5),
@@ -58,9 +70,15 @@ export const changeOrderSchema = z.object({
   explanation: z.string().min(10).max(5000),
   attachmentKeys: z.array(z.string().min(1).max(512)).max(10).default([]),
   items: z.array(quoteItemSchema).min(1).max(100),
+  diagnosticFeeCents: z.number().int().nonnegative().default(0),
   platformFeeCents: z.number().int().nonnegative(),
   taxCents: z.number().int().nonnegative(),
+  customerSuppliedPartsCaveat: z.string().max(2000).optional(),
   expiresAt: z.string().datetime(),
+});
+export const declineChangeOrderSchema = z.object({
+  reason: z.string().min(3).max(500),
+  notes: z.string().max(2000).optional(),
 });
 export const supportTicketSchema = z.object({
   jobId: uuid.optional(),

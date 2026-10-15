@@ -2,12 +2,17 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { requireRole } from "@marketplace/auth";
 import type { PaymentRule } from "@marketplace/contracts";
-import { createPaymentMilestones, quoteTotals } from "@marketplace/core";
+import { ONTARIO_LABOUR_ONLY_DISCLAIMER } from "@marketplace/contracts";
+import {
+  createPaymentMilestones,
+  itemizedQuoteTotals,
+} from "@marketplace/core";
 import {
   db,
   eq,
   and,
   sql,
+  desc,
   jobs,
   technicians,
   quotes,
@@ -18,11 +23,18 @@ import {
   paymentSchedules,
   paymentMilestones,
 } from "@marketplace/database";
-import { createQuoteSchema } from "@marketplace/validation";
+import {
+  createQuoteSchema,
+  acceptQuoteSchema,
+  declineQuoteSchema,
+} from "@marketplace/validation";
 import { actor, authenticate, isOps, parse, uuid } from "../common/auth.js";
 import { audit } from "../common/events.js";
 
 export const quotesRoutes: FastifyPluginAsync = async (app) => {
+  // ---------------------------------------------------------------------------
+  // 1. Submit Itemized Quote (Technician)
+  // ---------------------------------------------------------------------------
   app.post(
     "/v1/jobs/:id/quotes",
     { preHandler: authenticate },
@@ -30,6 +42,7 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
       requireRole(actor(request), "TECHNICIAN");
       const jobId = parse(z.object({ id: uuid }), request.params).id;
       const body = parse(createQuoteSchema, request.body);
+
       const result = await db.transaction(async (tx) => {
         const [row] = await tx
           .select({
@@ -55,11 +68,12 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
           throw new Error("QUOTE_NOT_ALLOWED");
 
         const discountCents = body.discountCents ?? 0;
-        const totals = quoteTotals(
+        const totals = itemizedQuoteTotals(
           body.items,
           body.platformFeeCents,
           discountCents,
           body.taxCents,
+          body.diagnosticFeeCents ?? 0,
         );
 
         const [versionRow] = await tx
@@ -71,6 +85,11 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
 
         const version = Number(versionRow?.version ?? 1);
 
+        const customerSuppliedPartsCaveat =
+          totals.customerSuppliedCount > 0
+            ? (body.customerSuppliedPartsCaveat ?? ONTARIO_LABOUR_ONLY_DISCLAIMER)
+            : null;
+
         const [quote] = await tx
           .insert(quotes)
           .values({
@@ -78,6 +97,13 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
             version,
             status: "SUBMITTED",
             contractorSubtotalCents: totals.contractorSubtotalCents,
+            diagnosticFeeCents: totals.diagnosticFeeCents,
+            laborSubtotalCents: totals.laborSubtotalCents,
+            materialsSubtotalCents: totals.materialsSubtotalCents,
+            disposalSubtotalCents: totals.disposalSubtotalCents,
+            permitsSubtotalCents: totals.permitsSubtotalCents,
+            customerSuppliedPartsCaveat,
+            customerSuppliedAcknowledged: false,
             platformFeeCents: body.platformFeeCents,
             discountCents,
             taxCents: body.taxCents,
@@ -100,8 +126,12 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
             title: item.title,
             description: item.description ?? null,
             quantity: item.quantity,
-            unitPriceCents: item.unitPriceCents,
+            unitPriceCents: item.isCustomerSupplied ? 0 : item.unitPriceCents,
             subtotalCents: itemSubtotal,
+            isCustomerSupplied: item.isCustomerSupplied ?? false,
+            warrantyCaveat: item.isCustomerSupplied
+              ? (item.warrantyCaveat ?? "Labour only warranty; customer assumes part defect risk under Ontario CPA")
+              : (item.warrantyCaveat ?? null),
             materialMetadata: item.materialMetadata
               ? (item.materialMetadata as any)
               : null,
@@ -126,8 +156,18 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
             .where(eq(serviceRequests.id, jobRecord.serviceRequestId));
         }
 
-        return { quoteId, totalCents: totals.customerTotalCents };
+        return {
+          quoteId,
+          version,
+          diagnosticFeeCents: totals.diagnosticFeeCents,
+          laborSubtotalCents: totals.laborSubtotalCents,
+          materialsSubtotalCents: totals.materialsSubtotalCents,
+          disposalSubtotalCents: totals.disposalSubtotalCents,
+          permitsSubtotalCents: totals.permitsSubtotalCents,
+          totalCents: totals.customerTotalCents,
+        };
       });
+
       await audit(
         actor(request).id,
         "QUOTE_SUBMITTED",
@@ -140,6 +180,9 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // ---------------------------------------------------------------------------
+  // 2. List Quotes for a Job (Customer / Technician / Ops)
+  // ---------------------------------------------------------------------------
   app.get(
     "/v1/jobs/:id/quotes",
     { preHandler: authenticate },
@@ -152,8 +195,39 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
           quote_id: quotes.id,
           status: quotes.status,
           version: quotes.version,
+          diagnostic_fee_cents: quotes.diagnosticFeeCents,
+          labor_subtotal_cents: quotes.laborSubtotalCents,
+          materials_subtotal_cents: quotes.materialsSubtotalCents,
+          disposal_subtotal_cents: quotes.disposalSubtotalCents,
+          permits_subtotal_cents: quotes.permitsSubtotalCents,
+          customer_supplied_parts_caveat: quotes.customerSuppliedPartsCaveat,
+          customer_supplied_acknowledged: quotes.customerSuppliedAcknowledged,
+          contractor_subtotal_cents: quotes.contractorSubtotalCents,
+          platform_fee_cents: quotes.platformFeeCents,
+          discount_cents: quotes.discountCents,
+          tax_cents: quotes.taxCents,
           customer_total_cents: quotes.customerTotalCents,
-          items: sql<unknown>`COALESCE(json_agg(json_build_object('id',${quoteItems.id},'type',${quoteItems.type},'title',${quoteItems.title},'description',${quoteItems.description},'quantity',${quoteItems.quantity},'unitPriceCents',${quoteItems.unitPriceCents},'subtotalCents',${quoteItems.subtotalCents},'materialMetadata',${quoteItems.materialMetadata})) FILTER(WHERE ${quoteItems.id} IS NOT NULL),'[]')`,
+          currency: quotes.currency,
+          notes: quotes.notes,
+          expires_at: quotes.expiresAt,
+          accepted_at: quotes.acceptedAt,
+          accepted_by: quotes.acceptedBy,
+          decline_reason: quotes.declineReason,
+          declined_at: quotes.declinedAt,
+          declined_by: quotes.declinedBy,
+          created_at: quotes.createdAt,
+          items: sql<unknown>`COALESCE(json_agg(json_build_object(
+            'id', ${quoteItems.id},
+            'type', ${quoteItems.type},
+            'title', ${quoteItems.title},
+            'description', ${quoteItems.description},
+            'quantity', ${quoteItems.quantity},
+            'unitPriceCents', ${quoteItems.unitPriceCents},
+            'subtotalCents', ${quoteItems.subtotalCents},
+            'isCustomerSupplied', ${quoteItems.isCustomerSupplied},
+            'warrantyCaveat', ${quoteItems.warrantyCaveat},
+            'materialMetadata', ${quoteItems.materialMetadata}
+          )) FILTER(WHERE ${quoteItems.id} IS NOT NULL),'[]')`,
         })
         .from(jobs)
         .innerJoin(
@@ -164,7 +238,8 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
         .innerJoin(quotes, eq(quotes.jobId, jobs.id))
         .leftJoin(quoteItems, eq(quoteItems.quoteId, quotes.id))
         .where(eq(jobs.id, jobId))
-        .groupBy(serviceRequests.customerId, technicians.userId, quotes.id);
+        .groupBy(serviceRequests.customerId, technicians.userId, quotes.id)
+        .orderBy(desc(quotes.version));
 
       if (rows.length === 0)
         return reply
@@ -182,6 +257,94 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // ---------------------------------------------------------------------------
+  // 3. Get Single Quote by ID
+  // ---------------------------------------------------------------------------
+  app.get(
+    "/v1/quotes/:id",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const quoteId = parse(z.object({ id: uuid }), request.params).id;
+      const [quote] = await db
+        .select({
+          id: quotes.id,
+          jobId: quotes.jobId,
+          version: quotes.version,
+          status: quotes.status,
+          diagnosticFeeCents: quotes.diagnosticFeeCents,
+          laborSubtotalCents: quotes.laborSubtotalCents,
+          materialsSubtotalCents: quotes.materialsSubtotalCents,
+          disposalSubtotalCents: quotes.disposalSubtotalCents,
+          permitsSubtotalCents: quotes.permitsSubtotalCents,
+          customerSuppliedPartsCaveat: quotes.customerSuppliedPartsCaveat,
+          customerSuppliedAcknowledged: quotes.customerSuppliedAcknowledged,
+          contractorSubtotalCents: quotes.contractorSubtotalCents,
+          platformFeeCents: quotes.platformFeeCents,
+          discountCents: quotes.discountCents,
+          taxCents: quotes.taxCents,
+          customerTotalCents: quotes.customerTotalCents,
+          currency: quotes.currency,
+          notes: quotes.notes,
+          expiresAt: quotes.expiresAt,
+          acceptedAt: quotes.acceptedAt,
+          acceptedBy: quotes.acceptedBy,
+          declineReason: quotes.declineReason,
+          declinedAt: quotes.declinedAt,
+          declinedBy: quotes.declinedBy,
+          createdAt: quotes.createdAt,
+          customerId: serviceRequests.customerId,
+          technicianUserId: technicians.userId,
+        })
+        .from(quotes)
+        .innerJoin(jobs, eq(jobs.id, quotes.jobId))
+        .innerJoin(serviceRequests, eq(serviceRequests.id, jobs.serviceRequestId))
+        .innerJoin(technicians, eq(technicians.id, jobs.technicianId))
+        .where(eq(quotes.id, quoteId))
+        .limit(1);
+
+      if (!quote) {
+        return reply
+          .code(404)
+          .send({ code: "NOT_FOUND", message: "Quote not found" });
+      }
+
+      const user = actor(request);
+      if (
+        quote.customerId !== user.id &&
+        quote.technicianUserId !== user.id &&
+        !isOps(user)
+      ) {
+        return reply
+          .code(403)
+          .send({ code: "FORBIDDEN", message: "Not permitted to view quote" });
+      }
+
+      const items = await db
+        .select({
+          id: quoteItems.id,
+          type: quoteItems.type,
+          title: quoteItems.title,
+          description: quoteItems.description,
+          quantity: quoteItems.quantity,
+          unitPriceCents: quoteItems.unitPriceCents,
+          subtotalCents: quoteItems.subtotalCents,
+          isCustomerSupplied: quoteItems.isCustomerSupplied,
+          warrantyCaveat: quoteItems.warrantyCaveat,
+          materialMetadata: quoteItems.materialMetadata,
+        })
+        .from(quoteItems)
+        .where(eq(quoteItems.quoteId, quoteId));
+
+      return {
+        ...quote,
+        items,
+      };
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // 4. Accept Quote & Schedule Payment Milestones (Customer)
+  // ---------------------------------------------------------------------------
   app.post(
     "/v1/quotes/:id/accept",
     { preHandler: authenticate },
@@ -196,6 +359,10 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
             code: "IDEMPOTENCY_KEY_REQUIRED",
             message: "A sufficiently random Idempotency-Key is required",
           });
+
+      const body = request.body
+        ? parse(acceptQuoteSchema, request.body)
+        : { customerSuppliedAcknowledged: false };
 
       const outcome = await db.transaction(async (tx) => {
         const requestHash = `quote:${quoteId}`;
@@ -236,6 +403,7 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
             status: quotes.status,
             expires_at: quotes.expiresAt,
             customer_total_cents: quotes.customerTotalCents,
+            customer_supplied_parts_caveat: quotes.customerSuppliedPartsCaveat,
             currency: quotes.currency,
           })
           .from(quotes)
@@ -252,8 +420,14 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
         if (
           row.status !== "SUBMITTED" ||
           (row.expires_at && row.expires_at <= new Date())
-        )
+        ) {
           throw new Error("QUOTE_UNAVAILABLE");
+        }
+
+        // Guard: customer supplied parts acknowledgment under Ontario CPA
+        if (row.customer_supplied_parts_caveat && !body.customerSuppliedAcknowledged) {
+          throw new Error("CUSTOMER_PARTS_ACKNOWLEDGMENT_REQUIRED");
+        }
 
         const rules = await tx
           .select({
@@ -327,9 +501,11 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
             status: "ACCEPTED",
             acceptedAt: new Date(),
             acceptedBy: actor(request).id,
+            customerSuppliedAcknowledged: Boolean(row.customer_supplied_parts_caveat),
           })
           .where(eq(quotes.id, quoteId));
 
+        // Supersede other pending submitted quotes for this job
         await tx
           .update(quotes)
           .set({ status: "SUPERSEDED" })
@@ -367,6 +543,7 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
 
         return response;
       });
+
       await audit(
         actor(request).id,
         "QUOTE_ACCEPTED",
@@ -375,6 +552,86 @@ export const quotesRoutes: FastifyPluginAsync = async (app) => {
         null,
         outcome,
       );
+      return reply.code(200).send(outcome);
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // 5. Decline Quote (Customer)
+  // ---------------------------------------------------------------------------
+  app.post(
+    "/v1/quotes/:id/decline",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      requireRole(actor(request), "CUSTOMER");
+      const quoteId = parse(z.object({ id: uuid }), request.params).id;
+      const body = parse(declineQuoteSchema, request.body);
+
+      const outcome = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .select({
+            job_id: quotes.jobId,
+            customer_id: serviceRequests.customerId,
+            status: quotes.status,
+            expires_at: quotes.expiresAt,
+          })
+          .from(quotes)
+          .innerJoin(jobs, eq(jobs.id, quotes.jobId))
+          .innerJoin(
+            serviceRequests,
+            eq(serviceRequests.id, jobs.serviceRequestId),
+          )
+          .where(eq(quotes.id, quoteId))
+          .for("update", { of: quotes });
+
+        if (!row) throw new Error("NOT_FOUND");
+        if (row.customer_id !== actor(request).id) throw new Error("FORBIDDEN");
+        if (row.status !== "SUBMITTED") {
+          throw new Error("QUOTE_NOT_DECLINABLE");
+        }
+
+        const fullReason = body.reason + (body.notes ? `: ${body.notes}` : "");
+
+        await tx
+          .update(quotes)
+          .set({
+            status: "REJECTED",
+            declineReason: fullReason,
+            declinedAt: new Date(),
+            declinedBy: actor(request).id,
+          })
+          .where(eq(quotes.id, quoteId));
+
+        await tx
+          .update(jobs)
+          .set({ status: "QUOTE_REJECTED", updatedAt: new Date() })
+          .where(eq(jobs.id, row.job_id));
+
+        const [jobRecord] = await tx
+          .select({ serviceRequestId: jobs.serviceRequestId })
+          .from(jobs)
+          .where(eq(jobs.id, row.job_id))
+          .limit(1);
+
+        if (jobRecord) {
+          await tx
+            .update(serviceRequests)
+            .set({ status: "QUOTE_REJECTED", updatedAt: new Date() })
+            .where(eq(serviceRequests.id, jobRecord.serviceRequestId));
+        }
+
+        return { quoteId, status: "REJECTED", reason: fullReason };
+      });
+
+      await audit(
+        actor(request).id,
+        "QUOTE_DECLINED",
+        "QUOTE",
+        quoteId,
+        null,
+        outcome,
+      );
+
       return reply.code(200).send(outcome);
     },
   );

@@ -198,6 +198,8 @@ export interface QuoteItemInput {
   description?: string | undefined;
   quantity: number;
   unitPriceCents: number;
+  isCustomerSupplied?: boolean | undefined;
+  warrantyCaveat?: string | null | undefined;
   materialMetadata?:
     | {
         manufacturer?: string | undefined;
@@ -1175,3 +1177,4 @@ export * from "./payments.js";
 export * from "./notifications.js";
 export * from "./dispatch-exceptions.js";
 export * from "./customer-accounts.js";
+export * from "./quote-review.js";

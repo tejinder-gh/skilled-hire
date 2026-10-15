@@ -12,6 +12,80 @@ export function quoteTotals(items: readonly QuoteItemInput[], platformFeeCents: 
   if (customerTotalCents < 0) throw new Error("Quote total cannot be negative");
   return { contractorSubtotalCents, customerTotalCents, itemSubtotals };
 }
+export interface ItemizedCalculationResult {
+  diagnosticFeeCents: number;
+  laborSubtotalCents: number;
+  materialsSubtotalCents: number;
+  disposalSubtotalCents: number;
+  permitsSubtotalCents: number;
+  customerSuppliedCount: number;
+  contractorSubtotalCents: number;
+  platformFeeCents: number;
+  discountCents: number;
+  taxCents: number;
+  customerTotalCents: number;
+  itemSubtotals: number[];
+}
+export function itemizedQuoteTotals(
+  items: readonly QuoteItemInput[],
+  platformFeeCents: number,
+  discountCents: number,
+  taxCents: number,
+  explicitDiagnosticFeeCents = 0,
+): ItemizedCalculationResult {
+  let diagnosticFeeCents = explicitDiagnosticFeeCents;
+  let laborSubtotalCents = 0;
+  let materialsSubtotalCents = 0;
+  let disposalSubtotalCents = 0;
+  let permitsSubtotalCents = 0;
+  let customerSuppliedCount = 0;
+
+  const itemSubtotals = items.map((item) => {
+    const effectiveUnitPrice = item.isCustomerSupplied ? 0 : item.unitPriceCents;
+    if (item.isCustomerSupplied) {
+      customerSuppliedCount++;
+    }
+    const sub = checkedMultiply(item.quantity, effectiveUnitPrice);
+
+    if (item.type === "DIAGNOSTIC") {
+      diagnosticFeeCents = checkedAdd(diagnosticFeeCents, sub);
+    } else if (item.type === "LABOUR") {
+      laborSubtotalCents = checkedAdd(laborSubtotalCents, sub);
+    } else if (item.type === "MATERIAL" || item.type === "EQUIPMENT") {
+      materialsSubtotalCents = checkedAdd(materialsSubtotalCents, sub);
+    } else if (item.type === "DISPOSAL") {
+      disposalSubtotalCents = checkedAdd(disposalSubtotalCents, sub);
+    } else if (item.type === "PERMIT") {
+      permitsSubtotalCents = checkedAdd(permitsSubtotalCents, sub);
+    }
+    return sub;
+  });
+
+  const contractorSubtotalCents = itemSubtotals.reduce(
+    (sum, amount) => checkedAdd(sum, amount),
+    explicitDiagnosticFeeCents,
+  );
+  const customerTotalCents = checkedAdd(
+    checkedAdd(checkedAdd(contractorSubtotalCents, platformFeeCents), taxCents),
+    -discountCents,
+  );
+  if (customerTotalCents < 0) throw new Error("Quote total cannot be negative");
+
+  return {
+    diagnosticFeeCents,
+    laborSubtotalCents,
+    materialsSubtotalCents,
+    disposalSubtotalCents,
+    permitsSubtotalCents,
+    customerSuppliedCount,
+    contractorSubtotalCents,
+    platformFeeCents,
+    discountCents,
+    taxCents,
+    customerTotalCents,
+    itemSubtotals,
+  };
+}
 function checkedMultiply(a: number, b: number): number { const result = a * b; if (!Number.isSafeInteger(result)) throw new Error("Money calculation overflow"); return result; }
 function checkedAdd(a: number, b: number): number { const result = a + b; if (!Number.isSafeInteger(result)) throw new Error("Money calculation overflow"); return result; }
 export function createPaymentMilestones(rules: readonly PaymentRule[], verticalId: string, totalCents: number): Array<{ sequence: number; trigger: string; amountCents: number; evidenceRequired: boolean }> {

@@ -14,6 +14,9 @@ import {
   issueTypes,
   jobs,
   quotes,
+  quoteItems,
+  changeOrders,
+  changeOrderItems,
   paymentSchedules,
   paymentMilestones,
   paymentTransactions,
@@ -9907,6 +9910,504 @@ describeSuite("Skilled Hire lifecycle", () => {
     });
     const postDeleteList = postDeleteListRes.json<Array<{ id: string }>>();
     expect(postDeleteList.some((p) => p.id === muskokaPropId)).toBe(false);
+  });
+
+  it("enforces itemized quote breakdowns, call-out fee isolation, customer-supplied materials warranty disclaimers, and change order decline lifecycle (SH-12 / #13)", async () => {
+    // 1. Setup seed context for HVAC job
+    const [context] = await db
+      .select({
+        vertical_id: verticals.id,
+        category_id: serviceCategories.id,
+        issue_type_id: issueTypes.id,
+        property_id: properties.id,
+      })
+      .from(verticals)
+      .innerJoin(
+        serviceCategories,
+        eq(serviceCategories.verticalId, verticals.id),
+      )
+      .innerJoin(issueTypes, eq(issueTypes.categoryId, serviceCategories.id))
+      .innerJoin(properties, eq(properties.customerId, custUser.id))
+      .where(
+        and(eq(verticals.slug, "hvac"), eq(issueTypes.slug, "ac-not-cooling")),
+      )
+      .limit(1);
+    if (!context) throw new Error("Missing seed configuration");
+    const ctx = context;
+
+    const [compliantTech] = await db
+      .select({ id: technicians.id })
+      .from(technicians)
+      .where(
+        and(
+          eq(technicians.active, true),
+          eq(technicians.displayName, "John S."),
+        ),
+      )
+      .limit(1);
+    if (!compliantTech) throw new Error("Missing compliant technician");
+    const tech = compliantTech;
+
+    // Helper to create and advance a job to QUOTE_PENDING
+    async function createJobForQuote(desc: string) {
+      const created = await app.inject({
+        method: "POST",
+        url: "/v1/service-requests",
+        headers: auth("customer@example.test"),
+        payload: {
+          propertyId: ctx.property_id,
+          verticalId: ctx.vertical_id,
+          categoryId: ctx.category_id,
+          issueTypeId: ctx.issue_type_id,
+          urgency: "STANDARD",
+          description: desc,
+          attachmentKeys: [],
+        },
+      });
+      expect(created.statusCode).toBe(201);
+      const reqId = created.json<{ id: string }>().id;
+
+      for (const to of [
+        "QUALIFICATION_PENDING",
+        "QUALIFIED",
+        "SCHEDULING",
+        "SCHEDULED",
+        "CONTRACTOR_SEARCH",
+      ] as const) {
+        const trans = await app.inject({
+          method: "POST",
+          url: `/v1/service-requests/${reqId}/transition`,
+          headers: auth("dispatch@example.test"),
+          payload: { to },
+        });
+        expect(trans.statusCode).toBe(200);
+      }
+
+      const assigned = await app.inject({
+        method: "POST",
+        url: `/v1/dispatch/${reqId}/assign`,
+        headers: auth("dispatch@example.test"),
+        payload: { technicianId: tech.id },
+      });
+      expect(assigned.statusCode).toBe(201);
+      const jId = assigned.json<{ jobId: string }>().jobId;
+
+      for (const to of [
+        "TECHNICIAN_EN_ROUTE",
+        "TECHNICIAN_ARRIVED",
+        "ASSESSMENT_IN_PROGRESS",
+        "QUOTE_PENDING",
+      ] as const) {
+        const trans = await app.inject({
+          method: "POST",
+          url: `/v1/service-requests/${reqId}/transition`,
+          headers: auth("technician@example.test"),
+          payload: { to },
+        });
+        expect(trans.statusCode).toBe(200);
+      }
+
+      return { reqId, jId };
+    }
+
+    const job1 = await createJobForQuote("AC short cycling and customer supplied smart thermostat to install.");
+
+    // 2. Submit Itemized Quote with Diagnostic Call-Out Fee and Customer-Supplied Material
+    const quotePayload = {
+      diagnosticFeeCents: 12900,
+      platformFeeCents: 1000,
+      taxCents: 6747, // 13% ON HST
+      expiresAt: new Date(Date.now() + 86_400_000 * 3).toISOString(),
+      items: [
+        {
+          type: "DIAGNOSTIC",
+          title: "Diagnostic call-out & system test",
+          quantity: 1,
+          unitPriceCents: 12900,
+        },
+        {
+          type: "LABOUR",
+          title: "Dual run capacitor & smart thermostat wiring labour",
+          quantity: 2,
+          unitPriceCents: 12000,
+        },
+        {
+          type: "MATERIAL",
+          title: "Titan HD 45/5 MFD Dual Run Capacitor (OEM)",
+          quantity: 1,
+          unitPriceCents: 8500,
+          isCustomerSupplied: false,
+        },
+        {
+          type: "MATERIAL",
+          title: "Customer-Supplied Ecobee Smart Thermostat Pro",
+          quantity: 1,
+          unitPriceCents: 24900, // Should be calculated as 0 for part charge
+          isCustomerSupplied: true,
+          warrantyCaveat: "Customer-supplied thermostat. Labour only warranty under Ontario CPA; part warranty excluded.",
+        },
+        {
+          type: "DISPOSAL",
+          title: "Eco hazardous refrigerant oil and capacitor safe disposal",
+          quantity: 1,
+          unitPriceCents: 4500,
+        },
+        {
+          type: "PERMIT",
+          title: "Municipal mechanical notification & safety filing",
+          quantity: 1,
+          unitPriceCents: 6000,
+        },
+      ],
+    };
+
+    const submitRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job1.jId}/quotes`,
+      headers: auth("technician@example.test"),
+      payload: quotePayload,
+    });
+    expect(submitRes.statusCode).toBe(201);
+    const quoteResult = submitRes.json<{
+      quoteId: string;
+      version: number;
+      diagnosticFeeCents: number;
+      laborSubtotalCents: number;
+      materialsSubtotalCents: number;
+      disposalSubtotalCents: number;
+      permitsSubtotalCents: number;
+      totalCents: number;
+    }>();
+
+    expect(quoteResult.quoteId).toBeDefined();
+    expect(quoteResult.version).toBe(1);
+    expect(quoteResult.diagnosticFeeCents).toBe(12900);
+    expect(quoteResult.laborSubtotalCents).toBe(24000);
+    // Materials subtotal should ONLY include OEM capacitor ($85.00), customer-supplied Ecobee is $0 part charge
+    expect(quoteResult.materialsSubtotalCents).toBe(8500);
+    expect(quoteResult.disposalSubtotalCents).toBe(4500);
+    expect(quoteResult.permitsSubtotalCents).toBe(6000);
+    // Total = 12900 (diag) + 24000 (labor) + 8500 (mat) + 4500 (disp) + 6000 (perm) + 1000 (plat) + 6747 (tax) = 63647
+    expect(quoteResult.totalCents).toBe(63647);
+
+    // 3. Inspect Quote Details via GET /v1/quotes/:id
+    const getQuoteRes = await app.inject({
+      method: "GET",
+      url: `/v1/quotes/${quoteResult.quoteId}`,
+      headers: auth("customer@example.test"),
+    });
+    expect(getQuoteRes.statusCode).toBe(200);
+    const quoteDetail = getQuoteRes.json<{
+      id: string;
+      version: number;
+      diagnosticFeeCents: number;
+      customerSuppliedPartsCaveat: string | null;
+      customerSuppliedAcknowledged: boolean;
+      items: Array<{
+        type: string;
+        title: string;
+        unitPriceCents: number;
+        subtotalCents: number;
+        isCustomerSupplied: boolean;
+        warrantyCaveat: string | null;
+      }>;
+    }>();
+
+    expect(quoteDetail.diagnosticFeeCents).toBe(12900);
+    expect(quoteDetail.customerSuppliedPartsCaveat).toBeTruthy();
+    expect(quoteDetail.customerSuppliedPartsCaveat).toContain("Ontario Consumer Protection Act");
+    expect(quoteDetail.customerSuppliedAcknowledged).toBe(false);
+
+    const customerPartItem = quoteDetail.items.find((i) => i.isCustomerSupplied);
+    expect(customerPartItem).toBeDefined();
+    expect(customerPartItem?.unitPriceCents).toBe(0);
+    expect(customerPartItem?.subtotalCents).toBe(0);
+    expect(customerPartItem?.warrantyCaveat).toContain("Labour only warranty");
+
+    // 4. Tenancy & Authorization Guard: Rival customer cannot view quote
+    const unauthorizedViewRes = await app.inject({
+      method: "GET",
+      url: `/v1/quotes/${quoteResult.quoteId}`,
+      headers: auth("provider@example.test"),
+    });
+    expect(unauthorizedViewRes.statusCode).toBe(403);
+
+    // 5. Statutory Protection Gate: Acceptance WITHOUT customer acknowledgment fails closed
+    const unacknowledgedAcceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/quotes/${quoteResult.quoteId}/accept`,
+      headers: {
+        ...auth("customer@example.test"),
+        "idempotency-key": crypto.randomUUID(),
+      },
+      payload: {
+        customerSuppliedAcknowledged: false,
+      },
+    });
+    expect(unacknowledgedAcceptRes.statusCode).toBe(422);
+    expect(unacknowledgedAcceptRes.json<{ code: string }>().code).toBe(
+      "CUSTOMER_PARTS_ACKNOWLEDGMENT_REQUIRED",
+    );
+
+    // Verify quote was NOT accepted
+    const [unacceptedQuote] = await db
+      .select({ status: quotes.status })
+      .from(quotes)
+      .where(eq(quotes.id, quoteResult.quoteId));
+    expect(unacceptedQuote?.status).toBe("SUBMITTED");
+
+    // 6. Acceptance WITH Customer Acknowledgment succeeds and schedules milestones
+    const validAcceptIdempotencyKey = crypto.randomUUID();
+    const validAcceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/quotes/${quoteResult.quoteId}/accept`,
+      headers: {
+        ...auth("customer@example.test"),
+        "idempotency-key": validAcceptIdempotencyKey,
+      },
+      payload: {
+        customerSuppliedAcknowledged: true,
+      },
+    });
+    expect(validAcceptRes.statusCode).toBe(200);
+    const acceptedData = validAcceptRes.json<{
+      quoteId: string;
+      scheduleId: string;
+      milestones: Array<{ sequence: number; amountCents: number }>;
+    }>();
+    expect(acceptedData.quoteId).toBe(quoteResult.quoteId);
+    expect(acceptedData.scheduleId).toBeTruthy();
+    expect(acceptedData.milestones.length).toBeGreaterThan(0);
+
+    // Verify DB state
+    const [acceptedQuote] = await db
+      .select({
+        status: quotes.status,
+        customerSuppliedAcknowledged: quotes.customerSuppliedAcknowledged,
+        acceptedBy: quotes.acceptedBy,
+      })
+      .from(quotes)
+      .where(eq(quotes.id, quoteResult.quoteId));
+    expect(acceptedQuote?.status).toBe("ACCEPTED");
+    expect(acceptedQuote?.customerSuppliedAcknowledged).toBe(true);
+    expect(acceptedQuote?.acceptedBy).toBe(custUser.id);
+
+    // 7. Negative Guard: Cannot re-accept an already accepted quote with a new idempotency key
+    const reAcceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/quotes/${quoteResult.quoteId}/accept`,
+      headers: {
+        ...auth("customer@example.test"),
+        "idempotency-key": crypto.randomUUID(),
+      },
+      payload: { customerSuppliedAcknowledged: true },
+    });
+    expect(reAcceptRes.statusCode).toBe(409);
+    expect(reAcceptRes.json<{ code: string }>().code).toBe("QUOTE_UNAVAILABLE");
+
+    // 8. Negative Guard: Cannot decline an already accepted quote
+    const declineAcceptedRes = await app.inject({
+      method: "POST",
+      url: `/v1/quotes/${quoteResult.quoteId}/decline`,
+      headers: auth("customer@example.test"),
+      payload: {
+        reason: "PRICE_TOO_HIGH",
+      },
+    });
+    expect(declineAcceptedRes.statusCode).toBe(409);
+    expect(declineAcceptedRes.json<{ code: string }>().code).toBe("QUOTE_NOT_DECLINABLE");
+
+    // 9. Quote Decline Flow on a second job
+    const job2 = await createJobForQuote("Furnace blower motor inspection and replacement.");
+
+    const quote2Res = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job2.jId}/quotes`,
+      headers: auth("technician@example.test"),
+      payload: {
+        diagnosticFeeCents: 11900,
+        platformFeeCents: 500,
+        taxCents: 3120,
+        expiresAt: new Date(Date.now() + 86_400_000 * 2).toISOString(),
+        items: [
+          {
+            type: "DIAGNOSTIC",
+            title: "Furnace diagnostics",
+            quantity: 1,
+            unitPriceCents: 11900,
+          },
+          {
+            type: "LABOUR",
+            title: "Motor replacement labour",
+            quantity: 1,
+            unitPriceCents: 12000,
+          },
+        ],
+      },
+    });
+    expect(quote2Res.statusCode).toBe(201);
+    const quote2Id = quote2Res.json<{ quoteId: string }>().quoteId;
+
+    // Customer declines Quote 2 with structured reason
+    const declineRes = await app.inject({
+      method: "POST",
+      url: `/v1/quotes/${quote2Id}/decline`,
+      headers: auth("customer@example.test"),
+      payload: {
+        reason: "PRICE_TOO_HIGH",
+        notes: "Diagnostic fee exceeds budget; will obtain alternate opinion.",
+      },
+    });
+    expect(declineRes.statusCode).toBe(200);
+    const declineData = declineRes.json<{ quoteId: string; status: string; reason: string }>();
+    expect(declineData.status).toBe("REJECTED");
+    expect(declineData.reason).toContain("PRICE_TOO_HIGH: Diagnostic fee exceeds budget");
+
+    // Verify DB quote and job status
+    const [declinedQuote] = await db
+      .select({ status: quotes.status, declineReason: quotes.declineReason })
+      .from(quotes)
+      .where(eq(quotes.id, quote2Id));
+    expect(declinedQuote?.status).toBe("REJECTED");
+    expect(declinedQuote?.declineReason).toContain("PRICE_TOO_HIGH");
+
+    const [declinedJob] = await db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, job2.jId));
+    expect(declinedJob?.status).toBe("QUOTE_REJECTED");
+
+    // Verify rejected quote cannot be accepted
+    const acceptRejectedRes = await app.inject({
+      method: "POST",
+      url: `/v1/quotes/${quote2Id}/accept`,
+      headers: {
+        ...auth("customer@example.test"),
+        "idempotency-key": crypto.randomUUID(),
+      },
+      payload: {},
+    });
+    expect(acceptRejectedRes.statusCode).toBe(409);
+    expect(acceptRejectedRes.json<{ code: string }>().code).toBe("QUOTE_UNAVAILABLE");
+
+    // 10. Change Order Lifecycle: Submission, Photographic Evidence, Customer Decline and Subsequent Acceptance
+    // Transition job1 to WORK_IN_PROGRESS
+    await db
+      .update(jobs)
+      .set({ status: "WORK_IN_PROGRESS" })
+      .where(eq(jobs.id, job1.jId));
+    await db
+      .update(serviceRequests)
+      .set({ status: "WORK_IN_PROGRESS" })
+      .where(eq(serviceRequests.id, job1.reqId));
+
+    // Submit Change Order 1 (discovered rusted drain pan & cracked condensate trap)
+    const changeOrder1Res = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job1.jId}/change-orders`,
+      headers: auth("technician@example.test"),
+      payload: {
+        reason: "Unforeseen corrosion in secondary evaporator pan",
+        explanation: "During thermostat hookup, found cracked secondary pan leaking into ceiling joists.",
+        attachmentKeys: ["evidence/corroded-pan-1.jpg", "evidence/joist-moisture-reading-2.jpg"],
+        platformFeeCents: 500,
+        taxCents: 2600,
+        expiresAt: new Date(Date.now() + 86_400_000 * 2).toISOString(),
+        items: [
+          {
+            type: "LABOUR",
+            title: "Pan replacement & condensate re-piping",
+            quantity: 1,
+            unitPriceCents: 15000,
+          },
+          {
+            type: "MATERIAL",
+            title: "Universal galvanized secondary drain pan",
+            quantity: 1,
+            unitPriceCents: 5000,
+          },
+        ],
+      },
+    });
+    expect(changeOrder1Res.statusCode).toBe(201);
+    const co1Id = changeOrder1Res.json<{ changeOrderId: string; totalCents: number }>().changeOrderId;
+
+    // Customer declines Change Order 1
+    const declineCoRes = await app.inject({
+      method: "POST",
+      url: `/v1/change-orders/${co1Id}/decline`,
+      headers: auth("customer@example.test"),
+      payload: {
+        reason: "DEFER_WORK",
+        notes: "Will replace pan next summer when replacing entire furnace.",
+      },
+    });
+    expect(declineCoRes.statusCode).toBe(200);
+    expect(declineCoRes.json<{ status: string }>().status).toBe("DECLINED");
+
+    // Verify job resumed WORK_IN_PROGRESS
+    const [jobAfterDeclinedCo] = await db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, job1.jId));
+    expect(jobAfterDeclinedCo?.status).toBe("WORK_IN_PROGRESS");
+
+    // Technician submits adjusted Change Order 2 (minor condensate patch only)
+    const changeOrder2Res = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job1.jId}/change-orders`,
+      headers: auth("technician@example.test"),
+      payload: {
+        reason: "Emergency condensate pipe patch to prevent water damage",
+        explanation: "Temporary high-temp sealant and replacement 3/4 inch PVC union trap.",
+        attachmentKeys: ["evidence/temporary-union-patch.jpg"],
+        platformFeeCents: 200,
+        taxCents: 1040,
+        expiresAt: new Date(Date.now() + 86_400_000 * 2).toISOString(),
+        items: [
+          {
+            type: "LABOUR",
+            title: "Emergency PVC union splice labour",
+            quantity: 1,
+            unitPriceCents: 6000,
+          },
+          {
+            type: "MATERIAL",
+            title: "Schedule 40 PVC 3/4 inch condensate union & primer",
+            quantity: 1,
+            unitPriceCents: 2000,
+          },
+        ],
+      },
+    });
+    expect(changeOrder2Res.statusCode).toBe(201);
+    const co2Id = changeOrder2Res.json<{ changeOrderId: string; totalCents: number }>().changeOrderId;
+
+    // Customer accepts Change Order 2
+    const acceptCoRes = await app.inject({
+      method: "POST",
+      url: `/v1/change-orders/${co2Id}/accept`,
+      headers: {
+        ...auth("customer@example.test"),
+        "idempotency-key": crypto.randomUUID(),
+      },
+    });
+    expect(acceptCoRes.statusCode).toBe(200);
+    const acceptCoData = acceptCoRes.json<{ changeOrderId: string; milestoneId: string }>();
+    expect(acceptCoData.changeOrderId).toBe(co2Id);
+    expect(acceptCoData.milestoneId).toBeTruthy();
+
+    // Verify new milestone appended to payment schedule
+    const [coMilestone] = await db
+      .select({
+        id: paymentMilestones.id,
+        triggerName: paymentMilestones.triggerName,
+        amountCents: paymentMilestones.amountCents,
+      })
+      .from(paymentMilestones)
+      .where(eq(paymentMilestones.id, acceptCoData.milestoneId));
+    expect(coMilestone?.triggerName).toBe("CHANGE_ORDER_ACCEPTED");
+    expect(Number(coMilestone?.amountCents)).toBe(9240); // 6000 + 2000 + 200 + 1040 = 9240
   });
 });
 

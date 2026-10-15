@@ -744,37 +744,65 @@ export const jobs = pgTable("jobs", {
 });
 
 // 7. Quotes & Payment Schedules
-export const quotes = pgTable("quotes", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  jobId: uuid("job_id")
-    .notNull()
-    .references(() => jobs.id),
-  version: integer("version").notNull(),
-  status: quoteStatusEnum("status").notNull().default("DRAFT"),
-  contractorSubtotalCents: bigint("contractor_subtotal_cents", {
-    mode: "number",
-  })
-    .notNull()
-    .default(0),
-  platformFeeCents: bigint("platform_fee_cents", { mode: "number" })
-    .notNull()
-    .default(0),
-  discountCents: bigint("discount_cents", { mode: "number" })
-    .notNull()
-    .default(0),
-  taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
-  customerTotalCents: bigint("customer_total_cents", { mode: "number" })
-    .notNull()
-    .default(0),
-  currency: char("currency", { length: 3 }).notNull().default("CAD"),
-  notes: text("notes"),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
-  acceptedBy: uuid("accepted_by").references(() => users.id),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const quotes = pgTable(
+  "quotes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id),
+    version: integer("version").notNull(),
+    status: quoteStatusEnum("status").notNull().default("DRAFT"),
+    contractorSubtotalCents: bigint("contractor_subtotal_cents", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    diagnosticFeeCents: bigint("diagnostic_fee_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    laborSubtotalCents: bigint("labor_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    materialsSubtotalCents: bigint("materials_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    disposalSubtotalCents: bigint("disposal_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    permitsSubtotalCents: bigint("permits_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    customerSuppliedPartsCaveat: text("customer_supplied_parts_caveat"),
+    customerSuppliedAcknowledged: boolean("customer_supplied_acknowledged")
+      .notNull()
+      .default(false),
+    platformFeeCents: bigint("platform_fee_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    discountCents: bigint("discount_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
+    customerTotalCents: bigint("customer_total_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    currency: char("currency", { length: 3 }).notNull().default("CAD"),
+    notes: text("notes"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedBy: uuid("accepted_by").references(() => users.id),
+    declineReason: text("decline_reason"),
+    declinedAt: timestamp("declined_at", { withTimezone: true }),
+    declinedBy: uuid("declined_by").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_quotes_job_status_version").on(table.jobId, table.status, table.version),
+  ],
+);
 
 export const quoteItems = pgTable("quote_items", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -787,6 +815,8 @@ export const quoteItems = pgTable("quote_items", {
   quantity: integer("quantity").notNull(),
   unitPriceCents: bigint("unit_price_cents", { mode: "number" }).notNull(),
   subtotalCents: bigint("subtotal_cents", { mode: "number" }).notNull(),
+  isCustomerSupplied: boolean("is_customer_supplied").notNull().default(false),
+  warrantyCaveat: text("warranty_caveat"),
   materialMetadata: jsonb("material_metadata"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -1277,36 +1307,65 @@ export const warranties = pgTable("warranties", {
     .defaultNow(),
 });
 
-export const changeOrders = pgTable("change_orders", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  jobId: uuid("job_id")
-    .notNull()
-    .references(() => jobs.id),
-  version: integer("version").notNull(),
-  status: changeOrderStatusEnum("status").notNull().default("DRAFT"),
-  reason: text("reason").notNull(),
-  explanation: text("explanation").notNull(),
-  attachmentKeys: jsonb("attachment_keys").notNull().default([]),
-  contractorSubtotalCents: bigint("contractor_subtotal_cents", {
-    mode: "number",
-  })
-    .notNull()
-    .default(0),
-  platformFeeCents: bigint("platform_fee_cents", { mode: "number" })
-    .notNull()
-    .default(0),
-  taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
-  customerTotalCents: bigint("customer_total_cents", { mode: "number" })
-    .notNull()
-    .default(0),
-  currency: char("currency", { length: 3 }).notNull().default("CAD"),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
-  acceptedBy: uuid("accepted_by").references(() => users.id),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const changeOrders = pgTable(
+  "change_orders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    jobId: uuid("job_id")
+      .notNull()
+      .references(() => jobs.id),
+    version: integer("version").notNull(),
+    status: changeOrderStatusEnum("status").notNull().default("DRAFT"),
+    reason: text("reason").notNull(),
+    explanation: text("explanation").notNull(),
+    attachmentKeys: jsonb("attachment_keys").notNull().default([]),
+    contractorSubtotalCents: bigint("contractor_subtotal_cents", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    diagnosticFeeCents: bigint("diagnostic_fee_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    laborSubtotalCents: bigint("labor_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    materialsSubtotalCents: bigint("materials_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    disposalSubtotalCents: bigint("disposal_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    permitsSubtotalCents: bigint("permits_subtotal_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    customerSuppliedPartsCaveat: text("customer_supplied_parts_caveat"),
+    customerSuppliedAcknowledged: boolean("customer_supplied_acknowledged")
+      .notNull()
+      .default(false),
+    platformFeeCents: bigint("platform_fee_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    taxCents: bigint("tax_cents", { mode: "number" }).notNull().default(0),
+    customerTotalCents: bigint("customer_total_cents", { mode: "number" })
+      .notNull()
+      .default(0),
+    currency: char("currency", { length: 3 }).notNull().default("CAD"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedBy: uuid("accepted_by").references(() => users.id),
+    declineReason: text("decline_reason"),
+    declinedAt: timestamp("declined_at", { withTimezone: true }),
+    declinedBy: uuid("declined_by").references(() => users.id),
+    customerAcknowledgedAt: timestamp("customer_acknowledged_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("idx_change_orders_job_status").on(table.jobId, table.status),
+  ],
+);
 
 export const changeOrderItems = pgTable("change_order_items", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1319,6 +1378,8 @@ export const changeOrderItems = pgTable("change_order_items", {
   quantity: integer("quantity").notNull(),
   unitPriceCents: bigint("unit_price_cents", { mode: "number" }).notNull(),
   subtotalCents: bigint("subtotal_cents", { mode: "number" }).notNull(),
+  isCustomerSupplied: boolean("is_customer_supplied").notNull().default(false),
+  warrantyCaveat: text("warranty_caveat"),
   materialMetadata: jsonb("material_metadata"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()

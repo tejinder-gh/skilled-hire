@@ -1,7 +1,8 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { requireRole } from "@marketplace/auth";
-import { quoteTotals } from "@marketplace/core";
+import { ONTARIO_LABOUR_ONLY_DISCLAIMER } from "@marketplace/contracts";
+import { itemizedQuoteTotals } from "@marketplace/core";
 import {
   db,
   eq,
@@ -17,7 +18,10 @@ import {
   paymentMilestones,
   quotes,
 } from "@marketplace/database";
-import { changeOrderSchema } from "@marketplace/validation";
+import {
+  changeOrderSchema,
+  declineChangeOrderSchema,
+} from "@marketplace/validation";
 import { actor, authenticate, isOps, parse, uuid } from "../common/auth.js";
 import { audit, emit, notify } from "../common/events.js";
 
@@ -65,11 +69,12 @@ export const changeOrdersRoutes: FastifyPluginAsync = async (app) => {
 
         if (open) throw new Error("CHANGE_ORDER_ALREADY_PENDING");
 
-        const totals = quoteTotals(
+        const totals = itemizedQuoteTotals(
           body.items,
           body.platformFeeCents,
           0,
           body.taxCents,
+          body.diagnosticFeeCents ?? 0,
         );
 
         const [versionRow] = await tx
@@ -81,6 +86,11 @@ export const changeOrdersRoutes: FastifyPluginAsync = async (app) => {
 
         const version = Number(versionRow?.version ?? 1);
 
+        const customerSuppliedPartsCaveat =
+          totals.customerSuppliedCount > 0
+            ? (body.customerSuppliedPartsCaveat ?? ONTARIO_LABOUR_ONLY_DISCLAIMER)
+            : null;
+
         const [created] = await tx
           .insert(changeOrders)
           .values({
@@ -91,6 +101,13 @@ export const changeOrdersRoutes: FastifyPluginAsync = async (app) => {
             explanation: body.explanation,
             attachmentKeys: body.attachmentKeys,
             contractorSubtotalCents: totals.contractorSubtotalCents,
+            diagnosticFeeCents: totals.diagnosticFeeCents,
+            laborSubtotalCents: totals.laborSubtotalCents,
+            materialsSubtotalCents: totals.materialsSubtotalCents,
+            disposalSubtotalCents: totals.disposalSubtotalCents,
+            permitsSubtotalCents: totals.permitsSubtotalCents,
+            customerSuppliedPartsCaveat,
+            customerSuppliedAcknowledged: false,
             platformFeeCents: body.platformFeeCents,
             taxCents: body.taxCents,
             customerTotalCents: totals.customerTotalCents,
@@ -111,8 +128,12 @@ export const changeOrdersRoutes: FastifyPluginAsync = async (app) => {
             title: item.title,
             description: item.description ?? null,
             quantity: item.quantity,
-            unitPriceCents: item.unitPriceCents,
+            unitPriceCents: item.isCustomerSupplied ? 0 : item.unitPriceCents,
             subtotalCents: subtotal,
+            isCustomerSupplied: item.isCustomerSupplied ?? false,
+            warrantyCaveat: item.isCustomerSupplied
+              ? (item.warrantyCaveat ?? "Labour only warranty; customer assumes part defect risk under Ontario CPA")
+              : (item.warrantyCaveat ?? null),
             materialMetadata: item.materialMetadata
               ? (item.materialMetadata as any)
               : null,
@@ -329,6 +350,8 @@ export const changeOrdersRoutes: FastifyPluginAsync = async (app) => {
             status: "ACCEPTED",
             acceptedAt: new Date(),
             acceptedBy: actor(request).id,
+            customerSuppliedAcknowledged: true,
+            customerAcknowledgedAt: new Date(),
           })
           .where(eq(changeOrders.id, changeOrderId));
 
@@ -383,6 +406,9 @@ export const changeOrdersRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       requireRole(actor(request), "CUSTOMER");
       const changeOrderId = parse(z.object({ id: uuid }), request.params).id;
+      const body = request.body
+        ? parse(declineChangeOrderSchema, request.body)
+        : { reason: "Customer declined change order scope adjustment" };
 
       const [changed] = await db
         .select({
@@ -413,9 +439,16 @@ export const changeOrdersRoutes: FastifyPluginAsync = async (app) => {
             message: "Change order cannot be declined",
           });
 
+      const fullReason = body.reason + (body.notes ? `: ${body.notes}` : "");
+
       await db
         .update(changeOrders)
-        .set({ status: "DECLINED" })
+        .set({
+          status: "DECLINED",
+          declineReason: fullReason,
+          declinedAt: new Date(),
+          declinedBy: actor(request).id,
+        })
         .where(eq(changeOrders.id, changeOrderId));
 
       const jobId = changed.job_id;

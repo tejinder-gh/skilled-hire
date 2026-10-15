@@ -26,6 +26,7 @@ import type {
   ServiceRecommendationDTO,
   SlotAvailabilityResponse,
 } from "@marketplace/contracts";
+import { ONTARIO_LABOUR_ONLY_DISCLAIMER } from "@marketplace/contracts";
 import {
   Badge,
   Button,
@@ -144,8 +145,205 @@ type EquipmentItem = {
 
 export default function CustomerHome() {
   const [activeTab, setActiveTab] = useState<
-    "book" | "tracking" | "completion" | "warranty" | "survey" | "security" | "payments" | "preferences"
+    | "book"
+    | "tracking"
+    | "quotes"
+    | "completion"
+    | "warranty"
+    | "survey"
+    | "security"
+    | "payments"
+    | "preferences"
   >("book");
+
+  // --- QUOTE REVIEW, CALL-OUT FEE & LABOUR-ONLY MATERIALS (SH-12 / #13) ---
+  const [activeQuote, setActiveQuote] = useState({
+    id: "quote-ontario-hvac-8819",
+    jobId: "job-88194",
+    bookingRef: "REQ-2026-9921",
+    version: 1,
+    status: "SUBMITTED" as "SUBMITTED" | "ACCEPTED" | "REJECTED" | "SUPERSEDED",
+    technicianName: "Marcus Vance",
+    technicianTrade: "313A Refrigeration & Air Conditioning Systems Mechanic",
+    technicianLicense: "ON-TSSA-FS-771249 / 309A-38910",
+    diagnosticFeeCents: 12900,
+    laborSubtotalCents: 24000,
+    materialsSubtotalCents: 8500,
+    disposalSubtotalCents: 4500,
+    permitsSubtotalCents: 6000,
+    platformFeeCents: 1000,
+    taxCents: 6747, // 13% Ontario HST
+    customerTotalCents: 63647,
+    customerSuppliedPartsCaveat: ONTARIO_LABOUR_ONLY_DISCLAIMER,
+    customerSuppliedAcknowledged: false,
+    declineReason: null as string | null,
+    declinedAt: null as string | null,
+    items: [
+      {
+        id: "item-1",
+        type: "DIAGNOSTIC",
+        title: "Comprehensive On-Site Diagnostic Assessment & Multimeter Test",
+        description:
+          "Systematic multimeter assessment, dual capacitor load testing, compressor winding check, and static refrigerant pressure measurement.",
+        quantity: 1,
+        unitPriceCents: 12900,
+        subtotalCents: 12900,
+        isCustomerSupplied: false,
+        warrantyCaveat: null,
+      },
+      {
+        id: "item-2",
+        type: "LABOUR",
+        title: "Dual Run Capacitor Replacement & Low-Voltage Smart Control Wiring",
+        description:
+          "Safe electrical isolation (ESA compliant), installation of run capacitor, wire terminal crimping, and thermostat control board integration.",
+        quantity: 2,
+        unitPriceCents: 12000,
+        subtotalCents: 24000,
+        isCustomerSupplied: false,
+        warrantyCaveat: "Covered by 365-day Skilled Hire workmanship guarantee.",
+      },
+      {
+        id: "item-3",
+        type: "MATERIAL",
+        title: "Titan HD 45/5 MFD 440V Round Dual Run Motor Capacitor (OEM)",
+        description:
+          "North American made, 60,000-hour operational life rating, OEM direct replacement for Lennox AC condenser.",
+        quantity: 1,
+        unitPriceCents: 8500,
+        subtotalCents: 8500,
+        isCustomerSupplied: false,
+        warrantyCaveat: "5-Year manufacturer parts warranty.",
+      },
+      {
+        id: "item-4",
+        type: "MATERIAL",
+        title: "Ecobee Smart Thermostat Premium with SmartSensor (Customer-Supplied)",
+        description:
+          "Homeowner-provided hardware unit. Verified unopened original packaging on-site before installation.",
+        quantity: 1,
+        unitPriceCents: 0,
+        subtotalCents: 0,
+        isCustomerSupplied: true,
+        warrantyCaveat:
+          "Labour only warranty; customer assumes part defect risk under Ontario CPA & TSSA.",
+      },
+      {
+        id: "item-5",
+        type: "DISPOSAL",
+        title: "Environmentally Certified Hazardous Capacitor & Waste Disposal",
+        description:
+          "Safe recycling and disposal in compliance with Ontario Environmental Protection Act guidelines.",
+        quantity: 1,
+        unitPriceCents: 4500,
+        subtotalCents: 4500,
+        isCustomerSupplied: false,
+        warrantyCaveat: null,
+      },
+      {
+        id: "item-6",
+        type: "PERMIT",
+        title: "Municipal Mechanical Notification & Safety Compliance Record",
+        description:
+          "Standard administrative notification filing and municipal safety log record.",
+        quantity: 1,
+        unitPriceCents: 6000,
+        subtotalCents: 6000,
+        isCustomerSupplied: false,
+        warrantyCaveat: null,
+      },
+    ],
+  });
+
+  const [isDeclineQuoteModalOpen, setIsDeclineQuoteModalOpen] = useState(false);
+  const [quoteDeclineReason, setQuoteDeclineReason] = useState<
+    "PRICE_TOO_HIGH" | "SCOPE_MISMATCH" | "FOUND_ALTERNATIVE" | "DEFER_WORK" | "OTHER"
+  >("PRICE_TOO_HIGH");
+  const [quoteDeclineNotes, setQuoteDeclineNotes] = useState("");
+  const [quoteFeedbackBanner, setQuoteFeedbackBanner] = useState<{
+    tone: "success" | "warning" | "danger" | "info";
+    title: string;
+    message: string;
+  } | null>(null);
+
+  // State for Change Order Review (SH-12)
+  const [activeChangeOrder, setActiveChangeOrder] = useState<{
+    id: string;
+    version: number;
+    status: "SUBMITTED" | "ACCEPTED" | "DECLINED";
+    reason: string;
+    explanation: string;
+    discoveredAt: string;
+    attachmentPhotos: Array<{
+      url: string;
+      caption: string;
+      metadata: string;
+    }>;
+    items: Array<{
+      type: string;
+      title: string;
+      quantity: number;
+      unitPriceCents: number;
+      subtotalCents: number;
+      isCustomerSupplied: boolean;
+    }>;
+    subtotalCents: number;
+    taxCents: number;
+    totalCents: number;
+    declineReason?: string | undefined;
+  }>({
+    id: "co-discovery-4091",
+    version: 1,
+    status: "SUBMITTED",
+    reason: "Unforeseen secondary drain pan corrosion & cracked condensate union",
+    explanation:
+      "Upon disconnecting the air handler access panel for smart control wiring, technician identified hidden rust and active hairline seepage through the secondary drain pan into adjacent ceiling joists. Immediate replacement of the union trap is recommended to prevent ceiling water damage.",
+    discoveredAt: "Today at 11:15 AM (On-Site Discovery)",
+    attachmentPhotos: [
+      {
+        url: "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=600&q=80",
+        caption: "Corroded secondary galvanized pan showing pinhole rust and moisture pooling.",
+        metadata: "Camera: On-Site Inspection · 11:12 AM · GPS Verified (King St W)",
+      },
+      {
+        url: "https://images.unsplash.com/photo-1504328345606-18bbc8c9d7d1?auto=format&fit=crop&w=600&q=80",
+        caption: "Hairline fracture on 3/4 inch Schedule 40 PVC condensate union trap.",
+        metadata: "Camera: Micro-Lens Diagnostic · 11:14 AM · Flow Test Leak Verified",
+      },
+    ],
+    items: [
+      {
+        type: "LABOUR",
+        title: "Condensate Line Drain Splice & Union Trap Re-piping Labour",
+        quantity: 1,
+        unitPriceCents: 6000,
+        subtotalCents: 6000,
+        isCustomerSupplied: false,
+      },
+      {
+        type: "MATERIAL",
+        title: "Schedule 40 PVC 3/4-inch Condensate Union, P-Trap & Primer",
+        quantity: 1,
+        unitPriceCents: 2000,
+        subtotalCents: 2000,
+        isCustomerSupplied: false,
+      },
+    ],
+    subtotalCents: 8000,
+    taxCents: 1040,
+    totalCents: 9040,
+  });
+
+  const [isDeclineCoModalOpen, setIsDeclineCoModalOpen] = useState(false);
+  const [coDeclineReason, setCoDeclineReason] = useState<
+    "DEFER_WORK" | "DISAGREE_WITH_SCOPE" | "PRICE_TOO_HIGH" | "OTHER"
+  >("DEFER_WORK");
+  const [coDeclineNotes, setCoDeclineNotes] = useState("");
+  const [selectedPhotoForPreview, setSelectedPhotoForPreview] = useState<{
+    url: string;
+    caption: string;
+    metadata: string;
+  } | null>(null);
 
   // --- NOTIFICATION PREFERENCES & RELIABLE OUTBOX (SH-09) ---
   const [notificationPreferences, setNotificationPreferences] = useState<
@@ -1644,6 +1842,17 @@ export default function CustomerHome() {
               label: "Live Job Tracking",
               icon: "🚗",
               badge: `${etaMinutes}m ETA`,
+            },
+            {
+              value: "quotes",
+              label: "Quote & Scope",
+              icon: "📋",
+              badge:
+                activeQuote.status === "SUBMITTED"
+                  ? "Action Needed"
+                  : activeChangeOrder.status === "SUBMITTED"
+                    ? "Change Order"
+                    : "Approved",
             },
             {
               value: "completion",
@@ -3260,6 +3469,693 @@ export default function CustomerHome() {
               </div>
             </Card>
           </div>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          TAB: QUOTE REVIEW, CALL-OUT FEE & LABOUR-ONLY MATERIALS (SH-12 / #13)
+         ------------------------------------------------------------- */}
+      {activeTab === "quotes" && (
+        <div style={{ display: "grid", gap: 24 }}>
+          {/* Quote Feedback Banner */}
+          {quoteFeedbackBanner && (
+            <Callout tone={quoteFeedbackBanner.tone} title={quoteFeedbackBanner.title}>
+              {quoteFeedbackBanner.message}
+            </Callout>
+          )}
+
+          {/* Authoritative Quote Header Card */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                flexWrap: "wrap",
+                gap: 16,
+                marginBottom: 20,
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <Status
+                    tone={
+                      activeQuote.status === "ACCEPTED"
+                        ? "green"
+                        : activeQuote.status === "REJECTED"
+                          ? "danger"
+                          : "blue"
+                    }
+                  >
+                    {activeQuote.status === "SUBMITTED"
+                      ? "Quote Pending Approval"
+                      : activeQuote.status === "ACCEPTED"
+                        ? "Quote Approved & Locked"
+                        : "Quote Declined"}
+                  </Status>
+                  <Badge tone="neutral">Quote #{activeQuote.id}</Badge>
+                  <Badge tone="blue">Version {activeQuote.version}.0 (Authoritative)</Badge>
+                  <Badge tone="green">TSSA & ESA Regulated Trade</Badge>
+                </div>
+                <h2 style={{ fontSize: 26, margin: "8px 0 4px", color: "#0f172a" }}>
+                  High-Efficiency AC Diagnostic & Smart Thermostat Wiring
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  Booking Ref #{activeQuote.bookingRef} · 123 King Street W, Unit 1402, Toronto ON
+                </p>
+              </div>
+
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                  Authorized Total (Taxes Incl.)
+                </span>
+                <p style={{ margin: 0, fontSize: 32, fontWeight: 900, color: "#0f172a" }}>
+                  ${(activeQuote.customerTotalCents / 100).toFixed(2)}{" "}
+                  <span style={{ fontSize: 14, fontWeight: 600, color: "#64748b" }}>CAD</span>
+                </p>
+                <span style={{ fontSize: 12, color: "#059669", fontWeight: 700 }}>
+                  ✓ Guaranteed Maximum Price Lock
+                </span>
+              </div>
+            </div>
+
+            {/* Technician Credential Snapshot */}
+            <div
+              style={{
+                background: "#f8fafc",
+                borderRadius: 14,
+                padding: "14px 18px",
+                border: "1px solid #e2e8f0",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: "50%",
+                    background: "#0284c7",
+                    color: "#ffffff",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 800,
+                    fontSize: 16,
+                  }}
+                >
+                  MV
+                </div>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontWeight: 800, color: "#0f172a", fontSize: 15 }}>
+                      {activeQuote.technicianName}
+                    </span>
+                    <Badge tone="blue">Ontario Certified</Badge>
+                  </div>
+                  <p style={{ margin: "2px 0 0", fontSize: 13, color: "#475569" }}>
+                    {activeQuote.technicianTrade} · License #{activeQuote.technicianLicense}
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 13 }}>
+                <span style={{ color: "#059669", fontWeight: 700 }}>★ 4.98 Rating</span>
+                <span style={{ color: "#94a3b8" }}>|</span>
+                <span style={{ color: "#475569" }}>WSIB Insured · $5M Commercial Liability</span>
+              </div>
+            </div>
+          </Card>
+
+          {/* Transparent Diagnostic Call-Out Fee Breakdown Banner */}
+          <div
+            style={{
+              background: "linear-gradient(135deg, #f0fdf4 0%, #ecfeff 100%)",
+              borderRadius: 16,
+              padding: 20,
+              border: "1px solid #bbf7d0",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 12,
+                  background: "#10b981",
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 22,
+                  flexShrink: 0,
+                }}
+              >
+                ✓
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#065f46" }}>
+                    Transparent Diagnostic Call-Out Fee: ${(activeQuote.diagnosticFeeCents / 100).toFixed(2)} CAD
+                  </h3>
+                  <Badge tone="green">100% Credited Toward Repair</Badge>
+                  <Badge tone="neutral">Ontario Consumer Protection Act Compliant</Badge>
+                </div>
+                <p style={{ margin: "6px 0 10px", fontSize: 13, color: "#047857", lineHeight: 1.5 }}>
+                  Under Skilled Hire transparent pricing rules, your initial call-out fee is isolated from repair labor and materials. 
+                  When you approve today's repair, this full $129.00 amount is credited directly against total project labor.
+                </p>
+                <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12, color: "#065f46" }}>
+                  <span>✓ Licensed 313A Refrigeration Mechanic Dispatch</span>
+                  <span>✓ Calibrated Multimeter & Manifold Gauge Testing</span>
+                  <span>✓ 30-Day Re-Inspection Price Guarantee</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Itemized Breakdown Table Card */}
+          <Card tone="white" padding="lg">
+            <div style={{ marginBottom: 16 }}>
+              <h3 style={{ margin: "0 0 4px", fontSize: 19, fontWeight: 800, color: "#0f172a" }}>
+                Itemized Workmanship & Materials Breakdown
+              </h3>
+              <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
+                Authoritative backend line items with statutory customer-supplied materials segregation.
+              </p>
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid #e2e8f0", textAlign: "left", color: "#475569" }}>
+                    <th style={{ padding: "12px 8px", width: "14%" }}>Category</th>
+                    <th style={{ padding: "12px 8px", width: "48%" }}>Item & Description</th>
+                    <th style={{ padding: "12px 8px", width: "10%", textAlign: "center" }}>Qty</th>
+                    <th style={{ padding: "12px 8px", width: "14%", textAlign: "right" }}>Unit Price</th>
+                    <th style={{ padding: "12px 8px", width: "14%", textAlign: "right" }}>Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeQuote.items.map((item) => (
+                    <tr
+                      key={item.id}
+                      style={{
+                        borderBottom: "1px solid #f1f5f9",
+                        background: item.isCustomerSupplied ? "#fffbeb" : "transparent",
+                      }}
+                    >
+                      <td style={{ padding: "14px 8px", verticalAlign: "top" }}>
+                        <Badge
+                          tone={
+                            item.type === "DIAGNOSTIC"
+                              ? "blue"
+                              : item.type === "LABOUR"
+                                ? "purple"
+                                : item.type === "MATERIAL"
+                                  ? item.isCustomerSupplied
+                                    ? "amber"
+                                    : "green"
+                                  : item.type === "DISPOSAL"
+                                    ? "neutral"
+                                    : "neutral"
+                          }
+                        >
+                          {item.type}
+                        </Badge>
+                      </td>
+                      <td style={{ padding: "14px 8px", verticalAlign: "top" }}>
+                        <div style={{ fontWeight: 700, color: "#0f172a" }}>{item.title}</div>
+                        {item.description && (
+                          <div style={{ fontSize: 12, color: "#64748b", marginTop: 4, lineHeight: 1.4 }}>
+                            {item.description}
+                          </div>
+                        )}
+                        {/* High-Visibility Labour-Only Materials Warning */}
+                        {item.isCustomerSupplied && (
+                          <div
+                            style={{
+                              marginTop: 8,
+                              padding: "8px 12px",
+                              borderRadius: 8,
+                              background: "#fef3c7",
+                              border: "1px solid #fde68a",
+                              color: "#92400e",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                            }}
+                          >
+                            <span>⚠️</span>
+                            <span>{item.warrantyCaveat}</span>
+                          </div>
+                        )}
+                        {!item.isCustomerSupplied && item.warrantyCaveat && (
+                          <div style={{ fontSize: 12, color: "#059669", marginTop: 4 }}>
+                            ✓ {item.warrantyCaveat}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: "14px 8px", textAlign: "center", verticalAlign: "top" }}>
+                        {item.quantity}
+                      </td>
+                      <td style={{ padding: "14px 8px", textAlign: "right", verticalAlign: "top" }}>
+                        {item.isCustomerSupplied ? (
+                          <span style={{ color: "#d97706", fontWeight: 700 }}>$0.00 (Supplied)</span>
+                        ) : (
+                          `$${(item.unitPriceCents / 100).toFixed(2)}`
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          padding: "14px 8px",
+                          textAlign: "right",
+                          fontWeight: 700,
+                          color: item.isCustomerSupplied ? "#d97706" : "#0f172a",
+                          verticalAlign: "top",
+                        }}
+                      >
+                        ${(item.subtotalCents / 100).toFixed(2)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <Divider />
+
+            {/* Authoritative Financial Breakdown Columns */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                gap: 24,
+                marginTop: 16,
+              }}
+            >
+              {/* Payment Protection in Escrow Explanation */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  borderRadius: 14,
+                  padding: 16,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 18 }}>🛡️</span>
+                  <span style={{ fontWeight: 800, color: "#0f172a", fontSize: 14 }}>
+                    Skilled Hire Escrow Guarantee
+                  </span>
+                </div>
+                <p style={{ margin: "0 0 10px", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
+                  Your authorization holds funds securely in escrow. Milestone payments are strictly released to the
+                  contractor only after you inspect and sign off on completion.
+                </p>
+                <div style={{ fontSize: 12, color: "#334155" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span>Milestone 1 (Deposit & Assessment):</span>
+                    <span style={{ fontWeight: 700 }}>$190.94 CAD</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span>Milestone 2 (Capacitor & Thermostat Wiring):</span>
+                    <span style={{ fontWeight: 700 }}>$318.24 CAD</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                    <span>Milestone 3 (Final Cooling Test & Sign-off):</span>
+                    <span style={{ fontWeight: 700 }}>$127.29 CAD</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Subtotal Calculation Summary */}
+              <div
+                style={{
+                  background: "#ffffff",
+                  borderRadius: 14,
+                  padding: 16,
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <div style={{ display: "grid", gap: 8, fontSize: 13, color: "#475569" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Diagnostic Call-Out Assessment:</span>
+                    <span>${(activeQuote.diagnosticFeeCents / 100).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Licensed Trade Labour:</span>
+                    <span>${(activeQuote.laborSubtotalCents / 100).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>OEM Materials & Hardware:</span>
+                    <span>${(activeQuote.materialsSubtotalCents / 100).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", color: "#d97706" }}>
+                    <span>Customer-Supplied Ecobee Thermostat:</span>
+                    <span style={{ fontWeight: 700 }}>$0.00 CAD</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Safe Hazardous Waste Disposal:</span>
+                    <span>${(activeQuote.disposalSubtotalCents / 100).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Municipal Safety Notification:</span>
+                    <span>${(activeQuote.permitsSubtotalCents / 100).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Trust & Platform Fee:</span>
+                    <span>${(activeQuote.platformFeeCents / 100).toFixed(2)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>Ontario Harmonized Sales Tax (HST 13%):</span>
+                    <span>${(activeQuote.taxCents / 100).toFixed(2)}</span>
+                  </div>
+                  <div
+                    style={{
+                      borderTop: "2px solid #0f172a",
+                      paddingTop: 8,
+                      marginTop: 4,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: 16,
+                      fontWeight: 900,
+                      color: "#0f172a",
+                    }}
+                  >
+                    <span>Total Authoritative Quote:</span>
+                    <span>${(activeQuote.customerTotalCents / 100).toFixed(2)} CAD</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Statutory Customer-Supplied Materials Disclaimer & Acknowledgment Gate */}
+            <div
+              style={{
+                marginTop: 24,
+                background: "#fffbeb",
+                border: "2px solid #fde68a",
+                borderRadius: 16,
+                padding: 20,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+                <span style={{ fontSize: 24 }}>⚖️</span>
+                <div style={{ flex: 1 }}>
+                  <h4 style={{ margin: "0 0 6px", fontSize: 16, fontWeight: 800, color: "#92400e" }}>
+                    Statutory Notice: Labour-Only Warranty & Customer-Supplied Materials
+                  </h4>
+                  <p style={{ margin: "0 0 14px", fontSize: 13, color: "#78350f", lineHeight: 1.5 }}>
+                    {activeQuote.customerSuppliedPartsCaveat}
+                  </p>
+
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 12,
+                      cursor: "pointer",
+                      padding: "10px 14px",
+                      background: "#ffffff",
+                      borderRadius: 10,
+                      border: "1px solid #fcd34d",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={activeQuote.customerSuppliedAcknowledged}
+                      disabled={activeQuote.status !== "SUBMITTED"}
+                      onChange={(e) =>
+                        setActiveQuote((prev) => ({
+                          ...prev,
+                          customerSuppliedAcknowledged: e.target.checked,
+                        }))
+                      }
+                      style={{ marginTop: 3, width: 18, height: 18, cursor: "pointer" }}
+                    />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                      I explicitly acknowledge that hardware parts supplied by me (Ecobee Smart Thermostat) carry
+                      labour-only warranty. Skilled Hire and technician Marcus Vance warranty the physical installation
+                      workmanship for 365 days, but do not warranty the hardware unit itself.
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Action Bar */}
+            <div
+              style={{
+                marginTop: 24,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 16,
+                paddingTop: 16,
+                borderTop: "1px solid #e2e8f0",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#64748b" }}>
+                <span>🔒 256-bit SSL Encrypted Authorization</span>
+                <span>·</span>
+                <span>Idempotent Payment Hold</span>
+              </div>
+
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                {activeQuote.status === "SUBMITTED" ? (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      onClick={() => setIsDeclineQuoteModalOpen(true)}
+                    >
+                      ✕ Decline Quote
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="md"
+                      disabled={!activeQuote.customerSuppliedAcknowledged}
+                      onClick={() => {
+                        setActiveQuote((prev) => ({
+                          ...prev,
+                          status: "ACCEPTED",
+                        }));
+                        setQuoteFeedbackBanner({
+                          tone: "success",
+                          title: "Quote Approved & Payment Milestones Scheduled",
+                          message: `Quote #${activeQuote.id} accepted. Deposit hold authorized. Work scheduled with Marcus Vance.`,
+                        });
+                      }}
+                    >
+                      ✓ Approve Quote & Authorize ${(activeQuote.customerTotalCents / 100).toFixed(2)} CAD
+                    </Button>
+                  </>
+                ) : activeQuote.status === "ACCEPTED" ? (
+                  <Badge tone="green">✓ Quote Approved & Scheduled</Badge>
+                ) : (
+                  <Badge tone="danger">✕ Quote Declined ({activeQuote.declineReason ?? "Homeowner Decision"})</Badge>
+                )}
+              </div>
+            </div>
+          </Card>
+
+          {/* Change Order Review with Photographic Discovery Evidence (SH-12) */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                flexWrap: "wrap",
+                gap: 16,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                  <Status
+                    tone={
+                      activeChangeOrder.status === "ACCEPTED"
+                        ? "green"
+                        : activeChangeOrder.status === "DECLINED"
+                          ? "danger"
+                          : "amber"
+                    }
+                  >
+                    {activeChangeOrder.status === "SUBMITTED"
+                      ? "Change Order Discovery Pending Review"
+                      : activeChangeOrder.status === "ACCEPTED"
+                        ? "Change Order Approved"
+                        : "Change Order Declined"}
+                  </Status>
+                  <Badge tone="neutral">CO #{activeChangeOrder.id}</Badge>
+                  <Badge tone="blue">On-Site Discovery</Badge>
+                </div>
+                <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#0f172a" }}>
+                  {activeChangeOrder.reason}
+                </h3>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                  Discovered by Marcus Vance · {activeChangeOrder.discoveredAt}
+                </p>
+              </div>
+
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                  Change Order Adjustment
+                </span>
+                <p style={{ margin: 0, fontSize: 24, fontWeight: 900, color: "#0f172a" }}>
+                  +${(activeChangeOrder.totalCents / 100).toFixed(2)} CAD
+                </p>
+              </div>
+            </div>
+
+            <p style={{ fontSize: 14, color: "#334155", lineHeight: 1.6, margin: "0 0 16px" }}>
+              {activeChangeOrder.explanation}
+            </p>
+
+            {/* Photographic Discovery Evidence Gallery */}
+            <div style={{ marginBottom: 20 }}>
+              <h4 style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 800, color: "#475569" }}>
+                Photographic Discovery Evidence ({activeChangeOrder.attachmentPhotos.length} Photos Captured)
+              </h4>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                  gap: 16,
+                }}
+              >
+                {activeChangeOrder.attachmentPhotos.map((photo, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => setSelectedPhotoForPreview(photo)}
+                    style={{
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 14,
+                      overflow: "hidden",
+                      cursor: "pointer",
+                      background: "#f8fafc",
+                      transition: "transform 0.15s ease, box-shadow 0.15s ease",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: 180,
+                        backgroundImage: `url(${photo.url})`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                        position: "relative",
+                      }}
+                    >
+                      <div
+                        style={{
+                          position: "absolute",
+                          bottom: 8,
+                          right: 8,
+                          background: "rgba(15, 23, 42, 0.8)",
+                          color: "#fff",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          padding: "3px 8px",
+                          borderRadius: 6,
+                        }}
+                      >
+                        🔍 Click to Zoom
+                      </div>
+                    </div>
+                    <div style={{ padding: 12 }}>
+                      <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                        {photo.caption}
+                      </p>
+                      <p style={{ margin: 0, fontSize: 11, color: "#64748b" }}>{photo.metadata}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Change Order Scope Items */}
+            <div style={{ background: "#f8fafc", borderRadius: 12, padding: 16, marginBottom: 16 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: "#475569", marginBottom: 8 }}>
+                Itemized Discovery Scope:
+              </div>
+              {activeChangeOrder.items.map((it, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    padding: "6px 0",
+                    borderBottom: i < activeChangeOrder.items.length - 1 ? "1px dashed #cbd5e1" : "none",
+                    fontSize: 13,
+                  }}
+                >
+                  <span style={{ color: "#1e293b" }}>{it.title}</span>
+                  <span style={{ fontWeight: 700 }}>${(it.subtotalCents / 100).toFixed(2)}</span>
+                </div>
+              ))}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  paddingTop: 8,
+                  marginTop: 6,
+                  borderTop: "1px solid #e2e8f0",
+                  fontSize: 13,
+                  fontWeight: 800,
+                }}
+              >
+                <span>Total Scope Adjustment (+13% HST):</span>
+                <span>+${(activeChangeOrder.totalCents / 100).toFixed(2)} CAD</span>
+              </div>
+            </div>
+
+            {/* Change Order Decision Buttons */}
+            {activeChangeOrder.status === "SUBMITTED" ? (
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setIsDeclineCoModalOpen(true)}
+                >
+                  ✕ Decline (Maintain Original Scope)
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    setActiveChangeOrder((prev) => ({
+                      ...prev,
+                      status: "ACCEPTED",
+                    }));
+                    setQuoteFeedbackBanner({
+                      tone: "success",
+                      title: "Change Order Approved",
+                      message: `Change order approved. Milestone of $${(activeChangeOrder.totalCents / 100).toFixed(2)} CAD appended to escrow schedule.`,
+                    });
+                  }}
+                >
+                  ✓ Approve Scope Adjustment (+${(activeChangeOrder.totalCents / 100).toFixed(2)} CAD)
+                </Button>
+              </div>
+            ) : activeChangeOrder.status === "ACCEPTED" ? (
+              <Callout tone="success" title="Change Order Authorized">
+                This adjustment was authorized. Marcus has been instructed to complete the condensate union repair.
+              </Callout>
+            ) : (
+              <Callout tone="warning" title="Change Order Declined">
+                You declined this change order ({activeChangeOrder.declineReason ?? "Customer Choice"}). Marcus will proceed with only the originally approved scope.
+              </Callout>
+            )}
+          </Card>
         </div>
       )}
 
@@ -6250,6 +7146,256 @@ export default function CustomerHome() {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* Decline Quote Modal (SH-12) */}
+      <Modal
+        isOpen={isDeclineQuoteModalOpen}
+        onClose={() => setIsDeclineQuoteModalOpen(false)}
+        title="Decline Itemized Quote"
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          <p style={{ margin: 0, fontSize: 14, color: "#475569", lineHeight: 1.5 }}>
+            You are choosing to decline Quote #{activeQuote.id} (${(activeQuote.customerTotalCents / 100).toFixed(2)} CAD). 
+            Please let us know your reason so we can improve and notify technician Marcus Vance.
+          </p>
+
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+              Primary Reason for Declining
+            </label>
+            <select
+              value={quoteDeclineReason}
+              onChange={(e) =>
+                setQuoteDeclineReason(
+                  e.target.value as
+                    | "PRICE_TOO_HIGH"
+                    | "SCOPE_MISMATCH"
+                    | "FOUND_ALTERNATIVE"
+                    | "DEFER_WORK"
+                    | "OTHER",
+                )
+              }
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 14,
+                background: "#ffffff",
+              }}
+            >
+              <option value="PRICE_TOO_HIGH">Overall cost or diagnostic fee exceeds budget</option>
+              <option value="SCOPE_MISMATCH">Proposed repairs differ from what I expected</option>
+              <option value="FOUND_ALTERNATIVE">Selected an alternative contractor or provider</option>
+              <option value="DEFER_WORK">Decided to postpone repairs to a later date</option>
+              <option value="OTHER">Other reasons</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#334155", marginBottom: 4 }}>
+              Additional Notes (Optional)
+            </label>
+            <span style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 6 }}>
+              Shared with technician Marcus Vance
+            </span>
+            <textarea
+              rows={3}
+              value={quoteDeclineNotes}
+              onChange={(e) => setQuoteDeclineNotes(e.target.value)}
+              placeholder="e.g. Seeking second opinion on compressor electrical draw..."
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 14,
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              background: "#fffbeb",
+              border: "1px solid #fde68a",
+              borderRadius: 8,
+              padding: 12,
+              fontSize: 12,
+              color: "#92400e",
+            }}
+          >
+            ⚠️ <strong>Billing Notice:</strong> Declining the quote closes the repair scope. 
+            No repair charges will be applied. Only the initial diagnostic call-out fee will be billed in accordance with the dispatch policy.
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 8 }}>
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => setIsDeclineQuoteModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="md"
+              onClick={() => {
+                const fullReason = `${quoteDeclineReason}${quoteDeclineNotes ? `: ${quoteDeclineNotes}` : ""}`;
+                setActiveQuote((prev) => ({
+                  ...prev,
+                  status: "REJECTED",
+                  declineReason: fullReason,
+                  declinedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                }));
+                setIsDeclineQuoteModalOpen(false);
+                setQuoteFeedbackBanner({
+                  tone: "danger",
+                  title: "Quote Declined",
+                  message: `Quote #${activeQuote.id} declined. Reason: ${quoteDeclineReason}. Job status updated to QUOTE_REJECTED.`,
+                });
+              }}
+            >
+              Confirm Decline
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Decline Change Order Modal (SH-12) */}
+      <Modal
+        isOpen={isDeclineCoModalOpen}
+        onClose={() => setIsDeclineCoModalOpen(false)}
+        title="Decline Change Order Scope Adjustment"
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          <p style={{ margin: 0, fontSize: 14, color: "#475569", lineHeight: 1.5 }}>
+            Declining this scope adjustment (+${(activeChangeOrder.totalCents / 100).toFixed(2)} CAD) instructs Marcus Vance to continue only with the originally approved repair.
+          </p>
+
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+              Decline Reason
+            </label>
+            <select
+              value={coDeclineReason}
+              onChange={(e) =>
+                setCoDeclineReason(
+                  e.target.value as "DEFER_WORK" | "DISAGREE_WITH_SCOPE" | "PRICE_TOO_HIGH" | "OTHER",
+                )
+              }
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 14,
+                background: "#ffffff",
+              }}
+            >
+              <option value="DEFER_WORK">Defer this repair to next seasonal maintenance</option>
+              <option value="DISAGREE_WITH_SCOPE">Disagree with proposed condensate line replacement</option>
+              <option value="PRICE_TOO_HIGH">Cost exceeds current emergency budget</option>
+              <option value="OTHER">Other reason</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#334155", marginBottom: 6 }}>
+              Notes to Technician (Optional)
+            </label>
+            <textarea
+              rows={2}
+              value={coDeclineNotes}
+              onChange={(e) => setCoDeclineNotes(e.target.value)}
+              placeholder="e.g. Please proceed only with capacitor and thermostat wiring..."
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 14,
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 8 }}>
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => setIsDeclineCoModalOpen(false)}
+            >
+              Back
+            </Button>
+            <Button
+              variant="danger"
+              size="md"
+              onClick={() => {
+                const full = `${coDeclineReason}${coDeclineNotes ? `: ${coDeclineNotes}` : ""}`;
+                setActiveChangeOrder((prev) => ({
+                  ...prev,
+                  status: "DECLINED",
+                  declineReason: full,
+                }));
+                setIsDeclineCoModalOpen(false);
+                setQuoteFeedbackBanner({
+                  tone: "warning",
+                  title: "Change Order Declined",
+                  message: `Change order declined. Marcus Vance will maintain original scope. No additional fees charged.`,
+                });
+              }}
+            >
+              Decline Change Order
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Discovery Photo Preview Modal (SH-12) */}
+      <Modal
+        isOpen={Boolean(selectedPhotoForPreview)}
+        onClose={() => setSelectedPhotoForPreview(null)}
+        title="Photographic Discovery Evidence"
+      >
+        {selectedPhotoForPreview && (
+          <div style={{ display: "grid", gap: 16 }}>
+            <div
+              style={{
+                width: "100%",
+                height: 340,
+                backgroundImage: `url(${selectedPhotoForPreview.url})`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+                borderRadius: 12,
+              }}
+            />
+            <div>
+              <h4 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                {selectedPhotoForPreview.caption}
+              </h4>
+              <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                {selectedPhotoForPreview.metadata}
+              </p>
+            </div>
+            <div
+              style={{
+                background: "#f1f5f9",
+                borderRadius: 8,
+                padding: "10px 14px",
+                fontSize: 12,
+                color: "#334155",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span>🔒 Cryptographic Sha-256 Verified On-Site Asset</span>
+              <span style={{ fontWeight: 700 }}>Inspector: Marcus Vance (313A)</span>
+            </div>
+          </div>
+        )}
       </Modal>
     </Shell>
   );

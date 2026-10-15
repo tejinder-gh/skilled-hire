@@ -39,6 +39,13 @@ const ALLOWED_APPLICATION_ERROR_CODES = new Set([
   "OFFER_ALREADY_RESPONDED",
   "FALLBACK_TRIAGE_FAILED",
   "SCHEDULE_CONFLICT",
+  "CUSTOMER_PARTS_ACKNOWLEDGMENT_REQUIRED",
+  "QUOTE_UNAVAILABLE",
+  "QUOTE_NOT_ALLOWED",
+  "QUOTE_NOT_DECLINABLE",
+  "CHANGE_ORDER_UNAVAILABLE",
+  "CHANGE_ORDER_NOT_ALLOWED",
+  "CHANGE_ORDER_ALREADY_PENDING",
 ]);
 
 export function errorHandler(
@@ -49,14 +56,19 @@ export function errorHandler(
   const message =
     error instanceof Error ? error.message : "Unknown request error";
   const errorObj = error as { code?: string; statusCode?: number; details?: unknown } | null;
-  const isAppCode =
+  const appCode =
     typeof errorObj?.code === "string" &&
-    ALLOWED_APPLICATION_ERROR_CODES.has(errorObj.code);
+    ALLOWED_APPLICATION_ERROR_CODES.has(errorObj.code)
+      ? errorObj.code
+      : typeof message === "string" &&
+          ALLOWED_APPLICATION_ERROR_CODES.has(message)
+        ? message
+        : null;
   const code =
     error instanceof z.ZodError
       ? "VALIDATION_ERROR"
-      : isAppCode
-        ? (errorObj!.code as string)
+      : appCode
+        ? appCode
         : message === "FORBIDDEN"
           ? "FORBIDDEN"
           : message === "NOT_FOUND"
@@ -70,7 +82,9 @@ export function errorHandler(
         ? 403
         : code === "NOT_FOUND"
           ? 404
-          : 409);
+          : code === "CUSTOMER_PARTS_ACKNOWLEDGMENT_REQUIRED"
+            ? 422
+            : 409);
 
   request.log.warn({ error, requestId: request.id }, "request failed");
   return reply
