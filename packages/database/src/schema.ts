@@ -114,6 +114,57 @@ export const notificationChannelEnum = pgEnum("notification_channel", [
   "PHONE",
 ]);
 
+export const recommendationUrgencyEnum = pgEnum("recommendation_urgency", [
+  "IMMEDIATE_SAFETY_HAZARD",
+  "URGENT_REPAIR",
+  "RECOMMENDED_MAINTENANCE",
+  "UPGRADE_OPPORTUNITY",
+]);
+
+export const recommendationStatusEnum = pgEnum("recommendation_status", [
+  "PROPOSED",
+  "ACCEPTED",
+  "DECLINED",
+  "DEFERRED",
+  "CONVERTED",
+  "CANCELLED",
+]);
+
+export const recommendationDeclineReasonEnum = pgEnum(
+  "recommendation_decline_reason",
+  [
+    "TOO_EXPENSIVE",
+    "WILL_DO_LATER",
+    "DIY_OR_OWN_CONTRACTOR",
+    "NOT_NEEDED",
+    "SELLING_HOME",
+    "OTHER",
+  ],
+);
+
+export const fileScanStatusEnum = pgEnum("file_scan_status", [
+  "PENDING_SCAN",
+  "CLEAN",
+  "QUARANTINED",
+  "REJECTED",
+]);
+
+export const fileAttachmentStatusEnum = pgEnum("file_attachment_status", [
+  "INITIATED",
+  "UPLOADED",
+  "ACTIVE",
+  "DELETED",
+  "QUARANTINED",
+]);
+
+export const fileVisibilityEnum = pgEnum("file_visibility", [
+  "PRIVATE",
+  "CUSTOMER_VISIBLE",
+  "CONTRACTOR_VISIBLE",
+  "SHARED",
+  "INTERNAL_ONLY",
+]);
+
 // 2. Core Identity & RBAC
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -237,6 +288,63 @@ export const authRateLimits = pgTable("auth_rate_limits", {
     .notNull()
     .defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// File Evidence Pipeline & Quarantine (SH-04)
+export const fileAttachments = pgTable("file_attachments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  storageKey: varchar("storage_key", { length: 255 }).notNull().unique(),
+  ownerUserId: uuid("owner_user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  contractorId: uuid("contractor_id").references(() => contractors.id, {
+    onDelete: "set null",
+  }),
+  customerId: uuid("customer_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  jobId: uuid("job_id").references(() => jobs.id, {
+    onDelete: "set null",
+  }),
+  serviceRequestId: uuid("service_request_id").references(
+    () => serviceRequests.id,
+    { onDelete: "set null" },
+  ),
+  fileCategory: varchar("file_category", { length: 64 }).notNull(),
+  fileName: varchar("file_name", { length: 255 }).notNull(),
+  mimeType: varchar("mime_type", { length: 128 }).notNull(),
+  byteSize: bigint("byte_size", { mode: "number" }).notNull().default(0),
+  sha256Checksum: varchar("sha256_checksum", { length: 64 }),
+  scanStatus: fileScanStatusEnum("scan_status").notNull().default("PENDING_SCAN"),
+  quarantineReason: text("quarantine_reason"),
+  visibility: fileVisibilityEnum("visibility").notNull().default("SHARED"),
+  status: fileAttachmentStatusEnum("status").notNull().default("INITIATED"),
+  uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const fileQuarantineEvents = pgTable("file_quarantine_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  fileId: uuid("file_id")
+    .notNull()
+    .references(() => fileAttachments.id, { onDelete: "cascade" }),
+  triggerReason: text("trigger_reason").notNull(),
+  detectedSignatures: jsonb("detected_signatures").notNull().default([]),
+  resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolutionNotes: text("resolution_notes"),
+  createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });
@@ -3242,6 +3350,129 @@ export const dispatchFallbackQueue = pgTable(
   },
 );
 
+// 22. Technician Service Recommendations & Homeowner Response Lifecycle
+export const serviceRecommendations = pgTable("service_recommendations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  jobId: uuid("job_id")
+    .notNull()
+    .references(() => jobs.id, { onDelete: "cascade" }),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references(() => serviceRequests.id, { onDelete: "cascade" }),
+  propertyId: uuid("property_id")
+    .notNull()
+    .references(() => properties.id, { onDelete: "cascade" }),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "cascade" }),
+  technicianId: uuid("technician_id")
+    .notNull()
+    .references(() => technicians.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 255 }).notNull(),
+  description: text("description").notNull(),
+  verticalId: uuid("vertical_id").references(() => verticals.id, {
+    onDelete: "set null",
+  }),
+  categoryId: uuid("category_id").references(() => serviceCategories.id, {
+    onDelete: "set null",
+  }),
+  urgency: recommendationUrgencyEnum("urgency")
+    .notNull()
+    .default("RECOMMENDED_MAINTENANCE"),
+  status: recommendationStatusEnum("status").notNull().default("PROPOSED"),
+  estimatedCostCents: bigint("estimated_cost_cents", { mode: "number" })
+    .notNull()
+    .default(0),
+  currency: char("currency", { length: 3 }).notNull().default("CAD"),
+  evidencePhotos: jsonb("evidence_photos").notNull().default([]),
+  homeownerResponseNotes: text("homeowner_response_notes"),
+  declineReason: recommendationDeclineReasonEnum("decline_reason"),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  convertedServiceRequestId: uuid("converted_service_request_id").references(
+    () => serviceRequests.id,
+    { onDelete: "set null" },
+  ),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
+export const serviceRecommendationResponses = pgTable(
+  "service_recommendation_responses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recommendationId: uuid("recommendation_id")
+      .notNull()
+      .references(() => serviceRecommendations.id, { onDelete: "cascade" }),
+    action: varchar("action", { length: 32 }).notNull(),
+    actorId: uuid("actor_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    actorRole: varchar("actor_role", { length: 32 }).notNull(),
+    notes: text("notes"),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
 
+export const serviceRecommendationsRelations = relations(
+  serviceRecommendations,
+  ({ one, many }) => ({
+    job: one(jobs, {
+      fields: [serviceRecommendations.jobId],
+      references: [jobs.id],
+    }),
+    serviceRequest: one(serviceRequests, {
+      fields: [serviceRecommendations.serviceRequestId],
+      references: [serviceRequests.id],
+    }),
+    property: one(properties, {
+      fields: [serviceRecommendations.propertyId],
+      references: [properties.id],
+    }),
+    customer: one(users, {
+      fields: [serviceRecommendations.customerId],
+      references: [users.id],
+    }),
+    contractor: one(contractors, {
+      fields: [serviceRecommendations.contractorId],
+      references: [contractors.id],
+    }),
+    technician: one(technicians, {
+      fields: [serviceRecommendations.technicianId],
+      references: [technicians.id],
+    }),
+    vertical: one(verticals, {
+      fields: [serviceRecommendations.verticalId],
+      references: [verticals.id],
+    }),
+    category: one(serviceCategories, {
+      fields: [serviceRecommendations.categoryId],
+      references: [serviceCategories.id],
+    }),
+    responses: many(serviceRecommendationResponses),
+  }),
+);
 
+export const serviceRecommendationResponsesRelations = relations(
+  serviceRecommendationResponses,
+  ({ one }) => ({
+    recommendation: one(serviceRecommendations, {
+      fields: [serviceRecommendationResponses.recommendationId],
+      references: [serviceRecommendations.id],
+    }),
+    actor: one(users, {
+      fields: [serviceRecommendationResponses.actorId],
+      references: [users.id],
+    }),
+  }),
+);

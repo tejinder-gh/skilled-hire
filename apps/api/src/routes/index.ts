@@ -24,9 +24,12 @@ import { warrantyRoutes } from "./warranty.routes.js";
 import { surveysRewardsRoutes } from "./surveys-rewards.routes.js";
 import { analyticsRoutes } from "./analytics.routes.js";
 import { providerOnboardingRoutes } from "./provider-onboarding.routes.js";
+import { recommendationsRoutes } from "./recommendations.routes.js";
+import { filesRoutes } from "./files.routes.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(authRoutes);
+  await app.register(filesRoutes);
   await app.register(intakeRoutes);
   await app.register(catalogRoutes);
   await app.register(complianceRoutes);
@@ -43,6 +46,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(surveysRewardsRoutes);
   await app.register(analyticsRoutes);
   await app.register(providerOnboardingRoutes);
+  await app.register(recommendationsRoutes);
   await app.register(propertiesRoutes);
 
   await app.register(requestRoutes);

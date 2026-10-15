@@ -26,3 +26,5 @@ export function rankCandidates(candidates: readonly CandidateInput[], requiredCr
     return { technicianId: candidate.technicianId, contractorId: candidate.contractorId, score, reasons: [`${candidate.distanceKm.toFixed(1)} km away`, `rating ${(candidate.ratingBps / 100).toFixed(1)}`, `completion ${(candidate.completionRateBps / 100).toFixed(0)}%`] };
   }).sort((a, b) => b.score - a.score);
 }
+
+export * from "./files.js";

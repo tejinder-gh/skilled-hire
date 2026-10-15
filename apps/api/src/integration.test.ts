@@ -60,6 +60,10 @@ import {
   userPasswordResets,
   userEmailVerifications,
   authRateLimits,
+  fileAttachments,
+  fileQuarantineEvents,
+  serviceRecommendations,
+  serviceRecommendationResponses,
   eq,
   ne,
   and,
@@ -8062,6 +8066,487 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(csrfRes.statusCode).toBe(200);
     expect(csrfRes.json<{ csrfToken: string }>().csrfToken).toBeDefined();
     expect(csrfRes.headers["set-cookie"]).toBeDefined();
+  });
+
+  it("24. Secure customer and contractor file evidence pipeline, presigned upload, anti-virus quarantine, and signed download leases (#5, SH-04)", async () => {
+    // -------------------------------------------------------------------------
+    // 1. Presigned Upload Initiation & Input Validation
+    // -------------------------------------------------------------------------
+    // Rejects oversized files (> 25MB)
+    const oversizedRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/initiate",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileName: "massive_video_dump.mp4",
+        mimeType: "image/jpeg",
+        byteSize: 30 * 1024 * 1024, // 30MB
+        category: "JOB_BEFORE_PHOTO",
+      },
+    });
+    expect(oversizedRes.statusCode).toBe(400);
+
+    // Rejects disallowed MIME types (e.g. text/html, application/x-msdownload)
+    const badMimeRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/initiate",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileName: "exploit.exe",
+        mimeType: "application/x-msdownload",
+        byteSize: 1024,
+        category: "GENERAL_DOCUMENT",
+      },
+    });
+    expect(badMimeRes.statusCode).toBe(400);
+
+    // Legitimate initiation for customer service request evidence
+    const validInitiateRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/initiate",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileName: "furnace_heat_exchanger_crack.jpg",
+        mimeType: "image/jpeg",
+        byteSize: 2048,
+        category: "SERVICE_REQUEST_ATTACHMENT",
+        visibility: "SHARED",
+      },
+    });
+    expect(validInitiateRes.statusCode).toBe(201);
+    const initiateData = validInitiateRes.json<{
+      fileId: string;
+      storageKey: string;
+      uploadUrl: string;
+      expiresAt: string;
+    }>();
+    expect(initiateData.fileId).toBeDefined();
+    expect(initiateData.storageKey).toMatch(
+      /^evidence\/service_request_attachment\/[a-z0-9_-]+\/\d{4}\/\d{2}\/[a-f0-9]{32}\.jpg$/,
+    );
+    expect(initiateData.uploadUrl).toBeDefined();
+
+    // -------------------------------------------------------------------------
+    // 2. Binary Upload & Finalization with Valid JPEG Magic Bytes
+    // -------------------------------------------------------------------------
+    const cleanJpegBinary = Buffer.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+      0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00,
+    ]);
+
+    // Upload via raw presigned upload endpoint
+    const rawUploadRes = await app.inject({
+      method: "PUT",
+      url: initiateData.uploadUrl,
+      headers: { "Content-Type": "image/jpeg" },
+      body: cleanJpegBinary,
+    });
+    expect(rawUploadRes.statusCode).toBe(200);
+
+    // Finalize upload
+    const finalizeRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/finalize",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileId: initiateData.fileId,
+        storageKey: initiateData.storageKey,
+      },
+    });
+    expect(finalizeRes.statusCode).toBe(200);
+    const finalizeData = finalizeRes.json<{
+      status: string;
+      scanStatus: string;
+      signedUrl: string;
+    }>();
+    expect(finalizeData.status).toBe("ACTIVE");
+    expect(finalizeData.scanStatus).toBe("CLEAN");
+    expect(finalizeData.signedUrl).toBeDefined();
+
+    // Fetch signed download URL
+    const signedUrlRes = await app.inject({
+      method: "GET",
+      url: `/v1/files/${initiateData.fileId}/signed-url`,
+      headers: auth("customer@example.test"),
+    });
+    expect(signedUrlRes.statusCode).toBe(200);
+    const signedData = signedUrlRes.json<{ downloadUrl: string }>();
+    expect(signedData.downloadUrl).toBeDefined();
+
+    // Download content via signed URL stream
+    const downloadRes = await app.inject({
+      method: "GET",
+      url: signedData.downloadUrl,
+    });
+    expect(downloadRes.statusCode).toBe(200);
+    expect(downloadRes.headers["content-type"]).toBe("image/jpeg");
+    expect(downloadRes.headers["x-content-type-options"]).toBe("nosniff");
+
+    // -------------------------------------------------------------------------
+    // 3. MIME Type Spoofing Detection
+    // -------------------------------------------------------------------------
+    // Attacker initiates as image/jpeg but uploads a PDF (%PDF-)
+    const spoofInitiateRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/initiate",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileName: "fake_photo.jpg",
+        mimeType: "image/jpeg",
+        byteSize: 1024,
+        category: "JOB_BEFORE_PHOTO",
+      },
+    });
+    const spoofData = spoofInitiateRes.json<{ fileId: string; storageKey: string }>();
+
+    const pdfBufferDisguised = Buffer.from("%PDF-1.4 executable script payload disguised as jpg");
+    const spoofFinalizeRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/finalize",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileId: spoofData.fileId,
+        storageKey: spoofData.storageKey,
+        contentBase64: pdfBufferDisguised.toString("base64"),
+      },
+    });
+    expect(spoofFinalizeRes.statusCode).toBe(400);
+    expect(spoofFinalizeRes.json<{ code: string }>().code).toBe("MIME_SPOOFING_DETECTED");
+
+    // -------------------------------------------------------------------------
+    // 4. Anti-Virus & Malware Threat Quarantine
+    // -------------------------------------------------------------------------
+    const malwareInitiateRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/initiate",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileName: "hvac_invoice_threat.pdf",
+        mimeType: "application/pdf",
+        byteSize: 512,
+        category: "GENERAL_DOCUMENT",
+      },
+    });
+    const malwareData = malwareInitiateRes.json<{ fileId: string; storageKey: string }>();
+
+    // Finalize with standard EICAR antivirus test signature
+    const eicarPayload = Buffer.from(
+      "%PDF-1.4\nX5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*\n%%EOF",
+    );
+    const malwareFinalizeRes = await app.inject({
+      method: "POST",
+      url: "/v1/files/upload/finalize",
+      headers: auth("customer@example.test"),
+      payload: {
+        fileId: malwareData.fileId,
+        storageKey: malwareData.storageKey,
+        contentBase64: eicarPayload.toString("base64"),
+      },
+    });
+    expect(malwareFinalizeRes.statusCode).toBe(200);
+    const malwareFinalizeData = malwareFinalizeRes.json<{
+      status: string;
+      scanStatus: string;
+      quarantineReason: string;
+      signedUrl: string | null;
+    }>();
+    expect(malwareFinalizeData.status).toBe("QUARANTINED");
+    expect(malwareFinalizeData.scanStatus).toBe("QUARANTINED");
+    expect(malwareFinalizeData.signedUrl).toBeNull();
+
+    // Verify DB quarantine record
+    const [quarantineEvent] = await db
+      .select()
+      .from(fileQuarantineEvents)
+      .where(eq(fileQuarantineEvents.fileId, malwareData.fileId));
+    expect(quarantineEvent).toBeDefined();
+
+    // Regular customer cannot download quarantined file
+    const quarantinedDownloadAttempt = await app.inject({
+      method: "GET",
+      url: `/v1/files/${malwareData.fileId}/signed-url`,
+      headers: auth("customer@example.test"),
+    });
+    expect(quarantinedDownloadAttempt.statusCode).toBe(403);
+    expect(quarantinedDownloadAttempt.json<{ code: string }>().code).toBe("FILE_QUARANTINED");
+
+    // -------------------------------------------------------------------------
+    // 5. Staff Quarantine Review & Manual Override Drill
+    // -------------------------------------------------------------------------
+    // Staff operator inspects and clears false-positive file with documented reason
+    const overrideRes = await app.inject({
+      method: "POST",
+      url: `/v1/files/${malwareData.fileId}/quarantine-override`,
+      headers: auth("admin@example.test"),
+      payload: {
+        reason: "Inspected by Senior SecOps: Verified sample is an authorized EICAR validation drill.",
+      },
+    });
+    expect(overrideRes.statusCode).toBe(200);
+    expect(overrideRes.json<{ scanStatus: string }>().scanStatus).toBe("CLEAN");
+
+    // File is now ACTIVE and can generate signed download URL
+    const clearedSignedRes = await app.inject({
+      method: "GET",
+      url: `/v1/files/${malwareData.fileId}/signed-url`,
+      headers: auth("admin@example.test"),
+    });
+    expect(clearedSignedRes.statusCode).toBe(200);
+
+    // -------------------------------------------------------------------------
+    // 6. Retention Soft-Delete Lifecycle
+    // -------------------------------------------------------------------------
+    const deleteRes = await app.inject({
+      method: "DELETE",
+      url: `/v1/files/${initiateData.fileId}`,
+      headers: auth("customer@example.test"),
+    });
+    expect(deleteRes.statusCode).toBe(200);
+
+    // Subsequent signed-url request returns 404
+    const postDeleteRes = await app.inject({
+      method: "GET",
+      url: `/v1/files/${initiateData.fileId}/signed-url`,
+      headers: auth("customer@example.test"),
+    });
+    expect(postDeleteRes.statusCode).toBe(404);
+  });
+
+  it("25. Technician recommended services lifecycle, on-site discovery, homeowner accept/decline responses, structured decline reasons, and service request conversion", async () => {
+    // 1. Locate an existing active or assigned job with known customer, property, and technician
+    const [existingJob] = await db
+      .select({
+        id: jobs.id,
+        serviceRequestId: jobs.serviceRequestId,
+        contractorId: jobs.contractorId,
+        technicianId: jobs.technicianId,
+        customerId: serviceRequests.customerId,
+        propertyId: serviceRequests.propertyId,
+        verticalId: serviceRequests.verticalId,
+      })
+      .from(jobs)
+      .innerJoin(serviceRequests, eq(serviceRequests.id, jobs.serviceRequestId))
+      .limit(1);
+
+    expect(existingJob).toBeDefined();
+    if (!existingJob) throw new Error("No job found");
+    const jobId = existingJob.id;
+    const propertyId = existingJob.propertyId;
+    const contractorId = existingJob.contractorId;
+
+    // 2. Reject recommendation submission by unauthenticated actor
+    const unauthRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/recommendations`,
+      payload: {
+        title: "Main Panel Whole-Home Surge Protection",
+        description: "Outdoor AC compressor board vulnerable to electrical transients without panel SPD.",
+        urgency: "UPGRADE_OPPORTUNITY",
+        estimatedCostCents: 39500,
+      },
+    });
+    expect(unauthRes.statusCode).toBe(401);
+
+    // 3. Reject invalid input (short title, missing description)
+    const badInputRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/recommendations`,
+      headers: auth("technician@example.test"),
+      payload: {
+        title: "No",
+        description: "Short",
+        urgency: "UPGRADE_OPPORTUNITY",
+        estimatedCostCents: -50,
+      },
+    });
+    expect(badInputRes.statusCode).toBe(400);
+
+    // 4. Technician successfully submits first recommendation: Dual-Run Capacitor Replacement
+    const createRec1Res = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/recommendations`,
+      headers: auth("technician@example.test"),
+      payload: {
+        title: "Dual-Run Compressor & Fan Capacitor Replacement (45+5 µF)",
+        description: "Tested capacitor with multimeter microfarad setting; read 28.5µF under load, well below 45µF ±5% manufacturer threshold. Risk of compressor thermal trip and motor seizure.",
+        urgency: "URGENT_REPAIR",
+        estimatedCostCents: 18500,
+        evidencePhotos: ["evidence/capacitor_test_reading.jpg"],
+      },
+    });
+    expect(createRec1Res.statusCode).toBe(201);
+    const rec1 = createRec1Res.json<{ id: string; status: string; estimatedCostCents: number; urgency: string }>();
+    expect(rec1.id).toBeDefined();
+    expect(rec1.status).toBe("PROPOSED");
+    expect(rec1.estimatedCostCents).toBe(18500);
+    expect(rec1.urgency).toBe("URGENT_REPAIR");
+
+    // 5. Technician submits second recommendation: Emergency Main Water Shutoff Valve
+    const createRec2Res = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${jobId}/recommendations`,
+      headers: auth("technician@example.test"),
+      payload: {
+        title: "Main Brass Shutoff Valve Replacement",
+        description: "Incoming municipal gate valve is heavily scaled with calcium and seized open. Cannot isolate supply in event of plumbing leak.",
+        urgency: "IMMEDIATE_SAFETY_HAZARD",
+        estimatedCostCents: 32000,
+        evidencePhotos: ["evidence/seized_valve.jpg"],
+      },
+    });
+    expect(createRec2Res.statusCode).toBe(201);
+    const rec2 = createRec2Res.json<{ id: string; status: string }>();
+
+    // 6. Homeowner views recommendations for the job
+    const jobRecsRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${jobId}/recommendations`,
+      headers: auth("customer@example.test"),
+    });
+    expect(jobRecsRes.statusCode).toBe(200);
+    const jobRecs = jobRecsRes.json<Array<{ id: string; title: string }>>();
+    expect(jobRecs.some((r) => r.id === rec1.id)).toBe(true);
+    expect(jobRecs.some((r) => r.id === rec2.id)).toBe(true);
+
+    // 7. Property Service Passport lookup
+    const propRecsRes = await app.inject({
+      method: "GET",
+      url: `/v1/properties/${propertyId}/recommendations`,
+      headers: auth("customer@example.test"),
+    });
+    expect(propRecsRes.statusCode).toBe(200);
+    const propRecs = propRecsRes.json<Array<{ id: string; propertyAddress?: string }>>();
+    expect(propRecs.some((r) => r.id === rec1.id)).toBe(true);
+
+    // 8. Inspect single recommendation details and response history
+    const detailRes = await app.inject({
+      method: "GET",
+      url: `/v1/recommendations/${rec1.id}`,
+      headers: auth("customer@example.test"),
+    });
+    expect(detailRes.statusCode).toBe(200);
+    const detailData = detailRes.json<{
+      id: string;
+      responses: Array<{ action: string; actorRole: string }>;
+    }>();
+    expect(detailData.id).toBe(rec1.id);
+    expect(detailData.responses.length).toBeGreaterThanOrEqual(1);
+    expect(detailData.responses[0]?.action).toBe("PROPOSED");
+
+    // 9. Unauthorized customer cannot respond to someone else's recommendation
+    const unauthorizedRespond = await app.inject({
+      method: "POST",
+      url: `/v1/recommendations/${rec2.id}/respond`,
+      headers: auth("admin@example.test"),
+      payload: {
+        decision: "DECLINED",
+      },
+    });
+    expect(unauthorizedRespond.statusCode).toBe(403);
+
+    // 10. Homeowner declines Recommendation 2 with structured decline reason
+    const declineRes = await app.inject({
+      method: "POST",
+      url: `/v1/recommendations/${rec2.id}/respond`,
+      headers: auth("customer@example.test"),
+      payload: {
+        decision: "DECLINED",
+        declineReason: "TOO_EXPENSIVE",
+        notes: "Cost is outside our current monthly maintenance budget. Will address next spring.",
+      },
+    });
+    expect(declineRes.statusCode).toBe(200);
+    const declineData = declineRes.json<{ status: string }>();
+    expect(declineData.status).toBe("DECLINED");
+
+    // Verify DB state for recommendation 2
+    const [dbRec2] = await db
+      .select()
+      .from(serviceRecommendations)
+      .where(eq(serviceRecommendations.id, rec2.id));
+    expect(dbRec2?.status).toBe("DECLINED");
+    expect(dbRec2?.declineReason).toBe("TOO_EXPENSIVE");
+    expect(dbRec2?.homeownerResponseNotes).toContain("outside our current monthly maintenance budget");
+    expect(dbRec2?.respondedAt).toBeDefined();
+
+    // Verify audit events table recorded DECLINED action
+    const rec2Responses = await db
+      .select()
+      .from(serviceRecommendationResponses)
+      .where(eq(serviceRecommendationResponses.recommendationId, rec2.id));
+    expect(rec2Responses.some((r) => r.action === "DECLINED")).toBe(true);
+
+    // 11. Homeowner accepts Recommendation 1 with immediate conversion into follow-up request
+    const acceptIdempotencyKey = crypto.randomUUID();
+    const acceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/recommendations/${rec1.id}/respond`,
+      headers: {
+        ...auth("customer@example.test"),
+        "idempotency-key": acceptIdempotencyKey,
+      },
+      payload: {
+        decision: "ACCEPTED",
+        convertImmediately: true,
+        notes: "Approved by homeowner. Please install new capacitor today.",
+      },
+    });
+    expect(acceptRes.statusCode).toBe(200);
+    const acceptData = acceptRes.json<{
+      recommendationId: string;
+      status: string;
+      convertedServiceRequestId?: string;
+    }>();
+    expect(acceptData.status).toBe("CONVERTED");
+    expect(acceptData.convertedServiceRequestId).toBeDefined();
+
+    // Verify idempotency replay returns same response
+    const replayAcceptRes = await app.inject({
+      method: "POST",
+      url: `/v1/recommendations/${rec1.id}/respond`,
+      headers: {
+        ...auth("customer@example.test"),
+        "idempotency-key": acceptIdempotencyKey,
+      },
+      payload: {
+        decision: "ACCEPTED",
+        convertImmediately: true,
+      },
+    });
+    expect(replayAcceptRes.statusCode).toBe(200);
+    expect(replayAcceptRes.json<{ status: string }>().status).toBe("CONVERTED");
+
+    // Verify converted service request exists and is in SUBMITTED state
+    const [convertedReq] = await db
+      .select()
+      .from(serviceRequests)
+      .where(eq(serviceRequests.id, acceptData.convertedServiceRequestId!));
+    expect(convertedReq).toBeDefined();
+    expect(convertedReq?.status).toBe("SUBMITTED");
+    expect(convertedReq?.description).toContain("Dual-Run Compressor & Fan Capacitor Replacement");
+
+    // 12. Contractor conversion analytics
+    const analyticsRes = await app.inject({
+      method: "GET",
+      url: `/v1/contractors/${contractorId}/recommendations/analytics`,
+      headers: auth("owner@example.test"),
+    });
+    expect(analyticsRes.statusCode).toBe(200);
+    const analytics = analyticsRes.json<{
+      contractorId: string;
+      totalProposed: number;
+      totalAccepted: number;
+      totalDeclined: number;
+      conversionRatePct: number;
+      totalProposedRevenueCents: number;
+      totalAcceptedRevenueCents: number;
+    }>();
+    expect(analytics.contractorId).toBe(contractorId);
+    expect(analytics.totalProposed).toBeGreaterThanOrEqual(2);
+    expect(analytics.totalAccepted).toBeGreaterThanOrEqual(1);
+    expect(analytics.totalDeclined).toBeGreaterThanOrEqual(1);
+    expect(analytics.conversionRatePct).toBeGreaterThan(0);
+    expect(analytics.totalAcceptedRevenueCents).toBeGreaterThan(0);
   });
 });
 

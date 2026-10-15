@@ -9,7 +9,12 @@ import type {
   EntityLevel,
   ProviderApplicationDTO,
   ProviderRateProposal,
+  RecommendationDeclineReason,
+  RecommendationResponseEventDTO,
+  RecommendationStatus,
+  RecommendationUrgency,
   ScheduleExceptionType,
+  ServiceRecommendationDTO,
   SubmittedCredentialInput,
   TechnicianRosterInput,
   TechnicianScheduleDTO,
@@ -175,7 +180,7 @@ const ONTARIO_CORE_FSAS = ["M5V", "M4B", "M2N", "L4W", "K1P", "N2L"] as const;
 
 export default function ContractorHome() {
   const [activeTab, setActiveTab] = useState<
-    "workspace" | "evidence" | "completion" | "warranty" | "compliance" | "onboarding" | "scheduling"
+    "workspace" | "evidence" | "completion" | "warranty" | "compliance" | "onboarding" | "scheduling" | "recommendations"
   >("workspace");
 
   // Filter state for Compliance Tab
@@ -187,6 +192,223 @@ export default function ContractorHome() {
   const [selectedGroupFilter, setSelectedGroupFilter] = useState<
     CredentialGroupCode | "ALL"
   >("ALL");
+
+  // ---------------------------------------------------------------------------
+  // Technician Service Recommendations State
+  // ---------------------------------------------------------------------------
+  const [recommendations, setRecommendations] = useState<ServiceRecommendationDTO[]>([
+    {
+      id: "rec-2026-4412-01",
+      jobId: "JOB-2026-4412",
+      serviceRequestId: "REQ-2026-9921",
+      propertyId: "prop-king-123",
+      customerId: "user-cust-avery",
+      contractorId: "cont-mapleshield",
+      technicianId: "tech-marcus",
+      title: "Dual-Run Compressor & Fan Capacitor Replacement (45+5 µF)",
+      description:
+        "Measured outdoor condenser dual-run capacitor under load; capacitance has dropped from rated 45µF to 28.5µF (36% degradation). Motor is drawing excessive amps with elevated risk of hard-start failure and compressor winding damage during peak heat.",
+      urgency: "URGENT_REPAIR",
+      status: "PROPOSED",
+      estimatedCostCents: 18500,
+      currency: "CAD",
+      evidencePhotos: [
+        "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=400&q=80",
+      ],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      technicianName: "Marcus Sterling (Lead Journeyperson)",
+      contractorName: "MapleShield Mechanical Solutions Inc.",
+      propertyAddress: "123 King Street W, Unit 1402, Toronto",
+      responses: [
+        {
+          id: "resp-01",
+          recommendationId: "rec-2026-4412-01",
+          action: "PROPOSED",
+          actorId: "tech-marcus",
+          actorRole: "TECHNICIAN",
+          notes: "Discovered during routine multimeter check of compressor electrical components.",
+          metadata: { estimatedCostCents: 18500, urgency: "URGENT_REPAIR" },
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    },
+    {
+      id: "rec-2026-4389-02",
+      jobId: "JOB-2026-4389",
+      serviceRequestId: "REQ-2026-9811",
+      propertyId: "prop-queensway-88",
+      customerId: "user-cust-sophia",
+      contractorId: "cont-mapleshield",
+      technicianId: "tech-marcus",
+      title: "Condensate Drain Line Trap Flush & Float Switch Installation",
+      description:
+        "Condensate trap is coated in bacterial sludge and biofilm, causing slow drainage into floor drain. Recommended automated shutoff float switch to prevent future water damage.",
+      urgency: "RECOMMENDED_MAINTENANCE",
+      status: "ACCEPTED",
+      estimatedCostCents: 14500,
+      currency: "CAD",
+      evidencePhotos: [
+        "https://images.unsplash.com/photo-1621905251189-08b45d6a269e?auto=format&fit=crop&w=400&q=80",
+      ],
+      homeownerResponseNotes: "Approved immediately. Marcus completed the install during the service call.",
+      respondedAt: "2026-10-12T15:10:00Z",
+      createdAt: "2026-10-12T14:40:00Z",
+      updatedAt: "2026-10-12T15:10:00Z",
+      technicianName: "Marcus Sterling (Lead Journeyperson)",
+      contractorName: "MapleShield Mechanical Solutions Inc.",
+      propertyAddress: "88 Queensway Blvd, Etobicoke",
+      responses: [
+        {
+          id: "resp-02-a",
+          recommendationId: "rec-2026-4389-02",
+          action: "PROPOSED",
+          actorId: "tech-marcus",
+          actorRole: "TECHNICIAN",
+          notes: "Discovered slow drainage while testing high-efficiency furnace condensate flow.",
+          metadata: { estimatedCostCents: 14500 },
+          createdAt: "2026-10-12T14:40:00Z",
+        },
+        {
+          id: "resp-02-b",
+          recommendationId: "rec-2026-4389-02",
+          action: "ACCEPTED",
+          actorId: "user-cust-sophia",
+          actorRole: "CUSTOMER",
+          notes: "Approved immediately. Marcus completed the install during the service call.",
+          metadata: { decision: "ACCEPTED", convertedImmediately: true },
+          createdAt: "2026-10-12T15:10:00Z",
+        },
+      ],
+    },
+    {
+      id: "rec-2026-4251-03",
+      jobId: "JOB-2026-4251",
+      serviceRequestId: "REQ-2026-9705",
+      propertyId: "prop-bay-410",
+      customerId: "user-cust-michael",
+      contractorId: "cont-mapleshield",
+      technicianId: "tech-marcus",
+      title: "Whole-Home Inline Sediment & Carbon Filtration Upgrade",
+      description:
+        "Municipal water test showed elevated sediment particles causing premature scale buildup in tankless water heater heat exchanger. Recommended 20-micron whole-home pre-filtration.",
+      urgency: "UPGRADE_OPPORTUNITY",
+      status: "DECLINED",
+      estimatedCostCents: 65000,
+      currency: "CAD",
+      evidencePhotos: [
+        "https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&w=400&q=80",
+      ],
+      declineReason: "TOO_EXPENSIVE",
+      homeownerResponseNotes: "Will consider next spring after bathroom remodeling budget is cleared.",
+      respondedAt: "2026-10-08T11:20:00Z",
+      createdAt: "2026-10-08T10:15:00Z",
+      updatedAt: "2026-10-08T11:20:00Z",
+      technicianName: "Marcus Sterling (Lead Journeyperson)",
+      contractorName: "MapleShield Mechanical Solutions Inc.",
+      propertyAddress: "410 Bay St, Toronto",
+      responses: [
+        {
+          id: "resp-03-a",
+          recommendationId: "rec-2026-4251-03",
+          action: "PROPOSED",
+          actorId: "tech-marcus",
+          actorRole: "TECHNICIAN",
+          notes: "Proposed optional water filtration enhancement.",
+          metadata: { estimatedCostCents: 65000 },
+          createdAt: "2026-10-08T10:15:00Z",
+        },
+        {
+          id: "resp-03-b",
+          recommendationId: "rec-2026-4251-03",
+          action: "DECLINED",
+          actorId: "user-cust-michael",
+          actorRole: "CUSTOMER",
+          notes: "Will consider next spring after bathroom remodeling budget is cleared.",
+          metadata: { decision: "DECLINED", declineReason: "TOO_EXPENSIVE" },
+          createdAt: "2026-10-08T11:20:00Z",
+        },
+      ],
+    },
+  ]);
+
+  const [isRecommendModalOpen, setIsRecommendModalOpen] = useState(false);
+  const [selectedRecForDetail, setSelectedRecForDetail] = useState<ServiceRecommendationDTO | null>(null);
+  const [recFilterStatus, setRecFilterStatus] = useState<string>("ALL");
+
+  // Form fields for discovering & recommending a service on site
+  const [newRecTitle, setNewRecTitle] = useState("");
+  const [newRecDescription, setNewRecDescription] = useState("");
+  const [newRecUrgency, setNewRecUrgency] = useState<RecommendationUrgency>("RECOMMENDED_MAINTENANCE");
+  const [newRecCostDollars, setNewRecCostDollars] = useState("185.00");
+  const [newRecPhotoUrl, setNewRecPhotoUrl] = useState("https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=400&q=80");
+  const [recFeedbackNotice, setRecFeedbackNotice] = useState<string | null>(null);
+
+  const applyRecTemplate = (template: {
+    title: string;
+    description: string;
+    urgency: RecommendationUrgency;
+    cost: string;
+    photo: string;
+  }) => {
+    setNewRecTitle(template.title);
+    setNewRecDescription(template.description);
+    setNewRecUrgency(template.urgency);
+    setNewRecCostDollars(template.cost);
+    setNewRecPhotoUrl(template.photo);
+  };
+
+  const handleCreateRecommendation = () => {
+    if (!newRecTitle.trim() || !newRecDescription.trim()) {
+      alert("Please enter a title and description for the recommendation.");
+      return;
+    }
+    const costCents = Math.round(parseFloat(newRecCostDollars || "0") * 100);
+    const newId = `rec-${Date.now()}`;
+    const newRec: ServiceRecommendationDTO = {
+      id: newId,
+      jobId: "JOB-2026-4412",
+      serviceRequestId: "REQ-2026-9921",
+      propertyId: "prop-king-123",
+      customerId: "user-cust-avery",
+      contractorId: "cont-mapleshield",
+      technicianId: "tech-marcus",
+      title: newRecTitle.trim(),
+      description: newRecDescription.trim(),
+      urgency: newRecUrgency,
+      status: "PROPOSED",
+      estimatedCostCents: costCents,
+      currency: "CAD",
+      evidencePhotos: newRecPhotoUrl.trim() ? [newRecPhotoUrl.trim()] : [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      technicianName: "Marcus Sterling (Lead Journeyperson)",
+      contractorName: "MapleShield Mechanical Solutions Inc.",
+      propertyAddress: "123 King Street W, Unit 1402, Toronto",
+      responses: [
+        {
+          id: `resp-${Date.now()}`,
+          recommendationId: newId,
+          action: "PROPOSED",
+          actorId: "tech-marcus",
+          actorRole: "TECHNICIAN",
+          notes: newRecDescription.trim(),
+          metadata: { estimatedCostCents: costCents, urgency: newRecUrgency },
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    };
+
+    setRecommendations((prev) => [newRec, ...prev]);
+    setIsRecommendModalOpen(false);
+    setNewRecTitle("");
+    setNewRecDescription("");
+    setNewRecCostDollars("185.00");
+    setRecFeedbackNotice(
+      `✓ Successfully suggested "${newRec.title}" to homeowner Avery H. Real-time notification delivered with full transparency.`,
+    );
+    setTimeout(() => setRecFeedbackNotice(null), 7000);
+  };
 
   // ---------------------------------------------------------------------------
   // Provider Onboarding & Supply CRM State
@@ -296,25 +518,45 @@ export default function ContractorHome() {
   const [etaMinutes, setEtaMinutes] = useState(22);
   const [workerVerified, setWorkerVerified] = useState(true);
 
-  // Field Evidence State
+  // Field Evidence & Secure Storage Pipeline State (SH-04)
   const [evidencePhotos, setEvidencePhotos] = useState<
-    Array<{ id: string; label: string; type: "before" | "after"; timestamp: string }>
+    Array<{
+      id: string;
+      label: string;
+      type: "before" | "after";
+      timestamp: string;
+      scanStatus: "CLEAN" | "QUARANTINED" | "PENDING_SCAN";
+      quarantineReason?: string | undefined;
+      storageKey: string;
+      signedUrl?: string | undefined;
+    }>
   >([
     {
       id: "ev-1",
       label: "Diagnostic test: Burned dual-run capacitor contacts",
       type: "before",
       timestamp: "10:14 AM",
+      scanStatus: "CLEAN",
+      storageKey: "evidence/job_before_photo/cont-1/2026/10/a1b2c3d4e5f60718293a4b5c6d7e8f90.jpg",
+      signedUrl: "http://localhost:4000/v1/files/raw/evidence%2Fjob_before_photo%2Fcont-1%2F2026%2F10%2Fa1b2c3d4e5f60718293a4b5c6d7e8f90.jpg?sig=valid",
     },
     {
       id: "ev-2",
       label: "Installed OEM Lennox 45/5 uF capacitor & secure wiring",
       type: "after",
       timestamp: "11:02 AM",
+      scanStatus: "CLEAN",
+      storageKey: "evidence/job_after_photo/cont-1/2026/10/b2c3d4e5f6a10718293a4b5c6d7e8f91.jpg",
+      signedUrl: "http://localhost:4000/v1/files/raw/evidence%2Fjob_after_photo%2Fcont-1%2F2026%2F10%2Fb2c3d4e5f6a10718293a4b5c6d7e8f91.jpg?sig=valid",
     },
   ]);
   const [newPhotoLabel, setNewPhotoLabel] = useState("");
   const [newPhotoType, setNewPhotoType] = useState<"before" | "after">("before");
+  const [fileUploadNotice, setFileUploadNotice] = useState<{
+    tone: "info" | "success" | "warning" | "danger";
+    title: string;
+    message: string;
+  } | null>(null);
 
   // Materials Receipts State
   const [materialReceipts, setMaterialReceipts] = useState<MaterialReceiptItem[]>([
@@ -1040,6 +1282,12 @@ export default function ContractorHome() {
               icon: "📅",
               badge: activeOffers.filter((o) => o.status === "OFFERED").length ? `${activeOffers.filter((o) => o.status === "OFFERED").length} Offer` : undefined,
             },
+            {
+              value: "recommendations",
+              label: "Recommended Services",
+              icon: "💡",
+              badge: `${recommendations.length} Tracked`,
+            },
           ]}
         />
       </div>
@@ -1245,6 +1493,132 @@ export default function ContractorHome() {
                 </div>
               </Card>
 
+              {/* Discovered Service Recommendations for Current Active Job */}
+              <Card tone="white" padding="lg">
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    flexWrap: "wrap",
+                    gap: 16,
+                    marginBottom: 16,
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 20 }}>💡</span>
+                      <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>
+                        Discovered Services & Recommendations
+                      </h3>
+                      <Badge tone="blue">
+                        {recommendations.filter((r) => r.jobId === "JOB-2026-4412").length} Discovered
+                      </Badge>
+                    </div>
+                    <p style={{ margin: "6px 0 0", color: "#475569", fontSize: 14 }}>
+                      Suggest repairs, safety remediations, or preventative upgrades discovered during on-site assessment. The homeowner can accept or decline with transparent pricing and full audit tracking.
+                    </p>
+                  </div>
+                  <Button
+                    variant="primary"
+                    size="md"
+                    onClick={() => setIsRecommendModalOpen(true)}
+                  >
+                    + Suggest Discovered Service
+                  </Button>
+                </div>
+
+                {recFeedbackNotice && (
+                  <div style={{ marginBottom: 16 }}>
+                    <Callout tone="success" title="Recommendation Dispatched">
+                      {recFeedbackNotice}
+                    </Callout>
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gap: 12 }}>
+                  {recommendations
+                    .filter((r) => r.jobId === "JOB-2026-4412")
+                    .map((rec) => (
+                      <div
+                        key={rec.id}
+                        style={{
+                          background: "#f8fafc",
+                          borderRadius: 14,
+                          padding: 16,
+                          border: "1px solid #e2e8f0",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                          gap: 12,
+                        }}
+                      >
+                        <div style={{ flex: "1 1 300px" }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+                            <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a" }}>
+                              {rec.title}
+                            </span>
+                            <Badge
+                              tone={
+                                rec.urgency === "IMMEDIATE_SAFETY_HAZARD"
+                                  ? "danger"
+                                  : rec.urgency === "URGENT_REPAIR"
+                                    ? "amber"
+                                    : rec.urgency === "RECOMMENDED_MAINTENANCE"
+                                      ? "blue"
+                                      : "green"
+                              }
+                            >
+                              {rec.urgency.replace(/_/g, " ")}
+                            </Badge>
+                            <Badge
+                              tone={
+                                rec.status === "ACCEPTED"
+                                  ? "green"
+                                  : rec.status === "DECLINED"
+                                    ? "danger"
+                                    : rec.status === "DEFERRED"
+                                      ? "amber"
+                                      : "neutral"
+                              }
+                            >
+                              {rec.status === "PROPOSED"
+                                ? "⏳ AWAITING HOMEOWNER RESPONSE"
+                                : rec.status === "ACCEPTED"
+                                  ? "✓ ACCEPTED BY HOMEOWNER"
+                                  : rec.status === "DECLINED"
+                                    ? `✕ DECLINED (${rec.declineReason ?? "NO REASON"})`
+                                    : "DEFERRED"}
+                            </Badge>
+                          </div>
+                          <p style={{ margin: "4px 0 6px", fontSize: 13, color: "#475569", lineHeight: 1.4 }}>
+                            {rec.description}
+                          </p>
+                          {rec.homeownerResponseNotes && (
+                            <p style={{ margin: "4px 0 0", fontSize: 12, fontStyle: "italic", color: "#334155" }}>
+                              Homeowner Note: &ldquo;{rec.homeownerResponseNotes}&rdquo;
+                            </p>
+                          )}
+                        </div>
+
+                        <div style={{ textAlign: "right", display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                          <span style={{ fontSize: 18, fontWeight: 900, color: "#0f172a" }}>
+                            ${(rec.estimatedCostCents / 100).toFixed(2)} <span style={{ fontSize: 12, fontWeight: 600 }}>CAD</span>
+                          </span>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => setSelectedRecForDetail(rec)}
+                          >
+                            Inspect Audit Trail ({rec.responses?.length ?? 1})
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </Card>
+
               {/* Quick Metrics */}
               <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">
                 <Card padding="sm">
@@ -1287,23 +1661,47 @@ export default function ContractorHome() {
       {activeTab === "evidence" && (
         <div>
           <Card tone="white" padding="lg">
-            <h2 style={{ fontSize: 22, margin: "0 0 8px" }}>
-              Field Photo Evidence Locker
-            </h2>
-            <p style={{ margin: "0 0 20px", color: "#475569", fontSize: 14 }}>
-              Capture required diagnostic and completion photos. Evidence is cryptographically
-              anchored and displayed on homeowner completion reports.
-            </p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 8 }}>
+              <div>
+                <h2 style={{ fontSize: 22, margin: "0 0 6px" }}>
+                  Field Photo Evidence Locker
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  Capture required diagnostic and completion photos. Evidence is cryptographically
+                  anchored and verified through our private storage and anti-virus pipeline.
+                </p>
+              </div>
+              <Badge tone="purple">SH-04 Storage Pipeline</Badge>
+            </div>
 
-            <Grid columns="repeat(auto-fill, minmax(280px, 1fr))">
+            <div style={{ margin: "14px 0 20px" }}>
+              <Callout tone="info" title="Zero-Trust File Evidence Pipeline">
+                Files are strictly verified for true binary magic bytes (JPEG/PNG/PDF), checked against executable malware signatures, and delivered via time-bounded 15-minute expiring signed leases.
+              </Callout>
+            </div>
+
+            {fileUploadNotice && (
+              <div style={{ marginBottom: 18 }}>
+                <Callout tone={fileUploadNotice.tone} title={fileUploadNotice.title}>
+                  {fileUploadNotice.message}
+                </Callout>
+              </div>
+            )}
+
+            <Grid columns="repeat(auto-fill, minmax(300px, 1fr))">
               {evidencePhotos.map((photo) => (
                 <div
                   key={photo.id}
                   style={{
-                    border: "1px solid #e2e8f0",
+                    border: `1.5px solid ${photo.scanStatus === "QUARANTINED" ? "#fca5a5" : "#e2e8f0"}`,
                     borderRadius: 16,
                     padding: 16,
-                    background: photo.type === "before" ? "#fffbeb" : "#ecfdf5",
+                    background:
+                      photo.scanStatus === "QUARANTINED"
+                        ? "#fef2f2"
+                        : photo.type === "before"
+                          ? "#fffbeb"
+                          : "#ecfdf5",
                   }}
                 >
                   <div
@@ -1312,38 +1710,82 @@ export default function ContractorHome() {
                       justifyContent: "space-between",
                       alignItems: "center",
                       marginBottom: 8,
+                      flexWrap: "wrap",
+                      gap: 6,
                     }}
                   >
-                    <Badge tone={photo.type === "before" ? "amber" : "green"}>
-                      {photo.type === "before" ? "BEFORE WORK" : "AFTER WORK"}
-                    </Badge>
-                    <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <Badge tone={photo.type === "before" ? "amber" : "green"}>
+                        {photo.type === "before" ? "BEFORE WORK" : "AFTER WORK"}
+                      </Badge>
+                      <Badge tone={photo.scanStatus === "CLEAN" ? "green" : photo.scanStatus === "QUARANTINED" ? "danger" : "amber"}>
+                        {photo.scanStatus === "CLEAN" ? "✓ AV Clean" : photo.scanStatus === "QUARANTINED" ? "🚨 Quarantined" : "⏳ Pending Scan"}
+                      </Badge>
+                    </div>
+                    <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
                       {photo.timestamp}
                     </span>
                   </div>
+
                   <div
                     style={{
                       height: 120,
                       borderRadius: 12,
-                      background: "#e2e8f0",
+                      background: photo.scanStatus === "QUARANTINED" ? "#fee2e2" : "#e2e8f0",
                       display: "grid",
                       placeItems: "center",
                       fontSize: 32,
                       marginBottom: 10,
                     }}
                   >
-                    📷
+                    {photo.scanStatus === "QUARANTINED" ? "☣️" : "📷"}
                   </div>
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+
+                  <p style={{ margin: "0 0 6px", fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
                     {photo.label}
                   </p>
+
+                  <div style={{ fontSize: 11, fontFamily: "monospace", color: "#64748b", background: "#fff", padding: "4px 8px", borderRadius: 6, border: "1px solid #e2e8f0", wordBreak: "break-all", marginBottom: 8 }}>
+                    {photo.storageKey.split("/").slice(0, 3).join("/")}/.../{photo.storageKey.split("/").pop()}
+                  </div>
+
+                  {photo.scanStatus === "QUARANTINED" && (
+                    <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 8, marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#b91c1c", display: "block" }}>
+                        Quarantine Trigger:
+                      </span>
+                      <span style={{ fontSize: 11, color: "#991b1b" }}>
+                        {photo.quarantineReason ?? "Executable signature or malware trap detected."}
+                      </span>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    {photo.scanStatus === "QUARANTINED" ? (
+                      <Badge tone="danger">Downloads Blocked</Badge>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          setFileUploadNotice({
+                            tone: "success",
+                            title: "Signed Lease Active",
+                            message: `Generated verified 15-minute download lease for ${photo.storageKey.split("/").pop()}. Access logged in immutable audit trail.`,
+                          });
+                        }}
+                      >
+                        Inspect Signed Lease
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </Grid>
 
             <div style={{ marginTop: 24, padding: 18, background: "#f8fafc", borderRadius: 16 }}>
               <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 800 }}>
-                Attach New Photo Evidence
+                Attach New Photo Evidence via Presigned Lease
               </h3>
               <div style={{ display: "grid", gap: 12 }}>
                 <Field
@@ -1352,7 +1794,7 @@ export default function ContractorHome() {
                   value={newPhotoLabel}
                   onChange={setNewPhotoLabel}
                 />
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <Button
                     variant={newPhotoType === "before" ? "primary" : "secondary"}
                     size="sm"
@@ -1372,6 +1814,8 @@ export default function ContractorHome() {
                     size="sm"
                     disabled={!newPhotoLabel.trim()}
                     onClick={() => {
+                      const randomHex = Math.random().toString(16).slice(2, 10);
+                      const key = `evidence/job_${newPhotoType}_photo/cont-1/2026/10/${randomHex}0123456789abcdef.jpg`;
                       setEvidencePhotos((prev) => [
                         ...prev,
                         {
@@ -1379,12 +1823,49 @@ export default function ContractorHome() {
                           label: newPhotoLabel.trim(),
                           type: newPhotoType,
                           timestamp: "Just now",
+                          scanStatus: "CLEAN",
+                          storageKey: key,
+                          signedUrl: `http://localhost:4000/v1/files/raw/${encodeURIComponent(key)}?sig=valid`,
                         },
                       ]);
+                      setFileUploadNotice({
+                        tone: "success",
+                        title: "Presigned Upload Finalized & Verified",
+                        message: `Binary uploaded, magic bytes validated as image/jpeg, anti-virus scan passed CLEAN. Immutable SHA-256 checksum recorded.`,
+                      });
                       setNewPhotoLabel("");
                     }}
                   >
-                    + Upload & Seal Evidence
+                    + Presigned Upload & Scan
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    disabled={!newPhotoLabel.trim()}
+                    onClick={() => {
+                      const randomHex = Math.random().toString(16).slice(2, 10);
+                      const key = `evidence/job_${newPhotoType}_photo/cont-1/2026/10/${randomHex}malware_trap.pdf.exe`;
+                      setEvidencePhotos((prev) => [
+                        ...prev,
+                        {
+                          id: `ev-threat-${Date.now()}`,
+                          label: `[SUSPICIOUS] ${newPhotoLabel.trim()}`,
+                          type: newPhotoType,
+                          timestamp: "Just now",
+                          scanStatus: "QUARANTINED",
+                          quarantineReason: "DoubleExtensionExecutableTrap: Dangerous executable extension '.exe' detected",
+                          storageKey: key,
+                        },
+                      ]);
+                      setFileUploadNotice({
+                        tone: "danger",
+                        title: "Malware Detected & File Quarantined",
+                        message: "The uploaded payload contained a suspicious executable signature. It has been immediately quarantined; customer and contractor access is strictly blocked.",
+                      });
+                      setNewPhotoLabel("");
+                    }}
+                  >
+                    ☣️ Simulate Threat Quarantine Drill
                   </Button>
                 </div>
               </div>
@@ -3299,6 +3780,572 @@ export default function ContractorHome() {
           </Card>
         </div>
       )}
+
+      {/* -------------------------------------------------------------
+          TAB 8: RECOMMENDED SERVICES & HOMEOWNER RESPONSE ANALYTICS
+         ------------------------------------------------------------- */}
+      {activeTab === "recommendations" && (
+        <div style={{ display: "grid", gap: 20 }}>
+          {/* Executive Overview & Conversion Metrics */}
+          <Card tone="white" padding="lg">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                flexWrap: "wrap",
+                gap: 16,
+                marginBottom: 20,
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Status tone="green">Field Discovery & Upsell Ledger</Status>
+                  <Badge tone="blue">Ontario Certified Trades</Badge>
+                </div>
+                <h2 style={{ fontSize: 26, margin: "8px 0 4px" }}>
+                  Technician Service Recommendations & Response Tracking
+                </h2>
+                <p style={{ margin: 0, color: "#475569", fontSize: 14 }}>
+                  Comprehensive audit trail of on-site repairs, safety remediations, and upgrades discovered during active visits. Real-time visibility into homeowner acceptance, structured decline reasons, and dispatch conversion.
+                </p>
+              </div>
+              <Button
+                variant="primary"
+                size="lg"
+                onClick={() => setIsRecommendModalOpen(true)}
+              >
+                + Suggest Discovered Service
+              </Button>
+            </div>
+
+            <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">
+              <Card padding="sm">
+                <Metric
+                  label="Total Discovered Services"
+                  value={`${recommendations.length} Services`}
+                  detail="Identified on site during diagnostics"
+                />
+              </Card>
+              <Card padding="sm">
+                <Metric
+                  label="Homeowner Acceptance Rate"
+                  value={`${
+                    recommendations.filter((r) => r.status === "ACCEPTED").length > 0
+                      ? Math.round(
+                          (recommendations.filter((r) => r.status === "ACCEPTED").length /
+                            (recommendations.filter((r) => r.status === "ACCEPTED" || r.status === "DECLINED").length || 1)) *
+                            100,
+                        )
+                      : 0
+                  }%`}
+                  detail="High-trust verified diagnostic conversions"
+                />
+              </Card>
+              <Card padding="sm">
+                <Metric
+                  label="Approved Incremental Revenue"
+                  value={`$${(
+                    recommendations
+                      .filter((r) => r.status === "ACCEPTED")
+                      .reduce((acc, curr) => acc + curr.estimatedCostCents, 0) / 100
+                  ).toFixed(2)} CAD`}
+                  detail="Net billable additional scope"
+                />
+              </Card>
+              <Card padding="sm">
+                <Metric
+                  label="Pending Homeowner Decisions"
+                  value={`${recommendations.filter((r) => r.status === "PROPOSED").length} Pending`}
+                  detail={`$${(
+                    recommendations
+                      .filter((r) => r.status === "PROPOSED")
+                      .reduce((acc, curr) => acc + curr.estimatedCostCents, 0) / 100
+                  ).toFixed(2)} CAD in review`}
+                />
+              </Card>
+            </Grid>
+          </Card>
+
+          {/* Filter Bar */}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {["ALL", "PROPOSED", "ACCEPTED", "DECLINED", "DEFERRED"].map((filter) => (
+                <button
+                  key={filter}
+                  onClick={() => setRecFilterStatus(filter)}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: 9999,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    border: "1px solid #cbd5e1",
+                    background: recFilterStatus === filter ? "#1d4ed8" : "#ffffff",
+                    color: recFilterStatus === filter ? "#ffffff" : "#334155",
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  {filter === "ALL"
+                    ? `All (${recommendations.length})`
+                    : filter === "PROPOSED"
+                      ? `Pending Review (${recommendations.filter((r) => r.status === "PROPOSED").length})`
+                      : filter === "ACCEPTED"
+                        ? `Accepted (${recommendations.filter((r) => r.status === "ACCEPTED").length})`
+                        : filter === "DECLINED"
+                          ? `Declined (${recommendations.filter((r) => r.status === "DECLINED").length})`
+                          : `Deferred (${recommendations.filter((r) => r.status === "DEFERRED").length})`}
+                </button>
+              ))}
+            </div>
+            <span style={{ fontSize: 13, color: "#64748b" }}>
+              Showing {recommendations.filter((r) => recFilterStatus === "ALL" || r.status === recFilterStatus).length} records
+            </span>
+          </div>
+
+          {/* Recommendations Feed */}
+          <div style={{ display: "grid", gap: 14 }}>
+            {recommendations
+              .filter((r) => recFilterStatus === "ALL" || r.status === recFilterStatus)
+              .map((rec) => (
+                <Card key={rec.id} tone="white" padding="lg">
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "flex-start",
+                      flexWrap: "wrap",
+                      gap: 16,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                        <span style={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
+                          {rec.title}
+                        </span>
+                        <Badge
+                          tone={
+                            rec.urgency === "IMMEDIATE_SAFETY_HAZARD"
+                              ? "danger"
+                              : rec.urgency === "URGENT_REPAIR"
+                                ? "amber"
+                                : rec.urgency === "RECOMMENDED_MAINTENANCE"
+                                  ? "blue"
+                                  : "green"
+                          }
+                        >
+                          {rec.urgency.replace(/_/g, " ")}
+                        </Badge>
+                        <Badge tone="neutral">{rec.jobId}</Badge>
+                        <Badge
+                          tone={
+                            rec.status === "ACCEPTED"
+                              ? "green"
+                              : rec.status === "DECLINED"
+                                ? "danger"
+                                : rec.status === "DEFERRED"
+                                  ? "amber"
+                                  : "blue"
+                          }
+                        >
+                          {rec.status === "PROPOSED"
+                            ? "⏳ PENDING HOMEOWNER"
+                            : rec.status === "ACCEPTED"
+                              ? "✓ ACCEPTED"
+                              : rec.status === "DECLINED"
+                                ? "✕ DECLINED"
+                                : "DEFERRED"}
+                        </Badge>
+                      </div>
+
+                      <p style={{ margin: "0 0 6px", fontSize: 13, color: "#64748b" }}>
+                        📍 {rec.propertyAddress || "Toronto, ON"} · Customer: {rec.customerId} · Suggested by: {rec.technicianName}
+                      </p>
+                    </div>
+
+                    <div style={{ textAlign: "right" }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                        Estimated Price
+                      </span>
+                      <p style={{ margin: 0, fontSize: 24, fontWeight: 900, color: "#0f172a" }}>
+                        ${(rec.estimatedCostCents / 100).toFixed(2)} <span style={{ fontSize: 13, fontWeight: 600 }}>CAD</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <p style={{ margin: "0 0 14px", fontSize: 14, color: "#334155", lineHeight: 1.5 }}>
+                    {rec.description}
+                  </p>
+
+                  {/* Evidence Photos Preview */}
+                  {rec.evidencePhotos && rec.evidencePhotos.length > 0 && (
+                    <div style={{ marginBottom: 14 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#475569", display: "block", marginBottom: 6 }}>
+                        On-Site Evidence Photos ({rec.evidencePhotos.length})
+                      </span>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        {rec.evidencePhotos.map((url, i) => (
+                          <img
+                            key={i}
+                            src={url}
+                            alt="Discovered on-site evidence"
+                            style={{
+                              width: 100,
+                              height: 70,
+                              objectFit: "cover",
+                              borderRadius: 8,
+                              border: "1px solid #cbd5e1",
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Decision Status Callout */}
+                  {rec.status === "ACCEPTED" && (
+                    <div style={{ marginBottom: 14 }}>
+                      <Callout tone="success" title={`Homeowner Approved (${rec.respondedAt ? new Date(rec.respondedAt).toLocaleDateString() : "Recent"})`}>
+                        {rec.homeownerResponseNotes
+                          ? `Homeowner Note: "${rec.homeownerResponseNotes}"`
+                          : "Homeowner accepted the recommended service without additional notes. Work order updated."}
+                      </Callout>
+                    </div>
+                  )}
+
+                  {rec.status === "DECLINED" && (
+                    <div style={{ marginBottom: 14 }}>
+                      <Callout tone="danger" title={`Homeowner Declined (${rec.declineReason ?? "No reason specified"})`}>
+                        {rec.homeownerResponseNotes
+                          ? `Homeowner Feedback: "${rec.homeownerResponseNotes}"`
+                          : "Homeowner elected not to proceed with this service at this time. Preserved in Property Service Passport."}
+                      </Callout>
+                    </div>
+                  )}
+
+                  {rec.status === "DEFERRED" && (
+                    <div style={{ marginBottom: 14 }}>
+                      <Callout tone="warning" title="Follow-up Reminder Scheduled">
+                        Homeowner requested a follow-up reminder in 60 days before the seasonal temperature transition.
+                      </Callout>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
+                    <span style={{ fontSize: 12, color: "#94a3b8" }}>
+                      Created: {new Date(rec.createdAt).toLocaleString()}
+                    </span>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setSelectedRecForDetail(rec)}
+                    >
+                      Inspect Audit Trail & Response Events ({rec.responses?.length ?? 1}) →
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* Suggest Discovered Service Modal (Technician / Contractor) */}
+      <Modal
+        isOpen={isRecommendModalOpen}
+        onClose={() => setIsRecommendModalOpen(false)}
+        title="Suggest Discovered Service (On-Site Task)"
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+            Record an additional service, hazard remediation, or preventative maintenance discovered during the diagnostic visit. The homeowner will be notified to review and accept or decline with transparent pricing.
+          </p>
+
+          {/* Quick Templates Bar */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 6 }}>
+              Quick Inspection Templates
+            </label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() =>
+                  applyRecTemplate({
+                    title: "Dual-Run Compressor & Fan Capacitor Replacement (45+5 µF)",
+                    description:
+                      "Measured capacitance dropped from rated 45µF to 28.5µF under multimeter microfarad load test (36% drop). Elevated risk of compressor hard-start failure and stator winding overheating.",
+                    urgency: "URGENT_REPAIR",
+                    cost: "185.00",
+                    photo: "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=400&q=80",
+                  })
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#f8fafc",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                ⚡ Capacitor Degraded
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  applyRecTemplate({
+                    title: "Main Brass Shutoff Valve Replacement",
+                    description:
+                      "Primary incoming municipal gate valve is heavily corroded with calcium oxidation and will not seat shut. Immediate risk of inability to isolate water supply during plumbing emergency.",
+                    urgency: "IMMEDIATE_SAFETY_HAZARD",
+                    cost: "320.00",
+                    photo: "https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&w=400&q=80",
+                  })
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#f8fafc",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                🚰 Corroded Shutoff Valve
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  applyRecTemplate({
+                    title: "Condensate Drain Line Trap Flush & Float Switch",
+                    description:
+                      "Condensate trap coated in biological slime causing slow outflow. Recommend installing automated float switch to shut off HVAC system before overflow causes drywall ceiling damage.",
+                    urgency: "RECOMMENDED_MAINTENANCE",
+                    cost: "145.00",
+                    photo: "https://images.unsplash.com/photo-1621905251189-08b45d6a269e?auto=format&fit=crop&w=400&q=80",
+                  })
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#f8fafc",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                ❄️ Condensate Drain Flush
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  applyRecTemplate({
+                    title: "Type 2 Whole-Home Electrical Panel Surge Protective Device (SPD)",
+                    description:
+                      "Electrical distribution panel lacks whole-home surge suppression. Protect sensitive inverter HVAC control boards, heat pump compressors, and high-value appliances from utility surges.",
+                    urgency: "UPGRADE_OPPORTUNITY",
+                    cost: "395.00",
+                    photo: "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=400&q=80",
+                  })
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  background: "#f8fafc",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                🛡️ Panel Surge Protection
+              </button>
+            </div>
+          </div>
+
+          <Field
+            label="Service Title"
+            value={newRecTitle}
+            onChange={setNewRecTitle}
+            placeholder="e.g. Dual-Run Capacitor Replacement"
+          />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                Urgency / Severity Level
+              </label>
+              <select
+                value={newRecUrgency}
+                onChange={(e) => setNewRecUrgency(e.target.value as RecommendationUrgency)}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                }}
+              >
+                <option value="IMMEDIATE_SAFETY_HAZARD">🚨 Immediate Safety Hazard</option>
+                <option value="URGENT_REPAIR">⚠️ Urgent Repair Needed</option>
+                <option value="RECOMMENDED_MAINTENANCE">🔧 Recommended Maintenance</option>
+                <option value="UPGRADE_OPPORTUNITY">✨ Upgrade / Efficiency Improvement</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                Estimated Price ($ CAD)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={newRecCostDollars}
+                onChange={(e) => setNewRecCostDollars(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                }}
+              />
+            </div>
+          </div>
+
+          <Field
+            label="Detailed Technician Findings & Notes"
+            value={newRecDescription}
+            onChange={setNewRecDescription}
+            multiline
+            placeholder="Describe what was discovered during the task, why this service is required, and what happens if left unaddressed."
+          />
+
+          <Field
+            label="Evidence Photo Key or URL"
+            value={newRecPhotoUrl}
+            onChange={setNewRecPhotoUrl}
+            placeholder="https://... or uploaded S3 key"
+            hint="Provides photographic proof directly to homeowner"
+          />
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+            <Button variant="secondary" onClick={() => setIsRecommendModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleCreateRecommendation}>
+              Submit & Send to Homeowner
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Inspect Audit Trail Modal */}
+      <Modal
+        isOpen={selectedRecForDetail !== null}
+        onClose={() => setSelectedRecForDetail(null)}
+        title="Recommendation Audit Trail & Homeowner Response History"
+      >
+        {selectedRecForDetail && (
+          <div style={{ display: "grid", gap: 16 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <strong style={{ fontSize: 16 }}>{selectedRecForDetail.title}</strong>
+                <Badge
+                  tone={
+                    selectedRecForDetail.status === "ACCEPTED"
+                      ? "green"
+                      : selectedRecForDetail.status === "DECLINED"
+                        ? "danger"
+                        : "amber"
+                  }
+                >
+                  {selectedRecForDetail.status}
+                </Badge>
+              </div>
+              <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                Job: {selectedRecForDetail.jobId} · Est: ${(selectedRecForDetail.estimatedCostCents / 100).toFixed(2)} CAD
+              </p>
+            </div>
+
+            <div style={{ background: "#f8fafc", padding: 12, borderRadius: 10, border: "1px solid #e2e8f0" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+                Technician Findings
+              </span>
+              <p style={{ margin: "4px 0 0", fontSize: 13, color: "#1e293b" }}>
+                {selectedRecForDetail.description}
+              </p>
+            </div>
+
+            <div>
+              <h4 style={{ margin: "0 0 10px", fontSize: 14 }}>Event History & Response Ledger</h4>
+              <div style={{ display: "grid", gap: 8 }}>
+                {(selectedRecForDetail.responses ?? []).map((resp, i) => (
+                  <div
+                    key={resp.id || i}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "1px solid #e2e8f0",
+                      background:
+                        resp.action === "ACCEPTED"
+                          ? "#f0fdf4"
+                          : resp.action === "DECLINED"
+                            ? "#fef2f2"
+                            : "#ffffff",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <Badge
+                          tone={
+                            resp.action === "ACCEPTED"
+                              ? "green"
+                              : resp.action === "DECLINED"
+                                ? "danger"
+                                : "blue"
+                          }
+                        >
+                          {resp.action}
+                        </Badge>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>
+                          {resp.actorRole}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                        {new Date(resp.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    {resp.notes && (
+                      <p style={{ margin: "4px 0 0", fontSize: 12, color: "#475569" }}>
+                        {resp.notes}
+                      </p>
+                    )}
+                    {resp.metadata && Object.keys(resp.metadata).length > 0 && (
+                      <pre style={{ margin: "4px 0 0", fontSize: 11, color: "#64748b", background: "#f1f5f9", padding: 6, borderRadius: 6, overflowX: "auto" }}>
+                        {JSON.stringify(resp.metadata, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+              <Button variant="secondary" onClick={() => setSelectedRecForDetail(null)}>
+                Close Audit View
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Decline Offer Modal */}
       <Modal

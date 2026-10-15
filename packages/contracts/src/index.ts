@@ -1169,7 +1169,5 @@ export * from "./marketplace-analytics.js";
 export * from "./provider-onboarding.js";
 export * from "./scheduling-dispatch.js";
 export * from "./auth.js";
-
-
-
-
+export * from "./recommendations.js";
+export * from "./files.js";

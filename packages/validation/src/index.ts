@@ -1180,11 +1180,112 @@ export const verifyEmailSchema = z.object({
   token: z.string().min(16).max(64),
 });
 
+export const createRecommendationSchema = z.object({
+  title: z.string().min(3).max(255),
+  description: z.string().min(10).max(5000),
+  verticalId: uuid.optional(),
+  categoryId: uuid.optional(),
+  urgency: z.enum([
+    "IMMEDIATE_SAFETY_HAZARD",
+    "URGENT_REPAIR",
+    "RECOMMENDED_MAINTENANCE",
+    "UPGRADE_OPPORTUNITY",
+  ]),
+  estimatedCostCents: z.number().int().nonnegative().max(100_000_000),
+  evidencePhotos: z.array(z.string().min(1).max(1024)).max(15).default([]),
+  expiresAt: z.string().datetime().optional(),
+});
 
+export const respondRecommendationSchema = z.object({
+  decision: z.enum(["ACCEPTED", "DECLINED", "DEFERRED"]),
+  declineReason: z
+    .enum([
+      "TOO_EXPENSIVE",
+      "WILL_DO_LATER",
+      "DIY_OR_OWN_CONTRACTOR",
+      "NOT_NEEDED",
+      "SELLING_HOME",
+      "OTHER",
+    ])
+    .optional(),
+  notes: z.string().max(2000).optional(),
+  convertImmediately: z.boolean().default(false),
+  preferredStartsAt: z.string().datetime().optional(),
+  preferredEndsAt: z.string().datetime().optional(),
+});
 
+export const convertRecommendationSchema = z.object({
+  preferredStartsAt: z.string().datetime().optional(),
+  preferredEndsAt: z.string().datetime().optional(),
+  notes: z.string().max(2000).optional(),
+});
 
+// ---------------------------------------------------------------------------
+// File Evidence Pipeline & Quarantine Validation (SH-04)
+// ---------------------------------------------------------------------------
 
+export const ALLOWED_FILE_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+  "application/pdf",
+] as const;
 
+export const fileCategoryEnum = z.enum([
+  "JOB_BEFORE_PHOTO",
+  "JOB_IN_PROGRESS_PHOTO",
+  "JOB_AFTER_PHOTO",
+  "SERVICE_REQUEST_ATTACHMENT",
+  "DISPUTE_EVIDENCE",
+  "CONTRACTOR_CREDENTIAL",
+  "INSURANCE_CLAIM_EVIDENCE",
+  "WARRANTY_CLAIM_EVIDENCE",
+  "SERVICE_RECOMMENDATION_PHOTO",
+  "GENERAL_DOCUMENT",
+]);
 
+export const fileVisibilityValidationEnum = z.enum([
+  "PRIVATE",
+  "CUSTOMER_VISIBLE",
+  "CONTRACTOR_VISIBLE",
+  "SHARED",
+  "INTERNAL_ONLY",
+]);
 
+export const presignedUploadInitiateSchema = z.object({
+  fileName: z
+    .string()
+    .min(1)
+    .max(255)
+    .regex(/^[^/\\?%*:|"<>]+$/, "Invalid characters in filename"),
+  mimeType: z.enum(ALLOWED_FILE_MIME_TYPES),
+  byteSize: z
+    .number()
+    .int()
+    .positive()
+    .max(25 * 1024 * 1024, "File size exceeds 25MB ceiling"),
+  category: fileCategoryEnum,
+  visibility: fileVisibilityValidationEnum.optional(),
+  contractorId: uuid.optional(),
+  customerId: uuid.optional(),
+  jobId: uuid.optional(),
+  serviceRequestId: uuid.optional(),
+});
 
+export const presignedUploadFinalizeSchema = z.object({
+  fileId: uuid,
+  storageKey: z.string().min(10).max(255),
+  sha256Checksum: z
+    .string()
+    .length(64)
+    .regex(/^[a-f0-9]{64}$/i)
+    .optional(),
+  byteSize: z.number().int().nonnegative().optional(),
+  contentBase64: z.string().optional(),
+});
+
+export const quarantineOverrideSchema = z.object({
+  reason: z.string().min(5).max(1000),
+});

@@ -3,6 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AlternativeSlot,
+  RecommendationDeclineReason,
+  RecommendationResponseEventDTO,
+  RecommendationStatus,
+  RecommendationUrgency,
+  ServiceRecommendationDTO,
   SlotAvailabilityResponse,
 } from "@marketplace/contracts";
 import {
@@ -138,6 +143,180 @@ export default function CustomerHome() {
   const [urgency, setUrgency] = useState<"STANDARD" | "EMERGENCY">("STANDARD");
   const [includeInsurance, setIncludeInsurance] = useState(true);
   const [bookingConfirmed, setBookingConfirmed] = useState(false);
+
+  // --- TECHNICIAN SERVICE RECOMMENDATIONS & RESPONSE TRACKING ---
+  const [recommendations, setRecommendations] = useState<ServiceRecommendationDTO[]>([
+    {
+      id: "rec-2026-4412-01",
+      jobId: "JOB-2026-4412",
+      serviceRequestId: "REQ-2026-9921",
+      propertyId: "prop-king-123",
+      customerId: "user-cust-avery",
+      contractorId: "cont-mapleshield",
+      technicianId: "tech-marcus",
+      title: "Dual-Run Compressor & Fan Capacitor Replacement (45+5 µF)",
+      description:
+        "During diagnostic voltage and capacitance metering of outdoor Lennox condenser unit, capacitor measured 28.5µF (rated 45µF ±5%), showing 36% degradation. Running the compressor under-capacitated will cause thermal overload trip and potential permanent compressor burn-out during high summer loads.",
+      urgency: "URGENT_REPAIR",
+      status: "PROPOSED",
+      estimatedCostCents: 18500,
+      currency: "CAD",
+      evidencePhotos: [
+        "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&w=400&q=80",
+      ],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      technicianName: "Marcus Sterling (Lead HVAC Journeyperson)",
+      contractorName: "MapleShield Mechanical Solutions Inc.",
+      propertyAddress: "123 King Street W, Unit 1402, Toronto",
+      responses: [
+        {
+          id: "resp-01",
+          recommendationId: "rec-2026-4412-01",
+          action: "PROPOSED",
+          actorId: "tech-marcus",
+          actorRole: "TECHNICIAN",
+          notes: "Discovered during multimeter check of outdoor electrical compartment.",
+          metadata: { estimatedCostCents: 18500, urgency: "URGENT_REPAIR" },
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    },
+  ]);
+
+  const [selectedRecForAction, setSelectedRecForAction] = useState<ServiceRecommendationDTO | null>(null);
+  const [isAcceptModalOpen, setIsAcceptModalOpen] = useState(false);
+  const [isDeclineModalOpen, setIsDeclineModalOpen] = useState(false);
+  const [declineReason, setDeclineReason] = useState<RecommendationDeclineReason>("TOO_EXPENSIVE");
+  const [declineNotes, setDeclineNotes] = useState("");
+  const [convertImmediately, setConvertImmediately] = useState(true);
+  const [recFeedbackNotice, setRecFeedbackNotice] = useState<string | null>(null);
+
+  const handleOpenAcceptModal = (rec: ServiceRecommendationDTO) => {
+    setSelectedRecForAction(rec);
+    setIsAcceptModalOpen(true);
+  };
+
+  const handleOpenDeclineModal = (rec: ServiceRecommendationDTO) => {
+    setSelectedRecForAction(rec);
+    setIsDeclineModalOpen(true);
+  };
+
+  const handleConfirmAccept = () => {
+    if (!selectedRecForAction) return;
+    const recId = selectedRecForAction.id;
+    const now = new Date().toISOString();
+
+    setRecommendations((prev) =>
+      prev.map((r) =>
+        r.id === recId
+          ? {
+              ...r,
+              status: "ACCEPTED",
+              respondedAt: now,
+              homeownerResponseNotes: convertImmediately
+                ? "Accepted and authorized for installation during today's visit."
+                : "Accepted for follow-up scheduling.",
+              responses: [
+                ...(r.responses ?? []),
+                {
+                  id: `resp-accept-${Date.now()}`,
+                  recommendationId: recId,
+                  action: "ACCEPTED",
+                  actorId: "user-cust-avery",
+                  actorRole: "CUSTOMER",
+                  notes: convertImmediately
+                    ? "Accepted and authorized for installation during today's visit."
+                    : "Accepted for follow-up scheduling.",
+                  metadata: { decision: "ACCEPTED", convertImmediately },
+                  createdAt: now,
+                },
+              ],
+            }
+          : r,
+      ),
+    );
+
+    setIsAcceptModalOpen(false);
+    setSelectedRecForAction(null);
+    setRecFeedbackNotice(
+      "✓ You accepted the recommendation! Marcus has been notified to install the replacement capacitor during today's visit ($185.00 CAD added to invoice).",
+    );
+    setTimeout(() => setRecFeedbackNotice(null), 8000);
+  };
+
+  const handleConfirmDecline = () => {
+    if (!selectedRecForAction) return;
+    const recId = selectedRecForAction.id;
+    const now = new Date().toISOString();
+
+    setRecommendations((prev) =>
+      prev.map((r) =>
+        r.id === recId
+          ? {
+              ...r,
+              status: "DECLINED",
+              declineReason,
+              homeownerResponseNotes: declineNotes || "No additional comments provided.",
+              respondedAt: now,
+              responses: [
+                ...(r.responses ?? []),
+                {
+                  id: `resp-decline-${Date.now()}`,
+                  recommendationId: recId,
+                  action: "DECLINED",
+                  actorId: "user-cust-avery",
+                  actorRole: "CUSTOMER",
+                  notes: declineNotes || "No additional comments provided.",
+                  metadata: { decision: "DECLINED", declineReason },
+                  createdAt: now,
+                },
+              ],
+            }
+          : r,
+      ),
+    );
+
+    setIsDeclineModalOpen(false);
+    setSelectedRecForAction(null);
+    setDeclineNotes("");
+    setRecFeedbackNotice(
+      "Recommendation declined. Your response and reason have been preserved in your permanent Property Service Passport.",
+    );
+    setTimeout(() => setRecFeedbackNotice(null), 8000);
+  };
+
+  const handleDeferRecommendation = (recId: string) => {
+    const now = new Date().toISOString();
+    setRecommendations((prev) =>
+      prev.map((r) =>
+        r.id === recId
+          ? {
+              ...r,
+              status: "DEFERRED",
+              respondedAt: now,
+              responses: [
+                ...(r.responses ?? []),
+                {
+                  id: `resp-defer-${Date.now()}`,
+                  recommendationId: recId,
+                  action: "DEFERRED",
+                  actorId: "user-cust-avery",
+                  actorRole: "CUSTOMER",
+                  notes: "Homeowner requested reminder in 60 days before seasonal change.",
+                  metadata: { decision: "DEFERRED", reminderDays: 60 },
+                  createdAt: now,
+                },
+              ],
+            }
+          : r,
+      ),
+    );
+    setRecFeedbackNotice(
+      "⏱ Recommendation deferred. We will send you an automated reminder in 60 days before the seasonal temperature change.",
+    );
+    setTimeout(() => setRecFeedbackNotice(null), 8000);
+  };
 
   // Live countdown timer for active exclusive slot hold lease (15 mins)
   useEffect(() => {
@@ -1252,6 +1431,237 @@ export default function CustomerHome() {
               </div>
             </div>
           </Card>
+
+          {/* Discovered Service Recommendations from Technician */}
+          <div style={{ marginTop: 24 }}>
+            <Card tone="white" padding="lg">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                  gap: 16,
+                  marginBottom: 16,
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 22 }}>💡</span>
+                    <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>
+                      Services Discovered by Your Technician
+                    </h3>
+                    {recommendations.some((r) => r.status === "PROPOSED") && (
+                      <Badge tone="amber">Action Needed</Badge>
+                    )}
+                  </div>
+                  <p style={{ margin: "6px 0 0", color: "#475569", fontSize: 14 }}>
+                    During today&apos;s visit, your certified specialist discovered the following service need. You can approve it directly for completion today, schedule it for later, or decline.
+                  </p>
+                </div>
+              </div>
+
+              {recFeedbackNotice && (
+                <div style={{ marginBottom: 16 }}>
+                  <Callout tone="success" title="Decision Recorded">
+                    {recFeedbackNotice}
+                  </Callout>
+                </div>
+              )}
+
+              <div style={{ display: "grid", gap: 16 }}>
+                {recommendations.map((rec) => (
+                  <div
+                    key={rec.id}
+                    style={{
+                      background:
+                        rec.status === "ACCEPTED"
+                          ? "#f0fdf4"
+                          : rec.status === "DECLINED"
+                            ? "#f8fafc"
+                            : "#ffffff",
+                      borderRadius: 18,
+                      padding: 20,
+                      border:
+                        rec.status === "ACCEPTED"
+                          ? "1px solid #86efac"
+                          : rec.status === "DECLINED"
+                            ? "1px solid #e2e8f0"
+                            : "2px solid #bfdbfe",
+                      boxShadow:
+                        rec.status === "PROPOSED"
+                          ? "0 4px 14px -2px rgba(29, 78, 216, 0.12)"
+                          : "none",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        flexWrap: "wrap",
+                        gap: 12,
+                        marginBottom: 12,
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
+                          <span style={{ fontWeight: 800, fontSize: 17, color: "#0f172a" }}>
+                            {rec.title}
+                          </span>
+                          <Badge
+                            tone={
+                              rec.urgency === "IMMEDIATE_SAFETY_HAZARD"
+                                ? "danger"
+                                : rec.urgency === "URGENT_REPAIR"
+                                  ? "amber"
+                                  : rec.urgency === "RECOMMENDED_MAINTENANCE"
+                                    ? "blue"
+                                    : "green"
+                            }
+                          >
+                            {rec.urgency.replace(/_/g, " ")}
+                          </Badge>
+                          <Badge
+                            tone={
+                              rec.status === "ACCEPTED"
+                                ? "green"
+                                : rec.status === "DECLINED"
+                                  ? "danger"
+                                  : rec.status === "DEFERRED"
+                                    ? "amber"
+                                    : "blue"
+                            }
+                          >
+                            {rec.status === "PROPOSED"
+                              ? "⏳ AWAITING YOUR DECISION"
+                              : rec.status === "ACCEPTED"
+                                ? "✓ ACCEPTED"
+                                : rec.status === "DECLINED"
+                                  ? `✕ DECLINED (${rec.declineReason ?? "NO REASON"})`
+                                  : "DEFERRED"}
+                          </Badge>
+                        </div>
+                        <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                          Discovered by {rec.technicianName} during diagnostic multimeter evaluation
+                        </p>
+                      </div>
+
+                      <div style={{ textAlign: "right" }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                          Transparent Price (Parts & Certified Labour)
+                        </span>
+                        <p style={{ margin: "2px 0 0", fontSize: 24, fontWeight: 900, color: "#0f172a" }}>
+                          ${(rec.estimatedCostCents / 100).toFixed(2)}{" "}
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>CAD</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <p style={{ margin: "0 0 14px", fontSize: 14, color: "#334155", lineHeight: 1.5 }}>
+                      {rec.description}
+                    </p>
+
+                    {/* Photo Evidence */}
+                    {rec.evidencePhotos && rec.evidencePhotos.length > 0 && (
+                      <div style={{ marginBottom: 16 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#475569", display: "block", marginBottom: 6 }}>
+                          Field Evidence Captured on Site:
+                        </span>
+                        <div style={{ display: "flex", gap: 10 }}>
+                          {rec.evidencePhotos.map((url, i) => (
+                            <img
+                              key={i}
+                              src={url}
+                              alt="Capacitor meter reading"
+                              style={{
+                                width: 140,
+                                height: 90,
+                                objectFit: "cover",
+                                borderRadius: 10,
+                                border: "1px solid #cbd5e1",
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Action Bar based on Status */}
+                    {rec.status === "PROPOSED" && (
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 10,
+                          flexWrap: "wrap",
+                          alignItems: "center",
+                          background: "#f8fafc",
+                          padding: "12px 16px",
+                          borderRadius: 12,
+                          border: "1px solid #e2e8f0",
+                        }}
+                      >
+                        <Button
+                          variant="primary"
+                          onClick={() => handleOpenAcceptModal(rec)}
+                        >
+                          ✓ Accept Service (${(rec.estimatedCostCents / 100).toFixed(2)} CAD)
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleOpenDeclineModal(rec)}
+                        >
+                          ✕ Decline Service
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleDeferRecommendation(rec.id)}
+                        >
+                          ⏱ Remind Me in 60 Days
+                        </Button>
+                      </div>
+                    )}
+
+                    {rec.status === "ACCEPTED" && (
+                      <div style={{ background: "#ecfdf5", padding: "12px 16px", borderRadius: 12, border: "1px solid #a7f3d0" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#065f46", fontWeight: 700, fontSize: 14 }}>
+                          <span>✓</span>
+                          <span>Service Accepted by You</span>
+                        </div>
+                        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#047857" }}>
+                          {rec.homeownerResponseNotes || "Added to today's active visit. Marcus has been notified to proceed."}
+                        </p>
+                      </div>
+                    )}
+
+                    {rec.status === "DECLINED" && (
+                      <div style={{ background: "#fef2f2", padding: "12px 16px", borderRadius: 12, border: "1px solid #fecaca" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#991b1b", fontWeight: 700, fontSize: 14 }}>
+                          <span>✕</span>
+                          <span>Service Declined: {rec.declineReason ?? "Budget / Other"}</span>
+                        </div>
+                        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#b91c1c" }}>
+                          {rec.homeownerResponseNotes || "Recorded in your Property Service Passport so you and future technicians have a complete history."}
+                        </p>
+                      </div>
+                    )}
+
+                    {rec.status === "DEFERRED" && (
+                      <div style={{ background: "#fffbeb", padding: "12px 16px", borderRadius: 12, border: "1px solid #fde68a" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#92400e", fontWeight: 700, fontSize: 14 }}>
+                          <span>⏱</span>
+                          <span>Follow-up Scheduled</span>
+                        </div>
+                        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#b45309" }}>
+                          You asked to be reminded in 60 days before the seasonal temperature shift.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
         </div>
       )}
 
@@ -1297,9 +1707,12 @@ export default function CustomerHome() {
 
               {/* Before / After Evidence */}
               <div>
-                <h3 style={{ margin: "0 0 10px", fontSize: 16, fontWeight: 800 }}>
-                  Field Photographic Evidence
-                </h3>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                    Field Photographic Evidence
+                  </h3>
+                  <Badge tone="green">🛡️ SHA-256 & ClamAV Verified</Badge>
+                </div>
                 <Grid columns="repeat(auto-fit, minmax(240px, 1fr))">
                   <div
                     style={{
@@ -1309,7 +1722,10 @@ export default function CustomerHome() {
                       background: "#fffbeb",
                     }}
                   >
-                    <Badge tone="amber">BEFORE WORK</Badge>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <Badge tone="amber">BEFORE WORK</Badge>
+                      <Badge tone="green">✓ AV Clean</Badge>
+                    </div>
                     <div
                       style={{
                         height: 110,
@@ -1326,6 +1742,9 @@ export default function CustomerHome() {
                     <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>
                       Burned spade terminal & bulging run capacitor
                     </p>
+                    <span style={{ fontSize: 11, color: "#64748b", display: "block", marginTop: 4 }}>
+                      evidence/inspection/tenant-acme/2026/10/photo-before.jpg (Signed 15m lease)
+                    </span>
                   </div>
                   <div
                     style={{
@@ -1335,7 +1754,10 @@ export default function CustomerHome() {
                       background: "#ecfdf5",
                     }}
                   >
-                    <Badge tone="green">AFTER WORK</Badge>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <Badge tone="green">AFTER WORK</Badge>
+                      <Badge tone="green">✓ AV Clean</Badge>
+                    </div>
                     <div
                       style={{
                         height: 110,
@@ -1352,6 +1774,9 @@ export default function CustomerHome() {
                     <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>
                       OEM capacitor installed, wiring insulated & secured
                     </p>
+                    <span style={{ fontSize: 11, color: "#64748b", display: "block", marginTop: 4 }}>
+                      evidence/completion/tenant-acme/2026/10/photo-after.jpg (Signed 15m lease)
+                    </span>
                   </div>
                 </Grid>
               </div>
@@ -2191,6 +2616,191 @@ export default function CustomerHome() {
           </Card>
         </div>
       )}
+
+      {/* Accept Service Recommendation Modal */}
+      <Modal
+        isOpen={isAcceptModalOpen && selectedRecForAction !== null}
+        onClose={() => {
+          setIsAcceptModalOpen(false);
+          setSelectedRecForAction(null);
+        }}
+        title="Approve & Authorize Discovered Service"
+      >
+        {selectedRecForAction && (
+          <div style={{ display: "grid", gap: 16 }}>
+            <div style={{ background: "#f0fdf4", padding: 14, borderRadius: 12, border: "1px solid #bbf7d0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                <strong style={{ fontSize: 16, color: "#14532d" }}>
+                  {selectedRecForAction.title}
+                </strong>
+                <span style={{ fontSize: 18, fontWeight: 900, color: "#15803d" }}>
+                  ${(selectedRecForAction.estimatedCostCents / 100).toFixed(2)} CAD
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: 13, color: "#166534" }}>
+                Price is guaranteed fixed-price and includes all certified parts, specialized tools, and technician labour.
+              </p>
+            </div>
+
+            <div>
+              <label style={{ fontSize: 13, fontWeight: 700, color: "#334155", display: "block", marginBottom: 8 }}>
+                Execution Timing
+              </label>
+              <div style={{ display: "grid", gap: 10 }}>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: `1.5px solid ${convertImmediately ? "#2563eb" : "#cbd5e1"}`,
+                    background: convertImmediately ? "#eff6ff" : "#ffffff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="timing"
+                    checked={convertImmediately}
+                    onChange={() => setConvertImmediately(true)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <div>
+                    <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                      Install during today&apos;s visit (Recommended)
+                    </strong>
+                    <p style={{ margin: "2px 0 0", fontSize: 12, color: "#475569" }}>
+                      Technician Marcus is currently on site with parts available. Adds approx. 25–35 minutes to today&apos;s job.
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: `1.5px solid ${!convertImmediately ? "#2563eb" : "#cbd5e1"}`,
+                    background: !convertImmediately ? "#eff6ff" : "#ffffff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="timing"
+                    checked={!convertImmediately}
+                    onChange={() => setConvertImmediately(false)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <div>
+                    <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                      Schedule as a follow-up appointment
+                    </strong>
+                    <p style={{ margin: "2px 0 0", fontSize: 12, color: "#475569" }}>
+                      Reserve and lock in this rate; our operations team will coordinate an upcoming date and time window with you.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setIsAcceptModalOpen(false);
+                  setSelectedRecForAction(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={handleConfirmAccept}>
+                Confirm & Authorize (${(selectedRecForAction.estimatedCostCents / 100).toFixed(2)} CAD)
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Decline Service Recommendation Modal */}
+      <Modal
+        isOpen={isDeclineModalOpen && selectedRecForAction !== null}
+        onClose={() => {
+          setIsDeclineModalOpen(false);
+          setSelectedRecForAction(null);
+        }}
+        title="Decline Recommended Service"
+      >
+        {selectedRecForAction && (
+          <div style={{ display: "grid", gap: 16 }}>
+            <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+              Declining this service recommendation is completely your choice. Your response will be recorded in your Property Service Passport so you and future technicians have a clear record.
+            </p>
+
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                Please tell us the reason for declining:
+              </label>
+              <select
+                value={declineReason}
+                onChange={(e) => setDeclineReason(e.target.value as RecommendationDeclineReason)}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                }}
+              >
+                <option value="TOO_EXPENSIVE">Cost exceeds current budget / too expensive</option>
+                <option value="WILL_DO_LATER">Will address at a later date / post-season</option>
+                <option value="DIY_OR_OWN_CONTRACTOR">Will perform myself or have personal contractor</option>
+                <option value="NOT_NEEDED">Do not believe this repair is necessary right now</option>
+                <option value="SELLING_HOME">Planning to sell / move home soon</option>
+                <option value="OTHER">Other reason</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                Additional Notes or Feedback (Optional)
+              </label>
+              <textarea
+                value={declineNotes}
+                onChange={(e) => setDeclineNotes(e.target.value)}
+                placeholder="Any details to help technician or keep in your property record..."
+                style={{
+                  width: "100%",
+                  minHeight: 70,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                  fontFamily: "inherit",
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setIsDeclineModalOpen(false);
+                  setSelectedRecForAction(null);
+                }}
+              >
+                Keep Reviewing
+              </Button>
+              <Button variant="danger" onClick={handleConfirmDecline}>
+                Submit Decline Response
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </Shell>
   );
 }
