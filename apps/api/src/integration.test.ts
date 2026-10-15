@@ -13,6 +13,7 @@ import {
   serviceCategories,
   issueTypes,
   jobs,
+  quotes,
   paymentSchedules,
   paymentMilestones,
   paymentTransactions,
@@ -64,6 +65,11 @@ import {
   fileQuarantineEvents,
   serviceRecommendations,
   serviceRecommendationResponses,
+  stripeConnectAccounts,
+  customerPaymentMethods,
+  paymentIntents,
+  stripeWebhookEvents,
+  paymentDisputes,
   eq,
   ne,
   and,
@@ -74,6 +80,7 @@ import {
   inArray,
 } from "@marketplace/database";
 import { generateTotpCode, hashPassword } from "@marketplace/auth";
+import { generateTestWebhookSignature } from "@marketplace/payments";
 
 const enabled =
   (process.env.MARKETPLACE_INTEGRATION === "1" ||
@@ -8547,6 +8554,264 @@ describeSuite("Skilled Hire lifecycle", () => {
     expect(analytics.totalDeclined).toBeGreaterThanOrEqual(1);
     expect(analytics.conversionRatePct).toBeGreaterThan(0);
     expect(analytics.totalAcceptedRevenueCents).toBeGreaterThan(0);
+  });
+
+  it("26. Stripe Connect sandbox, contractor onboarding, payment intents, server-side amount calculation, verified webhooks, replay protection, and refund ceiling (#8, SH-07)", async () => {
+    // -------------------------------------------------------------------------
+    // 1. Stripe Connect Contractor Onboarding
+    // -------------------------------------------------------------------------
+    const onboardRes = await app.inject({
+      method: "POST",
+      url: "/v1/connect/onboard",
+      headers: auth("owner@example.test"),
+      payload: {
+        returnUrl: "https://contractor.skilledhire.ca/dashboard/payments?connect=success",
+        refreshUrl: "https://contractor.skilledhire.ca/dashboard/payments?connect=refresh",
+      },
+    });
+    expect(onboardRes.statusCode).toBe(200);
+    const onboardData = onboardRes.json<{
+      accountId: string;
+      onboardingUrl: string;
+      expiresAt: string;
+    }>();
+    expect(onboardData.accountId).toMatch(/^acct_test_/);
+    expect(onboardData.onboardingUrl).toContain("connect.stripe.com/express/sandbox/onboarding");
+
+    // Status check returns capabilities
+    const statusRes = await app.inject({
+      method: "GET",
+      url: "/v1/connect/status",
+      headers: auth("owner@example.test"),
+    });
+    expect(statusRes.statusCode).toBe(200);
+    const statusData = statusRes.json<{
+      onboardingStatus: string;
+      chargesEnabled: boolean;
+      payoutsEnabled: boolean;
+    }>();
+    expect(statusData.chargesEnabled).toBe(true);
+    expect(statusData.payoutsEnabled).toBe(true);
+
+    // -------------------------------------------------------------------------
+    // 2. Customer Saved Payment Methods
+    // -------------------------------------------------------------------------
+    const attachPmRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/methods",
+      headers: auth("customer@example.test"),
+      payload: {
+        stripePaymentMethodId: `pm_test_${crypto.randomUUID().slice(0, 16)}`,
+        brand: "visa",
+        last4: "4242",
+        expMonth: 12,
+        expYear: 2028,
+        isDefault: true,
+      },
+    });
+    expect(attachPmRes.statusCode).toBe(201);
+
+    const listPmRes = await app.inject({
+      method: "GET",
+      url: "/v1/payments/methods",
+      headers: auth("customer@example.test"),
+    });
+    expect(listPmRes.statusCode).toBe(200);
+    const pmList = listPmRes.json<{ paymentMethods: Array<{ brand: string; last4: string }> }>();
+    expect(pmList.paymentMethods.length).toBeGreaterThanOrEqual(1);
+    expect(pmList.paymentMethods[0]?.brand).toBe("visa");
+    expect(pmList.paymentMethods[0]?.last4).toBe("4242");
+
+    // -------------------------------------------------------------------------
+    // 3. Payment Intent Creation & Server-Side Amount Locking
+    // -------------------------------------------------------------------------
+    const [milestone] = await db
+      .select({
+        id: paymentMilestones.id,
+        amountCents: paymentMilestones.amountCents,
+        status: paymentMilestones.status,
+      })
+      .from(paymentMilestones)
+      .innerJoin(paymentSchedules, eq(paymentSchedules.id, paymentMilestones.scheduleId))
+      .innerJoin(quotes, eq(quotes.id, paymentSchedules.quoteId))
+      .innerJoin(jobs, eq(jobs.id, quotes.jobId))
+      .innerJoin(serviceRequests, eq(serviceRequests.id, jobs.serviceRequestId))
+      .where(and(eq(serviceRequests.customerId, custUser.id), eq(paymentMilestones.status, "PENDING")))
+      .limit(1);
+
+    expect(milestone).toBeDefined();
+    if (!milestone) throw new Error("No milestone found");
+
+    const piRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/intent",
+      headers: auth("customer@example.test"),
+      payload: {
+        milestoneId: milestone.id,
+        savePaymentMethod: true,
+      },
+    });
+    expect(piRes.statusCode).toBe(201);
+    const piData = piRes.json<{
+      id: string;
+      stripePaymentIntentId: string;
+      stripeClientSecret: string;
+      amountCents: number;
+      applicationFeeAmountCents: number;
+      status: string;
+    }>();
+    expect(piData.stripePaymentIntentId).toMatch(/^pi_test_/);
+    expect(piData.amountCents).toBe(Number(milestone.amountCents));
+    expect(piData.applicationFeeAmountCents).toBe(Math.round(Number(milestone.amountCents) * 0.05));
+    expect(piData.status).toBe("REQUIRES_PAYMENT_METHOD");
+
+    // Idempotency: Repeating call returns same intent
+    const piIdempRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/intent",
+      headers: auth("customer@example.test"),
+      payload: {
+        milestoneId: milestone.id,
+      },
+    });
+    expect(piIdempRes.statusCode).toBe(200);
+    expect(piIdempRes.json<{ id: string }>().id).toBe(piData.id);
+
+    // -------------------------------------------------------------------------
+    // 4. Payment Intent Confirmation (Card Decline vs Success)
+    // -------------------------------------------------------------------------
+    const declineRes = await app.inject({
+      method: "POST",
+      url: `/v1/payments/intent/${piData.id}/confirm`,
+      headers: auth("customer@example.test"),
+      payload: {
+        testTriggerOutcome: "card_declined",
+      },
+    });
+    expect(declineRes.statusCode).toBe(402);
+    expect(declineRes.json<{ failureCode: string }>().failureCode).toBe("card_declined");
+
+    const successRes = await app.inject({
+      method: "POST",
+      url: `/v1/payments/intent/${piData.id}/confirm`,
+      headers: auth("customer@example.test"),
+      payload: {
+        testTriggerOutcome: "success",
+      },
+    });
+    expect(successRes.statusCode).toBe(200);
+    expect(successRes.json<{ status: string }>().status).toBe("SUCCEEDED");
+
+    const [paidMilestone] = await db
+      .select({ status: paymentMilestones.status, paidAt: paymentMilestones.paidAt })
+      .from(paymentMilestones)
+      .where(eq(paymentMilestones.id, milestone.id));
+    expect(paidMilestone?.status).toBe("PAID");
+    expect(paidMilestone?.paidAt).not.toBeNull();
+
+    // -------------------------------------------------------------------------
+    // 5. Stripe Webhook Verification, Replay Protection & Deduplication
+    // -------------------------------------------------------------------------
+    const webhookSecret = "whsec_mock_skilled_hire_secret";
+    const webhookPayload = JSON.stringify({
+      id: `evt_test_${crypto.randomUUID().slice(0, 16)}`,
+      type: "payment_intent.succeeded",
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: piData.stripePaymentIntentId,
+          amount: piData.amountCents,
+          currency: "cad",
+          status: "succeeded",
+        },
+      },
+    });
+
+    const unauthWebhookRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/webhooks",
+      payload: webhookPayload,
+    });
+    expect(unauthWebhookRes.statusCode).toBe(400);
+
+    const badSignatureHeader = generateTestWebhookSignature(webhookPayload, "whsec_wrong_secret");
+    const badSigWebhookRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/webhooks",
+      headers: {
+        "stripe-signature": badSignatureHeader,
+        "content-type": "application/json",
+      },
+      payload: webhookPayload,
+    });
+    expect(badSigWebhookRes.statusCode).toBe(400);
+
+    const validSignatureHeader = generateTestWebhookSignature(webhookPayload, webhookSecret);
+    const validWebhookRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/webhooks",
+      headers: {
+        "stripe-signature": validSignatureHeader,
+        "content-type": "application/json",
+      },
+      payload: webhookPayload,
+    });
+    expect(validWebhookRes.statusCode).toBe(200);
+    expect(validWebhookRes.json<{ received: boolean }>().received).toBe(true);
+
+    const replayWebhookRes = await app.inject({
+      method: "POST",
+      url: "/v1/payments/webhooks",
+      headers: {
+        "stripe-signature": validSignatureHeader,
+        "content-type": "application/json",
+      },
+      payload: webhookPayload,
+    });
+    expect(replayWebhookRes.statusCode).toBe(200);
+    expect(replayWebhookRes.json<{ deduplicated?: boolean }>().deduplicated).toBe(true);
+
+    // -------------------------------------------------------------------------
+    // 6. Refunds & Maximum Ceiling Enforcements
+    // -------------------------------------------------------------------------
+    const [txRow] = await db
+      .select({ id: paymentTransactions.id, amountCents: paymentTransactions.amountCents })
+      .from(paymentTransactions)
+      .where(eq(paymentTransactions.milestoneId, milestone.id))
+      .limit(1);
+
+    expect(txRow).toBeDefined();
+    if (!txRow) throw new Error("No transaction found");
+
+    const excessiveRefundRes = await app.inject({
+      method: "POST",
+      url: "/v1/refunds",
+      headers: auth("admin@example.test"),
+      payload: {
+        transactionId: txRow.id,
+        amountCents: Number(txRow.amountCents) + 50000,
+        reason: "Customer dispute satisfaction",
+        idempotencyKey: `ref_excess_${crypto.randomUUID()}`,
+      },
+    });
+    expect(excessiveRefundRes.statusCode).toBe(422);
+
+    const validRefundRes = await app.inject({
+      method: "POST",
+      url: "/v1/refunds",
+      headers: auth("admin@example.test"),
+      payload: {
+        transactionId: txRow.id,
+        amountCents: 5000,
+        reason: "Minor diagnostic discount adjustment",
+        idempotencyKey: `ref_valid_${crypto.randomUUID()}`,
+      },
+    });
+    expect(validRefundRes.statusCode).toBe(201);
+    const refundData = validRefundRes.json<{ status: string; amountCents: number; providerReference: string }>();
+    expect(refundData.status).toBe("REFUNDED");
+    expect(refundData.amountCents).toBe(5000);
+    expect(refundData.providerReference).toBeDefined();
   });
 });
 

@@ -1289,3 +1289,38 @@ export const presignedUploadFinalizeSchema = z.object({
 export const quarantineOverrideSchema = z.object({
   reason: z.string().min(5).max(1000),
 });
+
+// Stripe Connect Sandbox & Payment Intents (SH-07)
+export const connectOnboardInitiateSchema = z.object({
+  returnUrl: z.string().url().optional(),
+  refreshUrl: z.string().url().optional(),
+});
+
+export const createPaymentIntentSchema = z.object({
+  milestoneId: uuid,
+  savePaymentMethod: z.boolean().default(false),
+});
+
+export const confirmPaymentIntentSchema = z.object({
+  paymentMethodId: z.string().min(3).max(128).optional(),
+  testTriggerOutcome: z
+    .enum(["success", "card_declined", "requires_action", "insufficient_funds"])
+    .default("success"),
+});
+
+export const attachPaymentMethodSchema = z.object({
+  stripePaymentMethodId: z.string().min(5).max(128),
+  brand: z.string().min(2).max(32),
+  last4: z.string().regex(/^\d{4}$/, "Last 4 must be exactly 4 digits"),
+  expMonth: z.number().int().min(1).max(12),
+  expYear: z.number().int().min(2025).max(2050),
+  isDefault: z.boolean().default(false),
+});
+
+export const processRefundSchema = z.object({
+  transactionId: uuid,
+  amountCents: z.number().int().positive(),
+  reason: z.string().min(3).max(1000),
+  idempotencyKey: z.string().min(16).max(255),
+});
+

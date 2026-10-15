@@ -11,6 +11,7 @@
     "@marketplace/contracts": "workspace:*",
     "@marketplace/core": "workspace:*",
     "@marketplace/database": "workspace:*",
+    "@marketplace/payments": "workspace:*",
     "@marketplace/validation": "workspace:*",
     "@marketplace/vertical-engine": "workspace:*",
     "dotenv": "^16.6.0",

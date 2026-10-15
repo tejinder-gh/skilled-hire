@@ -180,8 +180,26 @@ const ONTARIO_CORE_FSAS = ["M5V", "M4B", "M2N", "L4W", "K1P", "N2L"] as const;
 
 export default function ContractorHome() {
   const [activeTab, setActiveTab] = useState<
-    "workspace" | "evidence" | "completion" | "warranty" | "compliance" | "onboarding" | "scheduling" | "recommendations"
+    "workspace" | "evidence" | "completion" | "warranty" | "compliance" | "onboarding" | "scheduling" | "recommendations" | "payments"
   >("workspace");
+
+  // Stripe Connect Sandbox & Direct Payouts State (SH-07)
+  const [connectStatus, setConnectStatus] = useState<{
+    onboardingStatus: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED";
+    stripeAccountId: string;
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    bankName: string;
+    last4: string;
+  }>({
+    onboardingStatus: "COMPLETED",
+    stripeAccountId: "acct_test_7781mapleshield",
+    chargesEnabled: true,
+    payoutsEnabled: true,
+    bankName: "Toronto-Dominion Bank (TD Canada Trust)",
+    last4: "8821",
+  });
+  const [connectFeedback, setConnectFeedback] = useState<string | null>(null);
 
   // Filter state for Compliance Tab
   const [selectedVertical, setSelectedVertical] = useState("hvac");
@@ -1288,9 +1306,21 @@ export default function ContractorHome() {
               icon: "💡",
               badge: `${recommendations.length} Tracked`,
             },
+            {
+              value: "payments",
+              label: "Stripe Direct Payouts",
+              icon: "💳",
+              badge: "Active",
+            },
           ]}
         />
       </div>
+
+      {connectFeedback && (
+        <Callout tone="success" title="Stripe Connect Engine">
+          {connectFeedback}
+        </Callout>
+      )}
 
       {schedulingFeedback && (
         <Callout tone="info" title="Dispatch & Scheduling Update">
@@ -4055,6 +4085,159 @@ export default function ContractorHome() {
                 </Card>
               ))}
           </div>
+        </div>
+      )}
+
+      {activeTab === "payments" && (
+        <div style={{ display: "grid", gap: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <h2 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800 }}>
+                Stripe Connect Direct Payouts & Marketplace Settlements
+              </h2>
+              <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                Direct bank settlement via Stripe Express. Ontario marketplace compliance ensures 100% truthful disbursement without unauthorized escrow or deposit withholding.
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setConnectFeedback("Stripe Express Sandbox Settings opened (testmode: account acct_test_7781mapleshield).");
+                }}
+              >
+                ⚙️ Express Sandbox Settings
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setConnectFeedback("Simulated payout sync: $845.50 CAD successfully transferred to TD Canada Trust ending in 8821.");
+                }}
+              >
+                ⚡ Test Instant Payout Sync
+              </Button>
+            </div>
+          </div>
+
+          <Callout tone="success" title="Stripe Connect Express Sandbox Active · Zero Escrow">
+            Direct Destination Charges Active: Funds for accepted and completed milestones are deposited directly to your Canadian commercial bank account. Under Ontario marketplace standards, Skilled Hire holds funds as payment facilitator—never under an unauthorized escrow title.
+          </Callout>
+
+          {/* Connect Account Status Cards */}
+          <Grid columns="repeat(auto-fit, minmax(220px, 1fr))">
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Stripe Account ID</span>
+              <p style={{ margin: "4px 0", fontSize: 16, fontWeight: 800, fontFamily: "monospace" }}>
+                {connectStatus.stripeAccountId}
+              </p>
+              <Badge tone="blue">Express (Canada)</Badge>
+            </Card>
+
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Charges & Payouts</span>
+              <p style={{ margin: "4px 0", fontSize: 18, fontWeight: 800, color: "#16a34a" }}>
+                {connectStatus.chargesEnabled && connectStatus.payoutsEnabled ? "✓ Fully Enabled" : "Pending Verification"}
+              </p>
+              <span style={{ fontSize: 11, color: "#64748b" }}>Next-day direct deposit</span>
+            </Card>
+
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Settlement Rail</span>
+              <p style={{ margin: "4px 0", fontSize: 14, fontWeight: 800 }}>
+                {connectStatus.bankName}
+              </p>
+              <Badge tone="green">CAD EFT (****{connectStatus.last4})</Badge>
+            </Card>
+
+            <Card>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>Marketplace Fee</span>
+              <p style={{ margin: "4px 0", fontSize: 18, fontWeight: 800, color: "#0f172a" }}>
+                5.0% <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>Platform Application Fee</span>
+              </p>
+              <Badge tone="amber">0% Escrow Fee</Badge>
+            </Card>
+          </Grid>
+
+          {/* Recent Payout Settlements Ledger */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                Recent Settled Milestones & Destination Transfers
+              </h3>
+              <Badge tone="green">All Transfers Succeeded</Badge>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {[
+                {
+                  id: "tx-2026-9901",
+                  job: "JOB-2026-4412 · Emergency AC Diagnostic & Compressor Capacitor",
+                  grossCents: 28000,
+                  feeCents: 1400,
+                  netCents: 26600,
+                  transferId: "tr_test_9921441201",
+                  status: "TRANSFERRED",
+                  settledAt: "Today, 11:42 AM",
+                },
+                {
+                  id: "tx-2026-9884",
+                  job: "JOB-2026-4390 · Heat Pump Reversing Valve Diagnostics & ESA Permit",
+                  grossCents: 52000,
+                  feeCents: 2600,
+                  netCents: 49400,
+                  transferId: "tr_test_9884021204",
+                  status: "TRANSFERRED",
+                  settledAt: "Yesterday, 3:15 PM",
+                },
+                {
+                  id: "tx-2026-9810",
+                  job: "JOB-2026-4311 · High-Efficiency Furnace Blower Motor Replacement",
+                  grossCents: 45000,
+                  feeCents: 2250,
+                  netCents: 42750,
+                  transferId: "tr_test_9810331001",
+                  status: "TRANSFERRED",
+                  settledAt: "Oct 12, 2026",
+                },
+              ].map((tx) => (
+                <div
+                  key={tx.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border: "1px solid #e2e8f0",
+                    background: "#f8fafc",
+                    flexWrap: "wrap",
+                    gap: 10,
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <strong style={{ fontSize: 14, color: "#1e293b" }}>{tx.job}</strong>
+                      <Badge tone="green">✓ Payout Deposited</Badge>
+                    </div>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>
+                      Settled: {tx.settledAt} · Transfer Ref: <code style={{ fontSize: 11 }}>{tx.transferId}</code>
+                    </span>
+                  </div>
+
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 16, fontWeight: 900, color: "#16a34a" }}>
+                      +${(tx.netCents / 100).toFixed(2)} CAD
+                    </div>
+                    <span style={{ fontSize: 11, color: "#64748b" }}>
+                      Gross: ${(tx.grossCents / 100).toFixed(2)} | Fee (5%): -${(tx.feeCents / 100).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
         </div>
       )}
 

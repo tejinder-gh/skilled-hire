@@ -113,8 +113,68 @@ type SlotOption = {
 
 export default function CustomerHome() {
   const [activeTab, setActiveTab] = useState<
-    "book" | "tracking" | "completion" | "warranty" | "survey" | "security"
+    "book" | "tracking" | "completion" | "warranty" | "survey" | "security" | "payments"
   >("book");
+
+  // --- STRIPE PAYMENTS & MILESTONES STATE (SH-07) ---
+  const [milestones, setMilestones] = useState<Array<{
+    id: string;
+    title: string;
+    trigger: string;
+    amountCents: number;
+    platformFeeCents: number;
+    status: "PENDING" | "PAID";
+    paidAt?: string | undefined;
+    transactionRef?: string | undefined;
+  }>>([
+    {
+      id: "ms-callout-01",
+      title: "Diagnostic Call-Out Fee & Truck Dispatch",
+      trigger: "Technician Arrived On-Site",
+      amountCents: 8900,
+      platformFeeCents: 445,
+      status: "PAID",
+      paidAt: "Today, 10:45 AM",
+      transactionRef: "pi_test_diag_88194",
+    },
+    {
+      id: "ms-completion-02",
+      title: "Work Completion Balance (Labor & OEM Run Capacitor)",
+      trigger: "Customer Completion Sign-Off",
+      amountCents: 18500,
+      platformFeeCents: 925,
+      status: "PENDING",
+    },
+  ]);
+  const [selectedMilestoneForPay, setSelectedMilestoneForPay] = useState<{
+    id: string;
+    title: string;
+    trigger: string;
+    amountCents: number;
+    platformFeeCents: number;
+    status: "PENDING" | "PAID";
+    paidAt?: string | undefined;
+    transactionRef?: string | undefined;
+  } | null>(null);
+  const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
+  const [testOutcome, setTestOutcome] = useState<"success" | "card_declined" | "requires_action">("success");
+  const [checkoutProcessing, setCheckoutProcessing] = useState(false);
+  const [checkoutFeedback, setCheckoutFeedback] = useState<string | null>(null);
+  const [customerPms, setCustomerPms] = useState<Array<{
+    id: string;
+    brand: string;
+    last4: string;
+    exp: string;
+    isDefault: boolean;
+  }>>([
+    {
+      id: "pm_test_visa4242",
+      brand: "Visa",
+      last4: "4242",
+      exp: "12/28",
+      isDefault: true,
+    },
+  ]);
 
   // --- SERVICE DIRECTORY & SEARCH ---
   const [searchQuery, setSearchQuery] = useState("");
@@ -587,6 +647,48 @@ export default function CustomerHome() {
     setIsReserving(false);
   };
 
+  const handleConfirmMilestonePayment = async () => {
+    if (!selectedMilestoneForPay) return;
+    setCheckoutProcessing(true);
+    setCheckoutFeedback(null);
+
+    try {
+      await new Promise((r) => setTimeout(r, 600));
+
+      if (testOutcome === "card_declined") {
+        setCheckoutFeedback("❌ Payment Failed: Your card was declined by the issuer (card_declined test simulation). Please try another payment method.");
+        setCheckoutProcessing(false);
+        return;
+      }
+
+      if (testOutcome === "requires_action") {
+        setCheckoutFeedback("🔐 3D Secure / SCA Challenge passed. Interac/Visa verified.");
+      }
+
+      const txRef = `pi_test_${crypto.randomUUID().slice(0, 16)}`;
+      setMilestones((prev) =>
+        prev.map((m) =>
+          m.id === selectedMilestoneForPay.id
+            ? {
+                ...m,
+                status: "PAID",
+                paidAt: "Just now",
+                transactionRef: txRef,
+              }
+            : m,
+        ),
+      );
+
+      setCheckoutFeedback(`✓ Payment Succeeded: $${(selectedMilestoneForPay.amountCents / 100).toFixed(2)} CAD processed via Stripe Connect. Receipt: ${txRef}`);
+      setIsCheckoutModalOpen(false);
+      setSelectedMilestoneForPay(null);
+    } catch {
+      setCheckoutFeedback("Payment processing error. Please retry.");
+    } finally {
+      setCheckoutProcessing(false);
+    }
+  };
+
   // --- LIVE JOB TRACKING STATE ---
   const [liveJobStep, setLiveJobStep] = useState(2); // 2 = En Route
   const [etaMinutes, setEtaMinutes] = useState(18);
@@ -752,6 +854,12 @@ export default function CustomerHome() {
               label: "Security & MFA",
               icon: "🔒",
               badge: mfaActive ? "2FA Active" : "Protected",
+            },
+            {
+              value: "payments",
+              label: "Payments & Invoices",
+              icon: "💳",
+              badge: milestones.some((m) => m.status === "PENDING") ? "Due" : "Paid",
             },
           ]}
         />
@@ -2913,6 +3021,269 @@ export default function CustomerHome() {
           </Card>
         </div>
       )}
+
+      {activeTab === "payments" && (
+        <div style={{ display: "grid", gap: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <h2 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800 }}>
+                Transparent Milestone Payments & Invoices
+              </h2>
+              <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
+                Pay strictly upon milestone fulfillment. Under Ontario home service standards, amounts are locked server-side with zero escrow withholding and instant receipt issuance.
+              </p>
+            </div>
+            <Badge tone="blue">Stripe Protected</Badge>
+          </div>
+
+          {checkoutFeedback && (
+            <Callout
+              tone={checkoutFeedback.includes("Failed") ? "danger" : "success"}
+              title="Payment Status Update"
+            >
+              {checkoutFeedback}
+            </Callout>
+          )}
+
+          {/* Milestone Schedule Cards */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                  Active Job Milestones (JOB-2026-4412)
+                </h3>
+                <span style={{ fontSize: 12, color: "#64748b" }}>
+                  Contractor: MapleShield Climate Services · Verified TSSA / OCOT
+                </span>
+              </div>
+              <Badge tone={milestones.every((m) => m.status === "PAID") ? "green" : "amber"}>
+                {milestones.every((m) => m.status === "PAID") ? "All Milestones Paid" : "Payment Due"}
+              </Badge>
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              {milestones.map((ms, idx) => (
+                <div
+                  key={ms.id}
+                  style={{
+                    padding: "16px 18px",
+                    borderRadius: 12,
+                    border: `1.5px solid ${ms.status === "PAID" ? "#bbf7d0" : "#cbd5e1"}`,
+                    background: ms.status === "PAID" ? "#f0fdf4" : "#ffffff",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 12,
+                  }}
+                >
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: "#64748b" }}>
+                        STAGE {idx + 1}
+                      </span>
+                      <strong style={{ fontSize: 15, color: "#0f172a" }}>{ms.title}</strong>
+                      <Badge tone={ms.status === "PAID" ? "green" : "amber"}>
+                        {ms.status === "PAID" ? "✓ PAID" : "PENDING AUTHORIZATION"}
+                      </Badge>
+                    </div>
+                    <p style={{ margin: "2px 0 0", fontSize: 12, color: "#64748b" }}>
+                      Trigger: {ms.trigger}
+                      {ms.paidAt && ` · Paid: ${ms.paidAt} (Ref: ${ms.transactionRef})`}
+                    </p>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 20, fontWeight: 900, color: ms.status === "PAID" ? "#16a34a" : "#0f172a" }}>
+                        ${(ms.amountCents / 100).toFixed(2)} <span style={{ fontSize: 12, fontWeight: 600 }}>CAD</span>
+                      </div>
+                      <span style={{ fontSize: 11, color: "#64748b" }}>
+                        Includes ${(ms.platformFeeCents / 100).toFixed(2)} platform fee
+                      </span>
+                    </div>
+
+                    {ms.status === "PENDING" ? (
+                      <Button
+                        variant="primary"
+                        onClick={() => {
+                          setSelectedMilestoneForPay(ms);
+                          setIsCheckoutModalOpen(true);
+                        }}
+                      >
+                        Authorize & Pay →
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          setCheckoutFeedback(`Receipt viewed for ${ms.id}. Transaction ${ms.transactionRef} settled via Stripe Direct Transfer.`);
+                        }}
+                      >
+                        📄 View Receipt
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Saved Payment Methods */}
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>
+                  Saved Payment Methods
+                </h3>
+                <span style={{ fontSize: 12, color: "#64748b" }}>
+                  Encrypted & vaulted by Stripe Elements · 256-bit TLS
+                </span>
+              </div>
+              <Badge tone="green">PCI-DSS Level 1</Badge>
+            </div>
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {customerPms.map((pm) => (
+                <div
+                  key={pm.id}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border: "1px solid #e2e8f0",
+                    background: "#f8fafc",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 20 }}>💳</span>
+                    <div>
+                      <strong style={{ fontSize: 14 }}>{pm.brand} ending in {pm.last4}</strong>
+                      <span style={{ fontSize: 12, color: "#64748b", marginLeft: 8 }}>
+                        Expires: {pm.exp}
+                      </span>
+                    </div>
+                  </div>
+                  {pm.isDefault && <Badge tone="blue">Default Method</Badge>}
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Ontario Consumer Protection Notice */}
+          <Callout tone="info" title="Ontario Consumer Protection & Payment Transparency">
+            Skilled Hire operates as a licensed marketplace facilitator in Ontario. Payments are authorized per milestone schedule and deposited directly to verified contractors. No advance funds are withheld under unauthorized escrow terms.
+          </Callout>
+        </div>
+      )}
+
+      {/* Checkout / Milestone Pay Modal */}
+      <Modal
+        isOpen={isCheckoutModalOpen && selectedMilestoneForPay !== null}
+        onClose={() => {
+          setIsCheckoutModalOpen(false);
+          setSelectedMilestoneForPay(null);
+        }}
+        title="Authorize Milestone Payment via Stripe"
+      >
+        {selectedMilestoneForPay && (
+          <div style={{ display: "grid", gap: 16 }}>
+            <div style={{ background: "#f8fafc", padding: 14, borderRadius: 12, border: "1px solid #e2e8f0" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b", display: "block", marginBottom: 2 }}>
+                Milestone Description
+              </span>
+              <strong style={{ fontSize: 15, color: "#0f172a" }}>
+                {selectedMilestoneForPay.title}
+              </strong>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, paddingTop: 8, borderTop: "1px solid #e2e8f0" }}>
+                <span style={{ fontSize: 13, color: "#475569" }}>Total Locked Amount (Server-side):</span>
+                <strong style={{ fontSize: 18, color: "#0f172a" }}>
+                  ${(selectedMilestoneForPay.amountCents / 100).toFixed(2)} CAD
+                </strong>
+              </div>
+            </div>
+
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 4 }}>
+                Payment Method
+              </label>
+              <div
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #cbd5e1",
+                  background: "#fff",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span>💳 Visa ending in 4242 (Vaulted)</span>
+                <Badge tone="green">Active</Badge>
+              </div>
+            </div>
+
+            {/* Sandbox Simulation Options */}
+            <div style={{ background: "#f1f5f9", padding: 12, borderRadius: 10, border: "1px solid #e2e8f0" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#475569", display: "block", marginBottom: 6 }}>
+                🧪 Stripe Sandbox Simulation Controls:
+              </span>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="testOutcome"
+                    checked={testOutcome === "success"}
+                    onChange={() => setTestOutcome("success")}
+                  />
+                  ✓ Success
+                </label>
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="testOutcome"
+                    checked={testOutcome === "card_declined"}
+                    onChange={() => setTestOutcome("card_declined")}
+                  />
+                  ❌ Card Declined
+                </label>
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                  <input
+                    type="radio"
+                    name="testOutcome"
+                    checked={testOutcome === "requires_action"}
+                    onChange={() => setTestOutcome("requires_action")}
+                  />
+                  🔐 3DS / SCA
+                </label>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 4 }}>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setIsCheckoutModalOpen(false);
+                  setSelectedMilestoneForPay(null);
+                }}
+                disabled={checkoutProcessing}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleConfirmMilestonePayment}
+                disabled={checkoutProcessing}
+              >
+                {checkoutProcessing ? "Processing via Stripe..." : `Confirm Payment ($${(selectedMilestoneForPay.amountCents / 100).toFixed(2)} CAD)`}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Accept Service Recommendation Modal */}
       <Modal

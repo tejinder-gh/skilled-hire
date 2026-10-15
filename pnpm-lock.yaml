@@ -84,6 +84,9 @@ importers:
       '@marketplace/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@marketplace/payments':
+        specifier: workspace:*
+        version: link:../../packages/payments
       '@marketplace/validation':
         specifier: workspace:*
         version: link:../../packages/validation
@@ -282,6 +285,10 @@ importers:
         version: 3.2.7(@types/node@24.13.3)(tsx@4.23.12)
 
   packages/payments:
+    dependencies:
+      '@marketplace/contracts':
+        specifier: workspace:*
+        version: link:../contracts
     devDependencies:
       vitest:
         specifier: ^3.2.0

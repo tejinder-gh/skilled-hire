@@ -88,6 +88,39 @@ export const paymentStatusEnum = pgEnum("payment_status", [
   "WAIVED",
 ]);
 
+export const connectOnboardingStatusEnum = pgEnum("connect_onboarding_status", [
+  "NOT_STARTED",
+  "IN_PROGRESS",
+  "PENDING_VERIFICATION",
+  "COMPLETED",
+  "RESTRICTED",
+]);
+
+export const paymentIntentStatusEnum = pgEnum("payment_intent_status", [
+  "REQUIRES_PAYMENT_METHOD",
+  "REQUIRES_CONFIRMATION",
+  "REQUIRES_ACTION",
+  "PROCESSING",
+  "SUCCEEDED",
+  "CANCELED",
+  "FAILED",
+]);
+
+export const webhookEventStatusEnum = pgEnum("webhook_event_status", [
+  "RECEIVED",
+  "PROCESSING",
+  "PROCESSED",
+  "FAILED",
+  "IGNORED",
+]);
+
+export const disputeStatusEnum = pgEnum("dispute_status", [
+  "NEEDS_RESPONSE",
+  "UNDER_REVIEW",
+  "WON",
+  "LOST",
+]);
+
 export const changeOrderStatusEnum = pgEnum("change_order_status", [
   "DRAFT",
   "SUBMITTED",
@@ -733,6 +766,136 @@ export const paymentTransactions = pgTable("payment_transactions", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+});
+
+// Stripe Connect Sandbox & Payment Intents (SH-07)
+export const stripeConnectAccounts = pgTable("stripe_connect_accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .unique()
+    .references(() => contractors.id, { onDelete: "cascade" }),
+  stripeAccountId: varchar("stripe_account_id", { length: 128 })
+    .notNull()
+    .unique(),
+  accountType: varchar("account_type", { length: 32 })
+    .notNull()
+    .default("express"),
+  onboardingStatus: connectOnboardingStatusEnum("onboarding_status")
+    .notNull()
+    .default("NOT_STARTED"),
+  chargesEnabled: boolean("charges_enabled").notNull().default(false),
+  payoutsEnabled: boolean("payouts_enabled").notNull().default(false),
+  detailsSubmitted: boolean("details_submitted").notNull().default(false),
+  country: varchar("country", { length: 2 }).notNull().default("CA"),
+  defaultCurrency: varchar("default_currency", { length: 3 })
+    .notNull()
+    .default("CAD"),
+  requirementsDue: jsonb("requirements_due").notNull().default([]),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const customerPaymentMethods = pgTable("customer_payment_methods", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  stripePaymentMethodId: varchar("stripe_payment_method_id", { length: 128 })
+    .notNull()
+    .unique(),
+  brand: varchar("brand", { length: 32 }).notNull(),
+  last4: varchar("last4", { length: 4 }).notNull(),
+  expMonth: integer("exp_month").notNull(),
+  expYear: integer("exp_year").notNull(),
+  isDefault: boolean("is_default").notNull().default(false),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const paymentIntents = pgTable("payment_intents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  milestoneId: uuid("milestone_id")
+    .notNull()
+    .references(() => paymentMilestones.id, { onDelete: "restrict" }),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "restrict" }),
+  stripePaymentIntentId: varchar("stripe_payment_intent_id", { length: 128 })
+    .notNull()
+    .unique(),
+  stripeClientSecret: varchar("stripe_client_secret", { length: 255 }).notNull(),
+  amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+  currency: char("currency", { length: 3 }).notNull().default("CAD"),
+  applicationFeeAmountCents: bigint("application_fee_amount_cents", {
+    mode: "number",
+  })
+    .notNull()
+    .default(0),
+  status: paymentIntentStatusEnum("status")
+    .notNull()
+    .default("REQUIRES_PAYMENT_METHOD"),
+  idempotencyKey: varchar("idempotency_key", { length: 255 })
+    .notNull()
+    .unique(),
+  failureCode: varchar("failure_code", { length: 64 }),
+  failureMessage: text("failure_message"),
+  receiptUrl: text("receipt_url"),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventId: varchar("event_id", { length: 128 }).notNull().unique(),
+  eventType: varchar("event_type", { length: 128 }).notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }),
+  payload: jsonb("payload").notNull(),
+  status: webhookEventStatusEnum("status").notNull().default("RECEIVED"),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const paymentDisputes = pgTable("payment_disputes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  transactionId: uuid("transaction_id").references(
+    () => paymentTransactions.id,
+    { onDelete: "set null" },
+  ),
+  stripeDisputeId: varchar("stripe_dispute_id", { length: 128 })
+    .notNull()
+    .unique(),
+  amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+  currency: char("currency", { length: 3 }).notNull().default("CAD"),
+  status: disputeStatusEnum("status").notNull().default("NEEDS_RESPONSE"),
+  reason: varchar("reason", { length: 128 }).notNull(),
+  evidenceDueBy: timestamp("evidence_due_by", { withTimezone: true }),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
 });
 
 // 8. Service Records, Reviews, Audits
@@ -3476,3 +3639,39 @@ export const serviceRecommendationResponsesRelations = relations(
     }),
   }),
 );
+
+export const stripeConnectAccountsRelations = relations(
+  stripeConnectAccounts,
+  ({ one }) => ({
+    contractor: one(contractors, {
+      fields: [stripeConnectAccounts.contractorId],
+      references: [contractors.id],
+    }),
+  }),
+);
+
+export const customerPaymentMethodsRelations = relations(
+  customerPaymentMethods,
+  ({ one }) => ({
+    customer: one(users, {
+      fields: [customerPaymentMethods.customerId],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const paymentIntentsRelations = relations(paymentIntents, ({ one }) => ({
+  milestone: one(paymentMilestones, {
+    fields: [paymentIntents.milestoneId],
+    references: [paymentMilestones.id],
+  }),
+  customer: one(users, {
+    fields: [paymentIntents.customerId],
+    references: [users.id],
+  }),
+  contractor: one(contractors, {
+    fields: [paymentIntents.contractorId],
+    references: [contractors.id],
+  }),
+}));
+
