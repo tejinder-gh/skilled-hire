@@ -29,6 +29,7 @@ export * from "./surveys-rewards.js";
 export * from "./marketplace-analytics.js";
 export * from "./provider-onboarding.js";
 export * from "./scheduling-dispatch.js";
+export * from "./dispatch-exceptions.js";
 
 export function validateVerticalConfig(config: VerticalConfig): void {
   const categoryIds = new Set(

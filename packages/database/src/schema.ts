@@ -4095,6 +4095,166 @@ export const notificationDeliveryLogsRelations = relations(
   }),
 );
 
+// 25. Dispatch Exceptions, Cancellations, SLA Tracking, and Recovery (SH-10)
+export const dispatchExceptions = pgTable("dispatch_exceptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references(() => serviceRequests.id, { onDelete: "cascade" }),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  contractorId: uuid("contractor_id").references(() => contractors.id, { onDelete: "set null" }),
+  technicianId: uuid("technician_id").references(() => technicians.id, { onDelete: "set null" }),
+  exceptionType: varchar("exception_type", { length: 64 }).notNull(),
+  reason: varchar("reason", { length: 255 }).notNull(),
+  notes: text("notes"),
+  severity: varchar("severity", { length: 32 }).notNull().default("MEDIUM"),
+  status: varchar("status", { length: 32 }).notNull().default("OPEN"),
+  slaDeadlineAt: timestamp("sla_deadline_at", { withTimezone: true }).notNull(),
+  escalatedAt: timestamp("escalated_at", { withTimezone: true }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id),
+  resolutionType: varchar("resolution_type", { length: 64 }),
+  compensationAmountCents: integer("compensation_amount_cents").notNull().default(0),
+  feeAmountCents: integer("fee_amount_cents").notNull().default(0),
+  customerCreditCents: integer("customer_credit_cents").notNull().default(0),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const jobCancellations = pgTable("job_cancellations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  serviceRequestId: uuid("service_request_id")
+    .notNull()
+    .references(() => serviceRequests.id, { onDelete: "cascade" }),
+  cancelledByRole: varchar("cancelled_by_role", { length: 32 }).notNull(),
+  cancelledByUserId: uuid("cancelled_by_user_id").notNull().references(() => users.id),
+  cancellationReason: varchar("cancellation_reason", { length: 64 }).notNull(),
+  cancellationNotes: text("cancellation_notes"),
+  policyApplied: varchar("policy_applied", { length: 64 }).notNull(),
+  originalAmountPaidCents: integer("original_amount_paid_cents").notNull().default(0),
+  cancellationFeeCents: integer("cancellation_fee_cents").notNull().default(0),
+  refundAmountCents: integer("refund_amount_cents").notNull().default(0),
+  contractorPayoutCents: integer("contractor_payout_cents").notNull().default(0),
+  customerCreditCents: integer("customer_credit_cents").notNull().default(0),
+  contractorPenaltyCents: integer("contractor_penalty_cents").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const customerServiceCredits = pgTable("customer_service_credits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  customerId: uuid("customer_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
+  amountCents: integer("amount_cents").notNull(),
+  balanceCents: integer("balance_cents").notNull(),
+  reason: varchar("reason", { length: 64 }).notNull(),
+  referenceType: varchar("reference_type", { length: 32 }),
+  referenceId: uuid("reference_id"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  status: varchar("status", { length: 32 }).notNull().default("ACTIVE"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const contractorDispatchPenalties = pgTable("contractor_dispatch_penalties", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  contractorId: uuid("contractor_id")
+    .notNull()
+    .references(() => contractors.id, { onDelete: "cascade" }),
+  technicianId: uuid("technician_id").references(() => technicians.id, { onDelete: "set null" }),
+  jobId: uuid("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  strikeType: varchar("strike_type", { length: 64 }).notNull(),
+  penaltyAmountCents: integer("penalty_amount_cents").notNull().default(0),
+  strikePoints: integer("strike_points").notNull().default(1),
+  notes: text("notes"),
+  status: varchar("status", { length: 32 }).notNull().default("ACTIVE"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const dispatchExceptionsRelations = relations(dispatchExceptions, ({ one }) => ({
+  serviceRequest: one(serviceRequests, {
+    fields: [dispatchExceptions.serviceRequestId],
+    references: [serviceRequests.id],
+  }),
+  job: one(jobs, {
+    fields: [dispatchExceptions.jobId],
+    references: [jobs.id],
+  }),
+  contractor: one(contractors, {
+    fields: [dispatchExceptions.contractorId],
+    references: [contractors.id],
+  }),
+  technician: one(technicians, {
+    fields: [dispatchExceptions.technicianId],
+    references: [technicians.id],
+  }),
+  resolvedByUser: one(users, {
+    fields: [dispatchExceptions.resolvedByUserId],
+    references: [users.id],
+  }),
+}));
+
+export const jobCancellationsRelations = relations(jobCancellations, ({ one }) => ({
+  serviceRequest: one(serviceRequests, {
+    fields: [jobCancellations.serviceRequestId],
+    references: [serviceRequests.id],
+  }),
+  job: one(jobs, {
+    fields: [jobCancellations.jobId],
+    references: [jobs.id],
+  }),
+  cancelledByUser: one(users, {
+    fields: [jobCancellations.cancelledByUserId],
+    references: [users.id],
+  }),
+}));
+
+export const customerServiceCreditsRelations = relations(customerServiceCredits, ({ one }) => ({
+  customer: one(users, {
+    fields: [customerServiceCredits.customerId],
+    references: [users.id],
+  }),
+}));
+
+export const contractorDispatchPenaltiesRelations = relations(
+  contractorDispatchPenalties,
+  ({ one }) => ({
+    contractor: one(contractors, {
+      fields: [contractorDispatchPenalties.contractorId],
+      references: [contractors.id],
+    }),
+    technician: one(technicians, {
+      fields: [contractorDispatchPenalties.technicianId],
+      references: [technicians.id],
+    }),
+    job: one(jobs, {
+      fields: [contractorDispatchPenalties.jobId],
+      references: [jobs.id],
+    }),
+  }),
+);
+
+
 
 
 

@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AlternativeSlot,
+  CancellationQuoteResponse,
+  CancellationPolicyType,
+  CancellationReason,
+  CustomerRecoveryChoiceType,
+  CustomerServiceCreditDTO,
+  DispatchExceptionSeverity,
+  DispatchExceptionStatus,
+  DispatchExceptionType,
   NotificationChannel,
   NotificationPreferenceCategory,
   OutboxStatus,
@@ -33,7 +41,10 @@ import {
   Status,
   Stepper,
 } from "@marketplace/ui";
-import { CANONICAL_TRADE_CATALOG } from "@marketplace/vertical-engine";
+import {
+  CANONICAL_TRADE_CATALOG,
+  evaluateCancellationPolicy,
+} from "@marketplace/vertical-engine";
 
 const bookingSteps = [
   "Select Service",
@@ -578,6 +589,202 @@ export default function CustomerHome() {
       "⏱ Recommendation deferred. We will send you an automated reminder in 60 days before the seasonal temperature change.",
     );
     setTimeout(() => setRecFeedbackNotice(null), 8000);
+  };
+
+  // --- DISPATCH EXCEPTIONS, CANCELLATION & NO-SHOW RECOVERY (SH-10) ---
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+  const [cancelReason, setCancelReason] =
+    useState<CancellationReason>("CUSTOMER_SCHEDULE_CONFLICT");
+  const [cancelNotes, setCancelNotes] = useState("");
+  const [cancellationResult, setCancellationResult] = useState<{
+    cancelledAt: string;
+    feeCents: number;
+    refundCents: number;
+    policyType: CancellationPolicyType;
+    explanation: string;
+  } | null>(null);
+
+  const [isNoShowModalOpen, setIsNoShowModalOpen] = useState(false);
+  const [noShowNotes, setNoShowNotes] = useState("");
+  const [isReportingNoShow, setIsReportingNoShow] = useState(false);
+
+  const [activeDispatchException, setActiveDispatchException] = useState<{
+    id: string;
+    type: DispatchExceptionType;
+    severity: DispatchExceptionSeverity;
+    status: DispatchExceptionStatus;
+    reason: string;
+    standbyContractorName?: string;
+    standbyTechnicianName?: string;
+    standbyEtaMinutes?: number;
+    courtesyCreditAwardedCents: number;
+    slaRemainingSeconds: number;
+  } | null>(null);
+
+  const [isRecoveryModalOpen, setIsRecoveryModalOpen] = useState(false);
+  const [recoveryChoiceFeedback, setRecoveryChoiceFeedback] =
+    useState<string | null>(null);
+
+  const [serviceCredits, setServiceCredits] = useState<
+    CustomerServiceCreditDTO[]
+  >([
+    {
+      id: "cred-ontario-welcome-01",
+      customerId: "user-cust-avery",
+      amountCents: 1500,
+      balanceCents: 1500,
+      reason: "Skilled Hire Welcome Homeowner Credit",
+      status: "ACTIVE",
+      expiresAt: new Date(
+        Date.now() + 365 * 24 * 60 * 60 * 1000,
+      ).toISOString(),
+      createdAt: new Date(
+        Date.now() - 30 * 24 * 60 * 60 * 1000,
+      ).toISOString(),
+      updatedAt: new Date(
+        Date.now() - 30 * 24 * 60 * 60 * 1000,
+      ).toISOString(),
+    },
+  ]);
+
+  const totalActiveCreditsCents = useMemo(() => {
+    return serviceCredits
+      .filter((c) => c.status === "ACTIVE")
+      .reduce((sum, c) => sum + c.amountCents, 0);
+  }, [serviceCredits]);
+
+  // Live countdown for SLA timer (15m window)
+  useEffect(() => {
+    if (
+      !activeDispatchException ||
+      activeDispatchException.slaRemainingSeconds <= 0
+    )
+      return;
+    const interval = setInterval(() => {
+      setActiveDispatchException((prev) => {
+        if (!prev) return null;
+        const remaining = Math.max(0, prev.slaRemainingSeconds - 1);
+        return {
+          ...prev,
+          slaRemainingSeconds: remaining,
+          status:
+            remaining === 0 && prev.status === "OPEN"
+              ? "ESCALATED"
+              : prev.status,
+        };
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeDispatchException]);
+
+  const cancelQuote = useMemo(() => {
+    const scheduledStartsAt = new Date(Date.now() + 3 * 60 * 60 * 1000);
+    return evaluateCancellationPolicy({
+      cancelledByRole: "CUSTOMER",
+      scheduledStartsAt,
+      amountPaidCents: 8900,
+      reason: cancelReason,
+      forceMajeure: cancelReason === "SEVERE_WEATHER_HAZARD",
+      now: new Date(),
+    });
+  }, [cancelReason]);
+
+  const handleConfirmCancellation = () => {
+    setCancellationResult({
+      cancelledAt: new Date().toLocaleTimeString("en-CA", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      feeCents: cancelQuote.cancellationFeeCents,
+      refundCents: cancelQuote.refundAmountCents,
+      policyType: cancelQuote.policyApplied,
+      explanation: cancelQuote.explanation,
+    });
+    setIsCancelModalOpen(false);
+  };
+
+  const handleConfirmReportNoShow = () => {
+    setIsReportingNoShow(true);
+    setTimeout(() => {
+      setIsReportingNoShow(false);
+      setIsNoShowModalOpen(false);
+
+      const excId = `EXC-${Date.now().toString().slice(-4)}`;
+      setActiveDispatchException({
+        id: excId,
+        type: "TECHNICIAN_NO_SHOW",
+        severity: "HIGH",
+        status: "OPEN",
+        reason:
+          noShowNotes ||
+          "Technician failed to arrive within scheduled 30m window without notice.",
+        standbyContractorName: "Apex Climate Mechanical Pro",
+        standbyTechnicianName: "Liam Vance (TSSA Gas G1 #771890)",
+        standbyEtaMinutes: 20,
+        courtesyCreditAwardedCents: 2500,
+        slaRemainingSeconds: 900,
+      });
+
+      const newCredit: CustomerServiceCreditDTO = {
+        id: `cred-noshow-${Date.now().toString().slice(-4)}`,
+        customerId: "user-cust-avery",
+        amountCents: 2500,
+        balanceCents: 2500,
+        reason:
+          "Ontario On-Time Guarantee Courtesy Credit (Booking #REQ-2026-9921)",
+        status: "ACTIVE",
+        expiresAt: new Date(
+          Date.now() + 365 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setServiceCredits((prev) => [newCredit, ...prev]);
+      setIsRecoveryModalOpen(true);
+    }, 400);
+  };
+
+  const handleRecoveryChoice = (choice: CustomerRecoveryChoiceType) => {
+    if (!activeDispatchException) return;
+
+    if (choice === "ACCEPT_REASSIGNMENT") {
+      setActiveDispatchException((prev) =>
+        prev ? { ...prev, status: "RESOLVED" } : null,
+      );
+      setAssignedTechName("Liam Vance (TSSA G1 #771890)");
+      setEtaMinutes(20);
+      setRecoveryChoiceFeedback(
+        "✓ Standby specialist Liam Vance accepted! Arriving in 20 minutes. $25 courtesy credit remains active in your wallet.",
+      );
+    } else if (choice === "RESCHEDULE_NEW_SLOT") {
+      setActiveDispatchException((prev) =>
+        prev ? { ...prev, status: "RESOLVED" } : null,
+      );
+      setRecoveryChoiceFeedback(
+        "✓ Appointment rescheduled to Tomorrow at 9:00 AM with VIP priority dispatch lock. $25 courtesy credit applied.",
+      );
+    } else if (choice === "FULL_REFUND_CANCEL") {
+      setActiveDispatchException((prev) =>
+        prev ? { ...prev, status: "RESOLVED" } : null,
+      );
+      setCancellationResult({
+        cancelledAt: new Date().toLocaleTimeString("en-CA", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        feeCents: 0,
+        refundCents: 8900,
+        policyType: "CONTRACTOR_FAULT_FULL_REFUND_WITH_CREDIT",
+        explanation:
+          "100% full refund issued due to contractor no-show. $25 courtesy credit retained.",
+      });
+      setRecoveryChoiceFeedback(
+        "✓ Appointment cancelled. Full 100% refund of $89.00 CAD initiated to your Stripe account. Your $25 courtesy credit remains in your wallet.",
+      );
+    }
+
+    setIsRecoveryModalOpen(false);
+    setTimeout(() => setRecoveryChoiceFeedback(null), 10000);
   };
 
   // Live countdown timer for active exclusive slot hold lease (15 mins)
@@ -1794,13 +2001,31 @@ export default function CustomerHome() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => alert("Connecting secure encrypted phone bridge to technician Marcus...")}
+                  onClick={() =>
+                    alert(
+                      "Connecting secure encrypted phone bridge to technician Marcus...",
+                    )
+                  }
                 >
                   📞 Call Technician
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setIsNoShowModalOpen(true)}
+                >
+                  ⚠️ Report Delay / No-Show
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => setIsCancelModalOpen(true)}
+                >
+                  ✕ Cancel Appointment
                 </Button>
                 <Button
                   variant="primary"
@@ -1815,6 +2040,262 @@ export default function CustomerHome() {
               </div>
             </div>
           </Card>
+
+          {/* Recovery Choice Feedback Alert */}
+          {recoveryChoiceFeedback && (
+            <div style={{ marginTop: 20 }}>
+              <Callout tone="success" title="Recovery Action Confirmed">
+                {recoveryChoiceFeedback}
+              </Callout>
+            </div>
+          )}
+
+          {/* Cancellation Result Banner */}
+          {cancellationResult && (
+            <div style={{ marginTop: 20 }}>
+              <Callout
+                tone="warning"
+                title={`Appointment Cancelled (${cancellationResult.policyType.replace(/_/g, " ")})`}
+              >
+                <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+                  <p style={{ margin: 0 }}>{cancellationResult.explanation}</p>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 16,
+                      marginTop: 4,
+                      fontWeight: 700,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span>
+                      Refund Amount: $
+                      {(cancellationResult.refundCents / 100).toFixed(2)} CAD
+                    </span>
+                    <span>
+                      Cancellation Fee: $
+                      {(cancellationResult.feeCents / 100).toFixed(2)} CAD
+                    </span>
+                    <span>
+                      Processed At: {cancellationResult.cancelledAt}
+                    </span>
+                  </div>
+                </div>
+              </Callout>
+            </div>
+          )}
+
+          {/* Active Dispatch Exception & SLA Alert */}
+          {activeDispatchException && (
+            <div
+              style={{
+                marginTop: 20,
+                background:
+                  activeDispatchException.status === "ESCALATED"
+                    ? "#fef2f2"
+                    : "#fffbeb",
+                border: `2px solid ${
+                  activeDispatchException.status === "ESCALATED"
+                    ? "#f87171"
+                    : "#f59e0b"
+                }`,
+                borderRadius: 16,
+                padding: 18,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      marginBottom: 6,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <Badge
+                      tone={
+                        activeDispatchException.status === "ESCALATED"
+                          ? "danger"
+                          : "amber"
+                      }
+                    >
+                      {activeDispatchException.type.replace(/_/g, " ")}
+                    </Badge>
+                    <Badge tone="blue">
+                      SLA Timer:{" "}
+                      {Math.floor(
+                        activeDispatchException.slaRemainingSeconds / 60,
+                      )}
+                      :
+                      {(activeDispatchException.slaRemainingSeconds % 60)
+                        .toString()
+                        .padStart(2, "0")}
+                    </Badge>
+                    <Badge tone="green">
+                      +$25 Courtesy Credit Awarded
+                    </Badge>
+                  </div>
+                  <h3
+                    style={{
+                      margin: "4px 0 2px",
+                      fontSize: 18,
+                      fontWeight: 800,
+                      color: "#0f172a",
+                    }}
+                  >
+                    Ontario On-Time Guarantee Activated
+                  </h3>
+                  <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+                    {activeDispatchException.reason} We have credited $25.00
+                    CAD to your account and prioritized recovery options.
+                  </p>
+                </div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setIsRecoveryModalOpen(true)}
+                >
+                  ⚡ Choose Recovery Option
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Customer Service Guarantee & Courtesy Credits Wallet */}
+          <div style={{ marginTop: 24 }}>
+            <Card tone="white" padding="lg">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                  gap: 16,
+                  marginBottom: 16,
+                }}
+              >
+                <div>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    <span style={{ fontSize: 22 }}>🎁</span>
+                    <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>
+                      Customer Courtesy Credits & Service Wallet
+                    </h3>
+                    <Badge tone="green">Ontario Guarantee</Badge>
+                  </div>
+                  <p
+                    style={{
+                      margin: "6px 0 0",
+                      color: "#475569",
+                      fontSize: 14,
+                    }}
+                  >
+                    Skilled Hire guarantees prompt certified service. If a
+                    technician fails to arrive or cancels outside policy,
+                    credits are credited automatically with 1-year Ontario
+                    Consumer Protection Act validity.
+                  </p>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "#64748b",
+                    }}
+                  >
+                    Available Wallet Balance
+                  </span>
+                  <p
+                    style={{
+                      margin: "2px 0 0",
+                      fontSize: 28,
+                      fontWeight: 900,
+                      color: "#059669",
+                    }}
+                  >
+                    ${(totalActiveCreditsCents / 100).toFixed(2)}{" "}
+                    <span style={{ fontSize: 14, fontWeight: 700 }}>
+                      CAD
+                    </span>
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gap: 10 }}>
+                {serviceCredits.map((cred) => (
+                  <div
+                    key={cred.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "12px 16px",
+                      background: "#f8fafc",
+                      borderRadius: 12,
+                      border: "1px solid #e2e8f0",
+                    }}
+                  >
+                    <div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <strong
+                          style={{ fontSize: 14, color: "#0f172a" }}
+                        >
+                          {cred.reason}
+                        </strong>
+                        <Badge
+                          tone={
+                            cred.status === "ACTIVE" ? "green" : "neutral"
+                          }
+                        >
+                          {cred.status}
+                        </Badge>
+                      </div>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>
+                        ID: {cred.id} · Valid until:{" "}
+                        {cred.expiresAt
+                          ? new Date(cred.expiresAt).toLocaleDateString(
+                              "en-CA",
+                              {
+                                year: "numeric",
+                                month: "short",
+                                day: "numeric",
+                              },
+                            )
+                          : "12 Months"}
+                      </span>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: 16,
+                        fontWeight: 800,
+                        color: "#059669",
+                      }}
+                    >
+                      +${(cred.amountCents / 100).toFixed(2)} CAD
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
 
           {/* Discovered Service Recommendations from Technician */}
           <div style={{ marginTop: 24 }}>
@@ -4056,6 +4537,451 @@ export default function CustomerHome() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Cancel Appointment & Policy Quote Modal */}
+      <Modal
+        isOpen={isCancelModalOpen}
+        onClose={() => setIsCancelModalOpen(false)}
+        title="Cancel Appointment & Policy Fee Quote"
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+            Under Ontario home services regulations, cancellations submitted more than 2 hours prior to scheduled dispatch incur zero penalty. Review your quote below before confirming.
+          </p>
+
+          <div>
+            <label
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#334155",
+                display: "block",
+                marginBottom: 6,
+              }}
+            >
+              Reason for Cancellation
+            </label>
+            <select
+              value={cancelReason}
+              onChange={(e) =>
+                setCancelReason(e.target.value as CancellationReason)
+              }
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 14,
+                background: "#fff",
+              }}
+            >
+              <option value="CUSTOMER_SCHEDULE_CONFLICT">
+                Customer Schedule Conflict / Personal Emergency
+              </option>
+              <option value="CUSTOMER_NO_LONGER_NEEDED">
+                Problem Resolved by Self / No Longer Needed
+              </option>
+              <option value="CUSTOMER_ACCIDENTAL_BOOKING">
+                Accidental or Duplicate Booking
+              </option>
+              <option value="CUSTOMER_PRICE_DISSATISFACTION">
+                Price Dissatisfaction / Found Alternative
+              </option>
+              <option value="SEVERE_WEATHER_HAZARD">
+                Severe Winter Weather / Force Majeure Conditions
+              </option>
+              <option value="TECHNICIAN_NO_SHOW">
+                Technician Arrival Delayed / SLA Window Missed
+              </option>
+              <option value="OTHER">
+                Other Reason / Property Safety Concern
+              </option>
+            </select>
+          </div>
+
+          <div>
+            <label
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#334155",
+                display: "block",
+                marginBottom: 6,
+              }}
+            >
+              Additional Notes (Optional)
+            </label>
+            <textarea
+              value={cancelNotes}
+              onChange={(e) => setCancelNotes(e.target.value)}
+              placeholder="Tell us what changed or how we can assist..."
+              rows={2}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 13,
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
+          {/* Real-time Policy Quote Breakdown */}
+          <div
+            style={{
+              background: "#f8fafc",
+              padding: 14,
+              borderRadius: 12,
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 10,
+              }}
+            >
+              <strong style={{ fontSize: 14, color: "#0f172a" }}>
+                Ontario Policy Calculation
+              </strong>
+              <Badge
+                tone={
+                  cancelQuote.cancellationFeeCents === 0 ? "green" : "amber"
+                }
+              >
+                {cancelQuote.policyApplied.replace(/_/g, " ")}
+              </Badge>
+            </div>
+
+            <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "#64748b" }}>Paid Initial Fee:</span>
+                <span style={{ fontWeight: 600 }}>$89.00 CAD</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "#64748b" }}>Cancellation Fee:</span>
+                <span
+                  style={{
+                    fontWeight: 700,
+                    color:
+                      cancelQuote.cancellationFeeCents === 0
+                        ? "#059669"
+                        : "#dc2626",
+                  }}
+                >
+                  ${(cancelQuote.cancellationFeeCents / 100).toFixed(2)} CAD
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  paddingTop: 8,
+                  borderTop: "1px solid #e2e8f0",
+                }}
+              >
+                <strong style={{ color: "#0f172a" }}>
+                  Net Refund to Card:
+                </strong>
+                <strong style={{ fontSize: 16, color: "#059669" }}>
+                  ${(cancelQuote.refundAmountCents / 100).toFixed(2)} CAD
+                </strong>
+              </div>
+            </div>
+
+            <p
+              style={{
+                margin: "10px 0 0",
+                fontSize: 12,
+                color: "#475569",
+                lineHeight: 1.4,
+              }}
+            >
+              {cancelQuote.explanation}
+            </p>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 10,
+              marginTop: 6,
+            }}
+          >
+            <Button
+              variant="secondary"
+              onClick={() => setIsCancelModalOpen(false)}
+            >
+              Keep Appointment
+            </Button>
+            <Button
+              variant="danger"
+              onClick={handleConfirmCancellation}
+            >
+              Confirm Cancellation & Refund
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Report Delay / No-Show Modal */}
+      <Modal
+        isOpen={isNoShowModalOpen}
+        onClose={() => setIsNoShowModalOpen(false)}
+        title="Report Technician Delay or No-Show"
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          <p style={{ margin: 0, fontSize: 13, color: "#475569" }}>
+            Under the <strong>Skilled Hire On-Time Guarantee</strong>, if your technician is more than 30 minutes past their arrival window without prior communication, you receive an immediate $25.00 courtesy credit and priority recovery options.
+          </p>
+
+          <div
+            style={{
+              background: "#ecfdf5",
+              border: "1px solid #bbf7d0",
+              borderRadius: 12,
+              padding: 12,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 18 }}>🛡️</span>
+              <strong style={{ fontSize: 13, color: "#065f46" }}>
+                Ontario Service Quality Guarantee
+              </strong>
+            </div>
+            <p
+              style={{
+                margin: "4px 0 0",
+                fontSize: 12,
+                color: "#047857",
+              }}
+            >
+              Submitting this report immediately issues a <strong>$25.00 courtesy credit</strong> to your wallet, logs a performance strike for the contractor, and offers you instant standby reassignment or 100% full refund.
+            </p>
+          </div>
+
+          <div>
+            <label
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#334155",
+                display: "block",
+                marginBottom: 6,
+              }}
+            >
+              Notes for Operations Dispatch (Optional)
+            </label>
+            <textarea
+              value={noShowNotes}
+              onChange={(e) => setNoShowNotes(e.target.value)}
+              placeholder="e.g. Technician was expected at 11:00 AM. Called at 11:35 AM with no response."
+              rows={3}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                fontSize: 13,
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 10,
+              marginTop: 6,
+            }}
+          >
+            <Button
+              variant="secondary"
+              onClick={() => setIsNoShowModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              disabled={isReportingNoShow}
+              onClick={handleConfirmReportNoShow}
+            >
+              {isReportingNoShow
+                ? "Submitting Report..."
+                : "Submit No-Show Report"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Customer Recovery Choice Modal */}
+      <Modal
+        isOpen={isRecoveryModalOpen}
+        onClose={() => setIsRecoveryModalOpen(false)}
+        title="Ontario Dispatch Guarantee: Choose Recovery Option"
+      >
+        <div style={{ display: "grid", gap: 16 }}>
+          <div
+            style={{
+              background: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              borderRadius: 12,
+              padding: 12,
+            }}
+          >
+            <p
+              style={{
+                margin: 0,
+                fontSize: 13,
+                color: "#1e40af",
+                fontWeight: 600,
+              }}
+            >
+              🎁 A $25.00 courtesy credit has been credited to your Skilled Hire wallet. Please select how you would like to proceed with today&apos;s service request:
+            </p>
+          </div>
+
+          {/* Option 1: Standby Reassignment */}
+          <div
+            style={{
+              padding: 16,
+              borderRadius: 12,
+              border: "1.5px solid #2563eb",
+              background: "#f8fafc",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 6,
+              }}
+            >
+              <strong style={{ fontSize: 15, color: "#0f172a" }}>
+                1. Accept Standby Certified Specialist
+              </strong>
+              <Badge tone="green">Fastest (20m ETA)</Badge>
+            </div>
+            <p
+              style={{
+                margin: "0 0 10px",
+                fontSize: 13,
+                color: "#475569",
+              }}
+            >
+              <strong>Liam Vance</strong> (TSSA Gas G1 #771890 · 313A Refrigeration Mechanic) from Apex Climate Pro is available nearby and can arrive within 20 minutes.
+            </p>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => handleRecoveryChoice("ACCEPT_REASSIGNMENT")}
+            >
+              ✓ Accept Standby Specialist
+            </Button>
+          </div>
+
+          {/* Option 2: Reschedule Priority Slot */}
+          <div
+            style={{
+              padding: 16,
+              borderRadius: 12,
+              border: "1px solid #cbd5e1",
+              background: "#fff",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 6,
+              }}
+            >
+              <strong style={{ fontSize: 15, color: "#0f172a" }}>
+                2. Reschedule to Priority Slot
+              </strong>
+              <Badge tone="blue">Tomorrow 9:00 AM</Badge>
+            </div>
+            <p
+              style={{
+                margin: "0 0 10px",
+                fontSize: 13,
+                color: "#475569",
+              }}
+            >
+              Move your diagnostic visit to tomorrow morning (9:00 AM – 11:00 AM) with first-in-queue VIP priority dispatch.
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => handleRecoveryChoice("RESCHEDULE_NEW_SLOT")}
+            >
+              📅 Reschedule Appointment
+            </Button>
+          </div>
+
+          {/* Option 3: Full Refund */}
+          <div
+            style={{
+              padding: 16,
+              borderRadius: 12,
+              border: "1px solid #cbd5e1",
+              background: "#fff",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 6,
+              }}
+            >
+              <strong style={{ fontSize: 15, color: "#0f172a" }}>
+                3. Cancel for 100% Full Refund
+              </strong>
+              <Badge tone="neutral">100% Refund</Badge>
+            </div>
+            <p
+              style={{
+                margin: "0 0 10px",
+                fontSize: 13,
+                color: "#475569",
+              }}
+            >
+              Cancel this request with an immediate 100% refund of $89.00 CAD to your Stripe payment method. Keep your $25 courtesy credit for future services.
+            </p>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => handleRecoveryChoice("FULL_REFUND_CANCEL")}
+            >
+              ✕ Cancel for Full Refund
+            </Button>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              marginTop: 4,
+            }}
+          >
+            <Button
+              variant="secondary"
+              onClick={() => setIsRecoveryModalOpen(false)}
+            >
+              Close
+            </Button>
+          </div>
+        </div>
       </Modal>
     </Shell>
   );

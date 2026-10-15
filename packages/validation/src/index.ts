@@ -1391,6 +1391,53 @@ export const workerPollSchema = z.object({
   workerId: z.string().min(1).max(100).optional(),
 });
 
+// Dispatch Exceptions, Cancellations, and Recovery (SH-10)
+export const cancellationQuoteSchema = z.object({
+  cancelledByRole: z.enum(["CUSTOMER", "CONTRACTOR", "OPERATIONS"]).optional(),
+});
+
+export const cancelJobSchema = z.object({
+  reason: z.string().min(3).max(64),
+  notes: z.string().max(1000).optional(),
+  forceMajeure: z.boolean().optional(),
+});
+
+export const reportNoShowSchema = z.object({
+  notes: z.string().max(1000).optional(),
+});
+
+export const reassignJobSchema = z.object({
+  newTechnicianId: uuid.optional(),
+  newContractorId: uuid.optional(),
+  overrideReason: z.string().max(500).optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+export const customerRecoveryChoiceSchema = z.object({
+  action: z.enum([
+    "ACCEPT_REASSIGNMENT",
+    "RESCHEDULE_NEW_SLOT",
+    "FULL_REFUND_CANCEL",
+  ]),
+  preferredStartsAt: z.string().datetime().optional(),
+  preferredEndsAt: z.string().datetime().optional(),
+  notes: z.string().max(1000).optional(),
+});
+
+export const resolveExceptionSchema = z.object({
+  resolutionType: z.enum([
+    "REASSIGNED",
+    "RESCHEDULED",
+    "REFUNDED_FULL",
+    "REFUNDED_PARTIAL_WITH_FEE",
+    "COMPENSATION_CREDIT_ISSUED",
+    "CANCELLED_NO_FEE",
+  ]),
+  resolutionNotes: z.string().max(1000).optional(),
+  compensationAmountCents: z.number().int().min(0).optional(),
+});
+
+
 
 
 

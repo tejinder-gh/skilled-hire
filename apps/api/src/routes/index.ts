@@ -27,11 +27,13 @@ import { providerOnboardingRoutes } from "./provider-onboarding.routes.js";
 import { recommendationsRoutes } from "./recommendations.routes.js";
 import { filesRoutes } from "./files.routes.js";
 import { notificationsRoutes } from "./notifications.routes.js";
+import { dispatchExceptionsRoutes } from "./dispatch-exceptions.routes.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(authRoutes);
   await app.register(filesRoutes);
   await app.register(notificationsRoutes);
+  await app.register(dispatchExceptionsRoutes);
   await app.register(intakeRoutes);
   await app.register(catalogRoutes);
   await app.register(complianceRoutes);
@@ -59,3 +61,4 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(paymentsRoutes);
   await app.register(supportRoutes);
 }
+

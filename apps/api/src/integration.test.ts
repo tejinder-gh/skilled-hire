@@ -77,6 +77,10 @@ import {
   transactionalOutbox,
   notificationDeliveryLogs,
   userNotificationPreferences,
+  dispatchExceptions,
+  jobCancellations,
+  customerServiceCredits,
+  contractorDispatchPenalties,
   eq,
   ne,
   and,
@@ -9356,6 +9360,343 @@ describeSuite("Skilled Hire lifecycle", () => {
     });
     expect(statutoryOptOutRes.statusCode).toBe(400);
     expect(statutoryOptOutRes.json<{ error: string }>().error).toBe("REGULATORY_RESTRICTION");
+  });
+
+  it("29. Dispatch exceptions, cancellation policy enforcement, no-show recovery, reassignments, and courtesy credits (#11, SH-10)", async () => {
+    // Fetch customer and contractor user
+    const [customerUser] = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.email, "customer@example.test"))
+      .limit(1);
+    expect(customerUser).toBeDefined();
+
+    const [contractorUser] = await db
+      .select({ id: users.id, contractorId: userRoles.userId })
+      .from(users)
+      .innerJoin(userRoles, eq(userRoles.userId, users.id))
+      .where(eq(userRoles.role, "CONTRACTOR_OWNER"))
+      .limit(1);
+
+    const [verifiedContractor] = await db
+      .select({ id: contractors.id })
+      .from(contractors)
+      .where(eq(contractors.status, "VERIFIED"))
+      .limit(1);
+    expect(verifiedContractor).toBeDefined();
+
+    const [activeTech] = await db
+      .select({ id: technicians.id, contractorId: technicians.contractorId })
+      .from(technicians)
+      .where(
+        and(
+          eq(technicians.contractorId, verifiedContractor!.id),
+          eq(technicians.active, true),
+        ),
+      )
+      .limit(1);
+    expect(activeTech).toBeDefined();
+
+    const [hvacVertical] = await db
+      .select({ id: verticals.id })
+      .from(verticals)
+      .where(eq(verticals.slug, "hvac"))
+      .limit(1);
+
+    const [customerProperty] = await db
+      .select({ id: properties.id })
+      .from(properties)
+      .where(eq(properties.customerId, customerUser!.id))
+      .limit(1);
+
+    const [hvacCat] = await db
+      .select({ id: serviceCategories.id })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.verticalId, hvacVertical!.id))
+      .limit(1);
+
+    const [hvacIssue] = await db
+      .select({ id: issueTypes.id })
+      .from(issueTypes)
+      .where(eq(issueTypes.categoryId, hvacCat!.id))
+      .limit(1);
+
+    // 1. Create a service request and job scheduled 4 hours in future (free cancellation window)
+    const futureTime = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    const [req1] = await db
+      .insert(serviceRequests)
+      .values({
+        customerId: customerUser!.id,
+        propertyId: customerProperty!.id,
+        verticalId: hvacVertical!.id,
+        categoryId: hvacCat!.id,
+        issueTypeId: hvacIssue!.id,
+        status: "ASSIGNED",
+        urgency: "STANDARD",
+        description: "HVAC Inspection & Filter Replacement",
+        preferredStartsAt: futureTime,
+        preferredEndsAt: new Date(futureTime.getTime() + 2 * 60 * 60 * 1000),
+      })
+      .returning();
+
+    const [job1] = await db
+      .insert(jobs)
+      .values({
+        serviceRequestId: req1!.id,
+        contractorId: verifiedContractor!.id,
+        technicianId: activeTech!.id,
+        status: "ASSIGNED",
+        scheduledStartsAt: futureTime,
+        scheduledEndsAt: new Date(futureTime.getTime() + 2 * 60 * 60 * 1000),
+      })
+      .returning();
+
+    // 2. Query Cancellation Quote (GET /v1/jobs/:id/cancellation-quote)
+    const quoteRes = await app.inject({
+      method: "GET",
+      url: `/v1/jobs/${job1!.id}/cancellation-quote`,
+      headers: auth("customer@example.test"),
+    });
+    expect(quoteRes.statusCode).toBe(200);
+    const quoteJson = quoteRes.json<{
+      canCancelFree: boolean;
+      cancellationFeeCents: number;
+      policyApplied: string;
+      minutesUntilStart: number;
+    }>();
+    expect(quoteJson.canCancelFree).toBe(true);
+    expect(quoteJson.cancellationFeeCents).toBe(0);
+    expect(quoteJson.policyApplied).toBe("FREE_CANCELLATION_WINDOW");
+    expect(quoteJson.minutesUntilStart).toBeGreaterThan(180);
+
+    // 3. Execute Free Cancellation (POST /v1/jobs/:id/cancel)
+    const cancelRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job1!.id}/cancel`,
+      headers: auth("customer@example.test"),
+      payload: {
+        reason: "CUSTOMER_SCHEDULE_CONFLICT",
+        notes: "Family trip scheduled, need to reschedule later",
+      },
+    });
+    expect(cancelRes.statusCode).toBe(200);
+    const cancelJson = cancelRes.json<{
+      jobStatus: string;
+      cancellationFeeCents: number;
+      outboxNotificationEnqueued: boolean;
+      cancellation: { policyApplied: string };
+    }>();
+    expect(cancelJson.jobStatus).toBe("CANCELLED");
+    expect(cancelJson.cancellationFeeCents).toBe(0);
+    expect(cancelJson.cancellation.policyApplied).toBe("FREE_CANCELLATION_WINDOW");
+    expect(cancelJson.outboxNotificationEnqueued).toBe(true);
+
+    // Verify DB state
+    const [cancelledJobCheck] = await db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, job1!.id));
+    expect(cancelledJobCheck?.status).toBe("CANCELLED");
+
+    // 4. Create a job scheduled in 45 minutes (< 2 hours: Late cancellation with $50 fee)
+    const nearFutureTime = new Date(Date.now() + 45 * 60 * 1000);
+    const [req2] = await db
+      .insert(serviceRequests)
+      .values({
+        customerId: customerUser!.id,
+        propertyId: customerProperty!.id,
+        verticalId: hvacVertical!.id,
+        categoryId: hvacCat!.id,
+        issueTypeId: hvacIssue!.id,
+        status: "ASSIGNED",
+        urgency: "STANDARD",
+        description: "Emergency AC Diagnostic Assessment",
+        preferredStartsAt: nearFutureTime,
+      })
+      .returning();
+
+    const [job2] = await db
+      .insert(jobs)
+      .values({
+        serviceRequestId: req2!.id,
+        contractorId: verifiedContractor!.id,
+        technicianId: activeTech!.id,
+        status: "ASSIGNED",
+        scheduledStartsAt: nearFutureTime,
+      })
+      .returning();
+
+    // Create quote, schedule and paid milestone for job2 ($129.00 = 12900 cents)
+    const [quote2] = await db
+      .insert(quotes)
+      .values({
+        jobId: job2!.id,
+        version: 1,
+        status: "ACCEPTED",
+        expiresAt: futureTime,
+        contractorSubtotalCents: 12900,
+        platformFeeCents: 645,
+        customerTotalCents: 12900,
+      })
+      .returning();
+
+    const [schedule2] = await db
+      .insert(paymentSchedules)
+      .values({
+        quoteId: quote2!.id,
+        totalCents: 12900,
+        currency: "CAD",
+      })
+      .returning();
+
+    await db.insert(paymentMilestones).values({
+      scheduleId: schedule2!.id,
+      sequence: 1,
+      triggerName: "Dispatch Callout",
+      amountCents: 12900,
+      status: "PAID",
+      paidAt: new Date(),
+    });
+
+    // Execute Late Cancellation
+    const lateCancelRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job2!.id}/cancel`,
+      headers: auth("customer@example.test"),
+      payload: {
+        reason: "CUSTOMER_PRICE_DISSATISFACTION",
+        notes: "Found another local provider",
+      },
+    });
+    expect(lateCancelRes.statusCode).toBe(200);
+    const lateCancelJson = lateCancelRes.json<{
+      jobStatus: string;
+      cancellationFeeCents: number;
+      refundAmountCents: number;
+      cancellation: {
+        policyApplied: string;
+        contractorPayoutCents: number;
+      };
+    }>();
+    expect(lateCancelJson.jobStatus).toBe("CANCELLED");
+    expect(lateCancelJson.cancellationFeeCents).toBe(5000); // $50.00 CAD
+    expect(lateCancelJson.refundAmountCents).toBe(7900); // $129.00 - $50.00 = $79.00
+    expect(lateCancelJson.cancellation.policyApplied).toBe("LATE_CUSTOMER_CANCELLATION_FEE");
+    expect(lateCancelJson.cancellation.contractorPayoutCents).toBe(5000);
+
+    // 5. Technician No-Show Reporting & Recovery
+    // Create a job scheduled 45 minutes in the past without arrival
+    const pastTime = new Date(Date.now() - 45 * 60 * 1000);
+    const [req3] = await db
+      .insert(serviceRequests)
+      .values({
+        customerId: customerUser!.id,
+        propertyId: customerProperty!.id,
+        verticalId: hvacVertical!.id,
+        categoryId: hvacCat!.id,
+        issueTypeId: hvacIssue!.id,
+        status: "ASSIGNED",
+        urgency: "EMERGENCY",
+        description: "Furnace blowing cold air in subzero weather",
+        preferredStartsAt: pastTime,
+      })
+      .returning();
+
+    const [job3] = await db
+      .insert(jobs)
+      .values({
+        serviceRequestId: req3!.id,
+        contractorId: verifiedContractor!.id,
+        technicianId: activeTech!.id,
+        status: "ASSIGNED",
+        scheduledStartsAt: pastTime,
+      })
+      .returning();
+
+    const noShowRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job3!.id}/report-no-show`,
+      headers: auth("customer@example.test"),
+      payload: {
+        notes: "Waited 45 minutes, no technician arrived and no phone call received",
+      },
+    });
+    expect(noShowRes.statusCode).toBe(200);
+    const noShowJson = noShowRes.json<{
+      creditAwardedCents: number;
+      creditId: string;
+      recoveryOptions: string[];
+      exception: {
+        exceptionType: string;
+        severity: string;
+        status: string;
+      };
+    }>();
+    expect(noShowJson.creditAwardedCents).toBe(2500); // $25.00 courtesy credit
+    expect(noShowJson.exception.exceptionType).toBe("TECHNICIAN_NO_SHOW");
+    expect(noShowJson.exception.status).toBe("OPEN");
+    expect(noShowJson.recoveryOptions).toContain("ACCEPT_REASSIGNMENT");
+    expect(noShowJson.recoveryOptions).toContain("RESCHEDULE_NEW_SLOT");
+    expect(noShowJson.recoveryOptions).toContain("FULL_REFUND_CANCEL");
+
+    // Verify Customer Credits Balance (GET /v1/customers/credits)
+    const creditsRes = await app.inject({
+      method: "GET",
+      url: "/v1/customers/credits",
+      headers: auth("customer@example.test"),
+    });
+    expect(creditsRes.statusCode).toBe(200);
+    expect(creditsRes.json<{ totalBalanceCents: number }>().totalBalanceCents).toBeGreaterThanOrEqual(2500);
+
+    // Verify Contractor Penalty & Strike
+    const [strikeCheck] = await db
+      .select({ strikeType: contractorDispatchPenalties.strikeType, penaltyAmountCents: contractorDispatchPenalties.penaltyAmountCents })
+      .from(contractorDispatchPenalties)
+      .where(eq(contractorDispatchPenalties.jobId, job3!.id));
+    expect(strikeCheck?.strikeType).toBe("NO_SHOW");
+    expect(strikeCheck?.penaltyAmountCents).toBe(5000);
+
+    // 6. Operations Reassignment (POST /v1/jobs/:id/reassign)
+    const reassignRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job3!.id}/reassign`,
+      headers: auth("admin@example.test"),
+      payload: {
+        newTechnicianId: activeTech!.id,
+        newContractorId: verifiedContractor!.id,
+        notes: "Dispatched standby certified tech to resolve no-show emergency",
+      },
+    });
+    expect(reassignRes.statusCode).toBe(200);
+    const reassignJson = reassignRes.json<{
+      jobId: string;
+      status: string;
+      exceptionResolved: boolean;
+    }>();
+    expect(reassignJson.status).toBe("ASSIGNED");
+    expect(reassignJson.exceptionResolved).toBe(true);
+
+    // 7. Customer Recovery Choice (POST /v1/jobs/:id/recovery-choice)
+    const choiceRes = await app.inject({
+      method: "POST",
+      url: `/v1/jobs/${job3!.id}/recovery-choice`,
+      headers: auth("customer@example.test"),
+      payload: {
+        action: "ACCEPT_REASSIGNMENT",
+        notes: "Confirmed standby technician arrival",
+      },
+    });
+    expect(choiceRes.statusCode).toBe(200);
+    expect(choiceRes.json<{ actionTaken: string }>().actionTaken).toBe("ACCEPT_REASSIGNMENT");
+
+    // 8. Operations Exceptions Queue (GET /v1/dispatch/exceptions)
+    const queueRes = await app.inject({
+      method: "GET",
+      url: "/v1/dispatch/exceptions",
+      headers: auth("admin@example.test"),
+    });
+    expect(queueRes.statusCode).toBe(200);
+    expect(queueRes.json<{ total: number }>().total).toBeGreaterThanOrEqual(0);
   });
 });
 

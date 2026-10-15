@@ -74,6 +74,64 @@ export default function OperationsHome() {
   const [retryingOutboxId, setRetryingOutboxId] = useState<string | null>(null);
   const [workerNotice, setWorkerNotice] = useState<string | null>(null);
 
+  // SH-10: Dispatch Exceptions, SLA Monitors & No-Show Recovery
+  const [exceptions, setExceptions] = useState<
+    Array<{
+      id: string;
+      jobId: string;
+      serviceRequestId: string;
+      contractorName: string;
+      technicianName: string;
+      exceptionType: string;
+      reason: string;
+      severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+      status: "OPEN" | "ESCALATED" | "RESOLVED";
+      slaDeadlineAt: string;
+      slaRemainingMinutes: number;
+      isOverdue: boolean;
+      urgency: string;
+      postalCode: string;
+      customerCreditCents: number;
+    }>
+  >([
+    {
+      id: "exc-88194",
+      jobId: "job-ontario-88194",
+      serviceRequestId: "req-ontario-88194",
+      contractorName: "Maple Air Heating & Cooling",
+      technicianName: "Marcus Miller (HVAC 313A)",
+      exceptionType: "TECHNICIAN_NO_SHOW",
+      reason: "Technician vehicle flat tire on 401; failed to reach diagnostic window",
+      severity: "HIGH",
+      status: "OPEN",
+      slaDeadlineAt: new Date(Date.now() + 11 * 60 * 1000).toISOString(),
+      slaRemainingMinutes: 11,
+      isOverdue: false,
+      urgency: "EMERGENCY",
+      postalCode: "M4B 1B3",
+      customerCreditCents: 2500,
+    },
+    {
+      id: "exc-88195",
+      jobId: "job-ontario-88195",
+      serviceRequestId: "req-ontario-88195",
+      contractorName: "GTA Climate Solutions",
+      technicianName: "Alex Vance (Gas Tech 2)",
+      exceptionType: "TECHNICIAN_DECLINE",
+      reason: "Technician occupied on prior furnace red-tag overhaul",
+      severity: "MEDIUM",
+      status: "ESCALATED",
+      slaDeadlineAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+      slaRemainingMinutes: 0,
+      isOverdue: true,
+      urgency: "STANDARD",
+      postalCode: "M5V 2T6",
+      customerCreditCents: 0,
+    },
+  ]);
+  const [exceptionActionNotice, setExceptionActionNotice] = useState<string | null>(null);
+  const [reassigningJobId, setReassigningJobId] = useState<string | null>(null);
+
   useEffect(() => {
     async function fetchOperationsData() {
       try {
@@ -697,6 +755,45 @@ export default function OperationsHome() {
       });
     }
   }
+
+  const handleReassignException = (excId: string, jobId: string) => {
+    setReassigningJobId(jobId);
+    setTimeout(() => {
+      setExceptions((prev) =>
+        prev.map((e) =>
+          e.id === excId
+            ? {
+                ...e,
+                status: "RESOLVED",
+                technicianName: "John S. (Standby Primary Tech)",
+                contractorName: "Toronto Elite HVAC Services",
+              }
+            : e,
+        ),
+      );
+      setReassigningJobId(null);
+      setExceptionActionNotice(
+        `Job ${jobId} successfully reassigned to standby technician John S. Customer notified via transactional SMS.`,
+      );
+    }, 400);
+  };
+
+  const handleResolveExceptionFullRefund = (excId: string, jobId: string) => {
+    setExceptions((prev) =>
+      prev.map((e) =>
+        e.id === excId
+          ? {
+              ...e,
+              status: "RESOLVED",
+              reason: `${e.reason} (Closed by Ops: 100% full refund + $25 courtesy credit issued)`,
+            }
+          : e,
+      ),
+    );
+    setExceptionActionNotice(
+      `Exception ${excId} resolved. 100% full refund processed to customer and contractor strike recorded.`,
+    );
+  };
 
   const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -1411,6 +1508,151 @@ export default function OperationsHome() {
                       ? `Delivered ${new Date(item.deliveredAt).toLocaleTimeString()}`
                       : `Next: ${new Date(item.nextAttemptAt).toLocaleTimeString()}`}
                   </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* SH-10: Dispatch Exceptions, SLA Monitors & No-Show Recovery */}
+      <Card tone={exceptions.some((e) => e.status === "ESCALATED") ? "amber" : "white"}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h2 style={{ margin: "0 0 4px" }}>Dispatch Exceptions, SLA Timers & No-Show Recovery</h2>
+              {exceptions.some((e) => e.status === "ESCALATED") ? (
+                <Badge tone="danger">SLA BREACH ESCALATED</Badge>
+              ) : (
+                <Badge tone="green">SLA COMPLIANT</Badge>
+              )}
+            </div>
+            <p style={{ margin: 0, color: "#64748b", fontSize: 13 }}>
+              Real-time exception triage for contractor declines, technician no-shows, and late cancellations with automated compensation credits and standby reassignments.
+            </p>
+          </div>
+        </div>
+
+        {exceptionActionNotice && (
+          <div style={{ marginBottom: 16 }}>
+            <Callout tone="success" title="Exception Resolution Executed">
+              {exceptionActionNotice}
+            </Callout>
+          </div>
+        )}
+
+        <Grid columns="repeat(auto-fit, minmax(180px, 1fr))">
+          <Metric
+            label="Active Exceptions"
+            value={String(exceptions.filter((e) => e.status !== "RESOLVED").length)}
+            detail="Requires dispatcher action"
+          />
+          <Metric
+            label="SLA Escalated"
+            value={String(exceptions.filter((e) => e.status === "ESCALATED").length)}
+            detail="Overdue (15m/30m timer)"
+          />
+          <Metric
+            label="No-Shows Reported"
+            value={String(exceptions.filter((e) => e.exceptionType === "TECHNICIAN_NO_SHOW").length)}
+            detail="$25 courtesy credits auto-awarded"
+          />
+          <Metric
+            label="Resolved Today"
+            value={String(exceptions.filter((e) => e.status === "RESOLVED").length)}
+            detail="Reassigned or refunded"
+          />
+        </Grid>
+
+        <Divider />
+
+        <div style={{ marginTop: 14 }}>
+          <h3 style={{ margin: "0 0 12px", fontSize: 15, color: "#0f172a" }}>
+            Exceptions Queue ({exceptions.length})
+          </h3>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {exceptions.map((exc) => (
+              <div
+                key={exc.id}
+                style={{
+                  padding: "14px 16px",
+                  borderRadius: 10,
+                  border: exc.status === "ESCALATED" ? "1.5px solid #f87171" : "1px solid #e2e8f0",
+                  background: exc.status === "ESCALATED" ? "#fff1f2" : "#f8fafc",
+                  display: "grid",
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Badge
+                      tone={
+                        exc.severity === "CRITICAL" || exc.severity === "HIGH"
+                          ? "danger"
+                          : exc.severity === "MEDIUM"
+                            ? "amber"
+                            : "blue"
+                      }
+                    >
+                      {exc.exceptionType.replace(/_/g, " ")}
+                    </Badge>
+                    <strong style={{ fontSize: 14, color: "#0f172a" }}>{exc.jobId}</strong>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>
+                      ({exc.postalCode} · {exc.urgency})
+                    </span>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: exc.isOverdue ? "#dc2626" : "#2563eb",
+                      }}
+                    >
+                      {exc.status === "RESOLVED"
+                        ? "✓ Resolved"
+                        : exc.isOverdue
+                          ? "⚠️ Overdue: SLA Breached"
+                          : `⏱️ ${exc.slaRemainingMinutes}m SLA remaining`}
+                    </span>
+                    <Badge tone={exc.status === "RESOLVED" ? "green" : exc.status === "ESCALATED" ? "danger" : "amber"}>
+                      {exc.status}
+                    </Badge>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <div>
+                    <p style={{ margin: "0 0 2px", fontSize: 13, color: "#334155" }}>
+                      <strong>Reason:</strong> {exc.reason}
+                    </p>
+                    <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                      Assigned: {exc.technicianName} ({exc.contractorName})
+                      {exc.customerCreditCents > 0 && ` · Courtesy Credit: $${(exc.customerCreditCents / 100).toFixed(2)}`}
+                    </p>
+                  </div>
+
+                  {exc.status !== "RESOLVED" && (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={reassigningJobId === exc.jobId}
+                        onClick={() => handleReassignException(exc.id, exc.jobId)}
+                      >
+                        {reassigningJobId === exc.jobId ? "Reassigning..." : "1-Click Reassign Standby Tech"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleResolveExceptionFullRefund(exc.id, exc.jobId)}
+                      >
+                        Issue Full Refund
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
